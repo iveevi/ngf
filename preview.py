@@ -26,6 +26,10 @@ corner_points = torch.load(corner_points)
 corner_encodings = data_dir + '/encodings.bin'
 corner_encodings = torch.load(corner_encodings)
 
+ref = data_dir + '/ref.obj'
+ref = trimesh.load(ref)
+print('Reference model loaded:', ref.vertices.shape, ref.faces.shape)
+
 print('complexes:', complexes.shape)
 print('corner_points:', corner_points.shape)
 print('corner_encodings:', corner_encodings.shape)
@@ -73,6 +77,8 @@ def callback():
         redraw()
 
 redraw()
+
+ps.register_surface_mesh("ref", ref.vertices, ref.faces)
 ps.set_user_callback(callback)
 
 ps.show()

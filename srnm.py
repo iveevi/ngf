@@ -12,13 +12,17 @@ import tqdm
 
 from models import *
 
+if len(sys.argv) < 3:
+    print('Usage: python3 srnm.py <sdv_complexes_file> <output_dir>')
+    sys.exit(1)
+
 sdv_complexes_file = sys.argv[1]
 sdv_complexes_file = open(sdv_complexes_file, 'rb')
 
 filename_length = int.from_bytes(sdv_complexes_file.read(4), byteorder='little')
 print('Filename length:', filename_length)
 
-filename = sdv_complexes_file.read(filename_length)
+filename = sdv_complexes_file.read(filename_length).decode('utf-8')
 print('Filename:', filename)
 
 point_count = int.from_bytes(sdv_complexes_file.read(4), byteorder='little')
@@ -70,7 +74,7 @@ args = {
 
 srnm = SRNM().cuda()
 optimizer = torch.optim.Adam(list(srnm.parameters()) + [ corner_encodings ], lr=1e-3)
-iterations = 2_000
+iterations = 20_000
 
 history = []
 for i in tqdm.trange(iterations):
@@ -95,7 +99,6 @@ plt.legend()
 plt.xlabel('iteration')
 plt.ylabel('loss')
 plt.yscale('log')
-plt.savefig('loss.png')
 
 # Display results
 vertices, _ = srnm(args)
@@ -111,17 +114,21 @@ for i, vs in enumerate(vertices):
 ps.show()
 
 # Save the state
-# TODO: save using the filename as prefix
-model_file = 'output/model.bin'
-complexes_file = 'output/complexes.bin'
-corner_points_file = 'output/points.bin'
-corner_encodings_file = 'output/encodings.bin'
+output_dir = sys.argv[2]
+model_file = os.path.join(output_dir, 'model.bin')
+complexes_file = os.path.join(output_dir, 'complexes.bin')
+corner_points_file = os.path.join(output_dir, 'points.bin')
+corner_encodings_file = os.path.join(output_dir, 'encodings.bin')
 
-if os.path.exists('output'):
-    shutil.rmtree('output')
+if os.path.exists(output_dir):
+    shutil.rmtree(output_dir)
 
-os.makedirs('output')
+os.makedirs(output_dir)
 torch.save(srnm, model_file)
 torch.save(complexes, complexes_file)
 torch.save(corner_points, corner_points_file)
 torch.save(corner_encodings, corner_encodings_file)
+plt.savefig(os.path.join(output_dir, 'loss.png'))
+
+# TODO: preserve the extension
+shutil.copyfile(filename, os.path.join(output_dir, 'ref.obj'))
