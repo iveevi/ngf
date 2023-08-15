@@ -1,3 +1,8 @@
 .cache/
+.polyscope.ini
+__pycache__/
 build/
 compile_commands.json
+data/
+imgui.ini
+output/

@@ -58,7 +58,8 @@ struct Viewer : littlevk::Skeleton {
 	void add(const std::string &name, const Mesh &mesh, Mode mode);
 	void refresh(const std::string &name, const Mesh &mesh);
 	void replace(const std::string &name, const Mesh &mesh);
-	MeshResource *ref(const std::string &name) const;
+	MeshResource *ref(const std::string &name);
+	void clear();
 
 	// Camera state
 	struct {

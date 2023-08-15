@@ -422,13 +422,18 @@ void Viewer::replace(const std::string &name, const Mesh &mesh)
 	it->second.index_count = mesh.triangles.size() * 3;
 }
 
-Viewer::MeshResource *Viewer::ref(const std::string &name) const
+Viewer::MeshResource *Viewer::ref(const std::string &name)
 {
 	auto it = meshes.find(name);
 	if (it == meshes.end())
 		return nullptr;
 
 	return (MeshResource *) &it->second;
+}
+
+void Viewer::clear()
+{
+	meshes.clear();
 }
 
 void Viewer::render()

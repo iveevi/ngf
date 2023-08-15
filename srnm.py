@@ -1,0 +1,127 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+import polyscope as ps
+import seaborn as sns
+import shutil
+import sys
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import tqdm
+
+from models import *
+
+sdv_complexes_file = sys.argv[1]
+sdv_complexes_file = open(sdv_complexes_file, 'rb')
+
+filename_length = int.from_bytes(sdv_complexes_file.read(4), byteorder='little')
+print('Filename length:', filename_length)
+
+filename = sdv_complexes_file.read(filename_length)
+print('Filename:', filename)
+
+point_count = int.from_bytes(sdv_complexes_file.read(4), byteorder='little')
+points = sdv_complexes_file.read(12 * point_count)
+points = np.frombuffer(points, dtype=np.float32)
+points = points.reshape((point_count, 3))
+print('Points:', points.shape)
+
+complexes_count = int.from_bytes(sdv_complexes_file.read(4), byteorder='little')
+complexes = sdv_complexes_file.read(16 * complexes_count)
+complexes = np.frombuffer(complexes, dtype=np.int32)
+complexes = complexes.reshape((complexes_count, 4))
+print('Complexes:', complexes.shape)
+
+targets = []
+for _ in range(complexes_count):
+    size = int.from_bytes(sdv_complexes_file.read(4), byteorder='little')
+
+    vertex_count = int.from_bytes(sdv_complexes_file.read(4), byteorder='little')
+    assert vertex_count == size * size
+
+    vertices = sdv_complexes_file.read(12 * vertex_count)
+    vertices = np.frombuffer(vertices, dtype=np.float32)
+    vertices = vertices.reshape((size, size, 3))
+
+    targets.append(vertices)
+
+targets = np.array(targets)
+print('Targets:', targets.shape)
+
+print(complexes)
+
+corner_points = torch.from_numpy(points).cuda()
+corner_encodings = torch.randn((point_count, POINT_ENCODING_SIZE), requires_grad=True, device='cuda')
+
+print(corner_points.shape)
+print(corner_encodings.shape)
+
+complexes = torch.from_numpy(complexes).cuda()
+targets = torch.from_numpy(targets).cuda()
+
+resolution = targets.shape[1]
+args = {
+    'points': corner_points,
+    'encodings': corner_encodings,
+    'complexes': complexes,
+    'resolution': resolution
+}
+
+srnm = SRNM().cuda()
+optimizer = torch.optim.Adam(list(srnm.parameters()) + [ corner_encodings ], lr=1e-3)
+iterations = 2_000
+
+history = []
+for i in tqdm.trange(iterations):
+    vertices, lipschitz = srnm(args)
+    loss = torch.mean(torch.pow(vertices - targets, 2)) # + 0.1 * torch.pow(lipschitz - 1.0, 2)
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+    history.append(loss.item())
+
+    if i == iterations // 2:
+        # Only train the encodings
+        optimizer = torch.optim.Adam([ corner_encodings ], lr=1e-3)
+
+# Save plot
+sns.set()
+plt.figure(figsize=(20, 10))
+plt.plot(history, label='loss')
+plt.legend()
+plt.xlabel('iteration')
+plt.ylabel('loss')
+plt.yscale('log')
+plt.savefig('loss.png')
+
+# Display results
+vertices, _ = srnm(args)
+print(vertices.shape)
+
+ps.init()
+
+for i, vs in enumerate(vertices):
+    vs = vs.reshape(-1, 3)
+    vs = vs.cpu().detach().numpy()
+    ps.register_surface_mesh("complex-{}".format(i), vs, indices(resolution))
+
+ps.show()
+
+# Save the state
+# TODO: save using the filename as prefix
+model_file = 'output/model.bin'
+complexes_file = 'output/complexes.bin'
+corner_points_file = 'output/points.bin'
+corner_encodings_file = 'output/encodings.bin'
+
+if os.path.exists('output'):
+    shutil.rmtree('output')
+
+os.makedirs('output')
+torch.save(srnm, model_file)
+torch.save(complexes, complexes_file)
+torch.save(corner_points, corner_points_file)
+torch.save(corner_encodings, corner_encodings_file)

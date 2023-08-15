@@ -63,3 +63,80 @@ struct cas_grid {
 	void precache_device();
 	void query_device(closest_point_kinfo kinfo);
 };
+
+// Closest point on triangle
+__forceinline__ __host__ __device__
+glm::vec3 triangle_closest_point(const glm::vec3 &v0, const glm::vec3 &v1, const glm::vec3 &v2, const glm::vec3 &p)
+{
+	glm::vec3 B = v0;
+	glm::vec3 E1 = v1 - v0;
+	glm::vec3 E2 = v2 - v0;
+	glm::vec3 D = B - p;
+
+	float a = glm::dot(E1, E1);
+	float b = glm::dot(E1, E2);
+	float c = glm::dot(E2, E2);
+	float d = glm::dot(E1, D);
+	float e = glm::dot(E2, D);
+	float f = glm::dot(D, D);
+
+	float det = a * c - b * b;
+	float s = b * e - c * d;
+	float t = b * d - a * e;
+
+	if (s + t <= det) {
+		if (s < 0.0f) {
+			if (t < 0.0f) {
+				if (d < 0.0f) {
+					s = glm::clamp(-d / a, 0.0f, 1.0f);
+					t = 0.0f;
+				} else {
+					s = 0.0f;
+					t = glm::clamp(-e / c, 0.0f, 1.0f);
+				}
+			} else {
+				s = 0.0f;
+				t = glm::clamp(-e / c, 0.0f, 1.0f);
+			}
+		} else if (t < 0.0f) {
+			s = glm::clamp(-d / a, 0.0f, 1.0f);
+			t = 0.0f;
+		} else {
+			float invDet = 1.0f / det;
+			s *= invDet;
+			t *= invDet;
+		}
+	} else {
+		if (s < 0.0f) {
+			float tmp0 = b + d;
+			float tmp1 = c + e;
+			if (tmp1 > tmp0) {
+				float numer = tmp1 - tmp0;
+				float denom = a - 2 * b + c;
+				s = glm::clamp(numer / denom, 0.0f, 1.0f);
+				t = 1 - s;
+			} else {
+				t = glm::clamp(-e / c, 0.0f, 1.0f);
+				s = 0.0f;
+			}
+		} else if (t < 0.0f) {
+			if (a + d > b + e) {
+				float numer = c + e - b - d;
+				float denom = a - 2 * b + c;
+				s = glm::clamp(numer / denom, 0.0f, 1.0f);
+				t = 1 - s;
+			} else {
+				s = glm::clamp(-e / c, 0.0f, 1.0f);
+				t = 0.0f;
+			}
+		} else {
+			float numer = c + e - b - d;
+			float denom = a - 2 * b + c;
+			s = glm::clamp(numer / denom, 0.0f, 1.0f);
+			t = 1.0f - s;
+		}
+	}
+
+	return B + s * E1 + t * E2;
+}
+
