@@ -228,6 +228,7 @@ void Viewer::from(const vk::PhysicalDevice &phdev_)
 
 		pipeline_info.fragment_shader = shaded_fragment_module;
 		pipeline_info.pipeline_layout = pipeline_layout;
+		pipeline_info.alpha_blend = false;
 
 		pipelines[0].first = pipeline_layout;
 		pipelines[0].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
@@ -243,6 +244,7 @@ void Viewer::from(const vk::PhysicalDevice &phdev_)
 
 		pipeline_info.fragment_shader = transparent_fragment_module;
 		pipeline_info.pipeline_layout = pipeline_layout;
+		pipeline_info.alpha_blend = true;
 
 		pipelines[1].first = pipeline_layout;
 		pipelines[1].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
@@ -270,6 +272,7 @@ void Viewer::from(const vk::PhysicalDevice &phdev_)
 		pipeline_info.fragment_shader = wireframe_fragment_module;
 		pipeline_info.pipeline_layout = pipeline_layout;
 		pipeline_info.fill_mode = vk::PolygonMode::eLine;
+		pipeline_info.alpha_blend = false;
 
 		pipelines[2].first = pipeline_layout;
 		pipelines[2].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
