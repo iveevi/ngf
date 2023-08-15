@@ -12,1162 +12,661 @@
 #include <littlevk/littlevk.hpp>
 
 #define MESH_LOAD_SAVE
-#include "argparser.hpp"
+#include "closest_point.cuh"
 #include "mesh.hpp"
-
-struct push_constants {
-	glm::mat4 model;
-	glm::mat4 view;
-	glm::mat4 proj;
-};
-
-const char *vertex_shader = R"(
-#version 450
-
-layout (location = 0) in vec3 position;
-layout (location = 1) in vec3 normal;
-
-layout (push_constant) uniform VertexPushConstants {
-	mat4 model;
-	mat4 view;
-	mat4 proj;
-};
-
-layout (location = 0) out vec3 out_normal;
-
-void main()
-{
-	gl_Position = proj * view * model * vec4(position, 1.0);
-	gl_Position.y = -gl_Position.y;
-	gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
-	out_normal = mat3(transpose(inverse(model))) * normal;
-}
-)";
-
-const char *shaded_fragment_shader = R"(
-#version 450
-
-layout (location = 0) in vec3 in_normal;
-
-layout (location = 0) out vec4 fragment;
-
-void main()
-{
-	vec3 light_direction = normalize(vec3(1.0, 1.0, 1.0));
-	float light_intensity = max(0.0, dot(in_normal, light_direction));
-	vec3 color = vec3(light_intensity + 0.1);
-	fragment = vec4(color, 1.0);
-}
-)";
-
-const char *transparent_fragment_shader = R"(
-#version 450
-
-layout (location = 0) out vec4 fragment;
-
-void main()
-{
-	fragment = vec4(1.0, 0.5, 0.5, 0.5);
-}
-)";
-
-struct wireframe_push_constants {
-	glm::mat4 model;
-	glm::mat4 view;
-	glm::mat4 proj;
-	glm::vec3 color;
-};
-
-const char *wireframe_fragment_shader = R"(
-#version 450
-
-layout (push_constant) uniform FragmentPushConstants {
-	layout (offset = 192) vec3 color;
-};
-
-layout (location = 0) out vec4 fragment;
-
-void main()
-{
-	fragment = vec4(color, 1.0);
-}
-)";
-
-struct Viewer : littlevk::Skeleton {
-	// Different viewing modes
-	enum class Mode : uint32_t {
-		Shaded,
-		Transparent,
-		Wireframe,
-		Count
-	};
-
-	// General Vulkan resources
-	vk::PhysicalDevice phdev;
-	vk::PhysicalDeviceMemoryProperties mem_props;
-
-	littlevk::Deallocator *dal = nullptr;
-
-	vk::RenderPass render_pass;
-
-	using Pipeline = std::pair <vk::PipelineLayout, vk::Pipeline>;
-	std::array <Pipeline, (uint32_t) Mode::Count> pipelines;
-
-	std::vector <vk::Framebuffer> framebuffers;
-
-	vk::CommandPool command_pool;
-	std::vector <vk::CommandBuffer> command_buffers;
-
-	vk::DescriptorPool imgui_pool;
-
-	littlevk::PresentSyncronization sync;
-
-	// Constructor loads a device and starts the initialization process
-	Viewer() {
-		// Load Vulkan physical device
-		auto predicate = [](const vk::PhysicalDevice &dev) {
-			return littlevk::physical_device_able(dev, {
-				VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-			});
-		};
-
-		vk::PhysicalDevice dev = littlevk::pick_physical_device(predicate);
-		skeletonize(dev, { 2560, 1440 }, "Viewer");
-		from(dev);
-	}
-
-	// Vertex properties
-	static constexpr vk::VertexInputBindingDescription vertex_binding {
-		0, 2 * sizeof(glm::vec3), vk::VertexInputRate::eVertex
-	};
-
-	static constexpr std::array <vk::VertexInputAttributeDescription, 2> vertex_attributes {
-		vk::VertexInputAttributeDescription {
-			0, 0, vk::Format::eR32G32B32Sfloat, 0
-		},
-		vk::VertexInputAttributeDescription {
-			1, 0, vk::Format::eR32G32B32Sfloat, sizeof(glm::vec3)
-		},
-	};
-
-	// Initialize the viewer
-	void from(const vk::PhysicalDevice &phdev_) {
-		// Copy the physical device and properties
-		phdev = phdev_;
-		mem_props = phdev.getMemoryProperties();
-
-		// Configure basic resources
-		dal = new littlevk::Deallocator(device);
-
-		// Create the render pass
-		std::array <vk::AttachmentDescription, 2> attachments {
-			littlevk::default_color_attachment(swapchain.format),
-			littlevk::default_depth_attachment(),
-		};
-
-		std::array <vk::AttachmentReference, 1> color_attachments {
-			vk::AttachmentReference {
-				0, vk::ImageLayout::eColorAttachmentOptimal,
-			}
-		};
-
-		vk::AttachmentReference depth_attachment {
-			1, vk::ImageLayout::eDepthStencilAttachmentOptimal,
-		};
-
-		vk::SubpassDescription subpass {
-			{}, vk::PipelineBindPoint::eGraphics,
-			{}, color_attachments,
-			{}, &depth_attachment,
-		};
-
-		render_pass = littlevk::render_pass(
-			device,
-			vk::RenderPassCreateInfo {
-				{}, attachments, subpass
-			}
-		).unwrap(dal);
-
-		// Create a depth buffer
-		littlevk::ImageCreateInfo depth_info {
-			window->extent.width,
-			window->extent.height,
-			vk::Format::eD32Sfloat,
-			vk::ImageUsageFlagBits::eDepthStencilAttachment,
-			vk::ImageAspectFlagBits::eDepth,
-		};
-
-		littlevk::Image depth_buffer = littlevk::image(
-			device,
-			depth_info,
-			mem_props
-		).unwrap(dal);
-
-		// Create framebuffers from the swapchain
-		littlevk::FramebufferSetInfo fb_info;
-		fb_info.swapchain = &swapchain;
-		fb_info.render_pass = render_pass;
-		fb_info.extent = window->extent;
-		fb_info.depth_buffer = &depth_buffer.view;
-
-		framebuffers = littlevk::framebuffers(device, fb_info).unwrap(dal);
-
-		// Allocate command buffers
-		command_pool = littlevk::command_pool(device,
-			vk::CommandPoolCreateInfo {
-				vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
-				littlevk::find_graphics_queue_family(phdev)
-			}
-		).unwrap(dal);
-
-		command_buffers = device.allocateCommandBuffers({
-			command_pool, vk::CommandBufferLevel::ePrimary, 2
-		});
-
-		// Compile shader modules
-		vk::ShaderModule vertex_module = littlevk::shader::compile(
-			device, std::string(vertex_shader),
-			vk::ShaderStageFlagBits::eVertex
-		).unwrap(dal);
-
-		vk::ShaderModule shaded_fragment_module = littlevk::shader::compile(
-			device, std::string(shaded_fragment_shader),
-			vk::ShaderStageFlagBits::eFragment
-		).unwrap(dal);
-
-		vk::ShaderModule transparent_fragment_module = littlevk::shader::compile(
-			device, std::string(transparent_fragment_shader),
-			vk::ShaderStageFlagBits::eFragment
-		).unwrap(dal);
-
-		vk::ShaderModule wireframe_fragment_module = littlevk::shader::compile(
-			device, std::string(wireframe_fragment_shader),
-			vk::ShaderStageFlagBits::eFragment
-		).unwrap(dal);
-
-		// Create the pipeline
-		vk::PushConstantRange push_constant_range {
-			vk::ShaderStageFlagBits::eVertex,
-			0, sizeof(push_constants)
-		};
-
-		littlevk::pipeline::GraphicsCreateInfo pipeline_info;
-		pipeline_info.vertex_binding = vertex_binding;
-		pipeline_info.vertex_attributes = vertex_attributes;
-		pipeline_info.vertex_shader = vertex_module;
-		pipeline_info.extent = window->extent;
-		pipeline_info.render_pass = render_pass;
-		pipeline_info.cull_mode = vk::CullModeFlagBits::eNone;
-
-
-		{
-			vk::PipelineLayout pipeline_layout = littlevk::pipeline_layout(
-				device,
-				vk::PipelineLayoutCreateInfo {
-					{}, nullptr, push_constant_range
-				}
-			).unwrap(dal);
-
-			pipeline_info.fragment_shader = shaded_fragment_module;
-			pipeline_info.pipeline_layout = pipeline_layout;
-
-			pipelines[0].first = pipeline_layout;
-			pipelines[0].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
-		}
-
-		{
-			vk::PipelineLayout pipeline_layout = littlevk::pipeline_layout(
-				device,
-				vk::PipelineLayoutCreateInfo {
-					{}, nullptr, push_constant_range
-				}
-			).unwrap(dal);
-
-			pipeline_info.fragment_shader = transparent_fragment_module;
-			pipeline_info.pipeline_layout = pipeline_layout;
-
-			pipelines[1].first = pipeline_layout;
-			pipelines[1].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
-		}
-
-		{
-			std::array <vk::PushConstantRange, 2> push_constant_ranges {
-				vk::PushConstantRange {
-					vk::ShaderStageFlagBits::eVertex,
-					0, 3 * sizeof(glm::mat4)
-				},
-				vk::PushConstantRange {
-					vk::ShaderStageFlagBits::eFragment,
-					offsetof(wireframe_push_constants, color), sizeof(glm::vec3)
-				},
-			};
-
-			vk::PipelineLayout pipeline_layout = littlevk::pipeline_layout(
-				device,
-				vk::PipelineLayoutCreateInfo {
-					{}, nullptr, push_constant_ranges
-				}
-			).unwrap(dal);
-
-			pipeline_info.fragment_shader = wireframe_fragment_module;
-			pipeline_info.pipeline_layout = pipeline_layout;
-			pipeline_info.fill_mode = vk::PolygonMode::eLine;
-
-			pipelines[2].first = pipeline_layout;
-			pipelines[2].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
-		}
-
-		// Create the syncronization objects
-		sync = littlevk::present_syncronization(device, 2).unwrap(dal);
-
-		// Configure ImGui
-		ImGui::CreateContext();
-		ImGui_ImplGlfw_InitForVulkan(window->handle, true);
-
-		// Allow popups
-		ImGui::GetIO().ConfigFlags |= ImGuiWindowFlags_Popup;
-
-		std::array <vk::DescriptorPoolSize, 4> imgui_pool_sizes {
-			vk::DescriptorPoolSize {
-				vk::DescriptorType::eSampler,
-				1000
-			},
-			vk::DescriptorPoolSize {
-				vk::DescriptorType::eCombinedImageSampler,
-				1000
-			},
-			vk::DescriptorPoolSize {
-				vk::DescriptorType::eSampledImage,
-				1000
-			},
-			vk::DescriptorPoolSize {
-				vk::DescriptorType::eUniformBuffer,
-				1000
-			},
-		};
-
-		imgui_pool = littlevk::descriptor_pool(
-			device,
-			vk::DescriptorPoolCreateInfo {
-				{
-					vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-				},
-				1000, imgui_pool_sizes
-			}
-		).unwrap(dal);
-
-		ImGui_ImplVulkan_InitInfo init_info {};
-		init_info.Instance = littlevk::detail::get_vulkan_instance();
-		init_info.PhysicalDevice = phdev;
-		init_info.Device = device;
-		init_info.QueueFamily = littlevk::find_graphics_queue_family(phdev);
-		init_info.Queue = graphics_queue;
-		init_info.DescriptorPool = imgui_pool;
-		init_info.MinImageCount = 2;
-		init_info.ImageCount = 2;
-
-		ImGui_ImplVulkan_Init(&init_info, render_pass);
-
-		// Create font atlas
-		littlevk::submit_now(device, command_pool, graphics_queue,
-			[&](const vk::CommandBuffer &cmd) {
-				ImGui_ImplVulkan_CreateFontsTexture(cmd);
-			}
-		);
-
-		ImGui_ImplVulkan_DestroyFontUploadObjects();
-	}
-
-	// Local resources
-	struct MeshResource {
-		littlevk::Buffer vertex_buffer;
-		littlevk::Buffer index_buffer;
-		size_t index_count;
-		Mode mode;
-		bool enabled = true;
-		glm::vec3 color = { 0.3, 0.7, 0.3 };
-	};
-
-	std::map <std::string, MeshResource> meshes;
-
-	void add(const std::string &name, const Mesh &mesh, Mode mode) {
-		MeshResource res;
-
-		Mesh local = mesh;
-		recompute_normals(local);
-
-		// Interleave the vertex data
-		std::vector <glm::vec3> vertices;
-		for (size_t i = 0; i < local.vertices.size(); i++) {
-			vertices.push_back(local.vertices[i]);
-			vertices.push_back(local.normals[i]);
-		}
-
-		res.vertex_buffer = littlevk::buffer(device,
-			vertices,
-			vk::BufferUsageFlagBits::eVertexBuffer,
-			mem_props
-		).unwrap(dal);
-
-		res.index_buffer = littlevk::buffer(device,
-			mesh.triangles,
-			vk::BufferUsageFlagBits::eIndexBuffer,
-			mem_props
-		).unwrap(dal);
-
-		res.index_count = mesh.triangles.size() * 3;
-		res.mode = mode;
-
-		meshes[name] = res;
-	}
-
-	void refresh(const std::string &name, const Mesh &mesh) const {
-		auto it = meshes.find(name);
-		if (it == meshes.end())
-			return;
-
-		Mesh local = mesh;
-		recompute_normals(local);
-
-		// Interleave the vertex data
-		std::vector <glm::vec3> vertices;
-		for (size_t i = 0; i < local.vertices.size(); i++) {
-			vertices.push_back(local.vertices[i]);
-			vertices.push_back(local.normals[i]);
-		}
-
-		littlevk::upload(device, it->second.vertex_buffer, vertices);
-	}
-
-	MeshResource *ref(const std::string &name) const {
-		auto it = meshes.find(name);
-		if (it == meshes.end())
-			return nullptr;
-
-		return (MeshResource *) &it->second;
-	}
-
-	// Camera state
-	struct {
-		float radius = 10.0f;
-		float theta = 0.0f;
-		float phi = 0.0f;
-		float fov = 45.0f;
-
-		glm::mat4 proj(const vk::Extent2D &ext) const {
-			return glm::perspective(
-				glm::radians(fov),
-				(float) ext.width / (float) ext.height,
-				0.1f, 1e5f
-			);
-		}
-
-		glm::mat4 view() const {
-			glm::vec3 eye = {
-				radius * std::sin(theta),
-				radius * std::sin(phi),
-				radius * std::cos(theta)
-			};
-
-			return glm::lookAt(eye, { 0, 0, 0 }, { 0, 1, 0 });
-		}
-	} camera;
-
-	// Rendering a frame
-	size_t frame = 0;
-
-	void render() {
-		littlevk::SurfaceOperation op;
-                op = littlevk::acquire_image(device, swapchain.swapchain, sync, frame);
-
-		// Start empty render pass
-		std::array <vk::ClearValue, 2> clear_values {
-			vk::ClearColorValue { std::array <float, 4> { 0.0f, 0.0f, 0.0f, 1.0f } },
-			vk::ClearDepthStencilValue { 1.0f, 0 }
-		};
-
-		vk::RenderPassBeginInfo render_pass_info {
-			render_pass, framebuffers[op.index],
-			vk::Rect2D { {}, window->extent },
-			clear_values
-		};
-
-		// Record command buffer
-		vk::CommandBuffer &cmd = command_buffers[frame];
-
-		cmd.begin(vk::CommandBufferBeginInfo {});
-		cmd.beginRenderPass(render_pass_info, vk::SubpassContents::eInline);
-
-		// Configure the push constants
-		push_constants constants;
-
-		constants.proj = camera.proj(window->extent);
-		constants.view = camera.view();
-		constants.model = glm::mat4(1.0f);
-
-		// Draw main interface
-		for (const auto &[name, res] : meshes) {
-			if (!res.enabled)
-				continue;
-
-			uint32_t mode = (uint32_t) res.mode;
-			if (res.mode == Mode::Wireframe) {
-				wireframe_push_constants wf_constants;
-				wf_constants.proj = constants.proj;
-				wf_constants.view = constants.view;
-				wf_constants.model = constants.model;
-				wf_constants.color = res.color;
-
-				cmd.pushConstants(
-					pipelines[mode].first,
-					vk::ShaderStageFlagBits::eVertex,
-					0, 3 * sizeof(glm::mat4), &wf_constants);
-				
-				cmd.pushConstants(
-					pipelines[mode].first,
-					vk::ShaderStageFlagBits::eFragment,
-					offsetof(wireframe_push_constants, color), sizeof(glm::vec3), &wf_constants.color);
-			} else {
-				cmd.pushConstants <push_constants> (
-					pipelines[mode].first,
-					vk::ShaderStageFlagBits::eVertex,
-					0, constants);
-			}
-
-			cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines[mode].second);
-			cmd.bindVertexBuffers(0, *res.vertex_buffer, { 0 });
-			cmd.bindIndexBuffer(*res.index_buffer, 0, vk::IndexType::eUint32);
-			cmd.drawIndexed(res.index_count, 1, 0, 0, 0);
-		}
-
-		// Draw ImGui
-		ImGui_ImplVulkan_NewFrame();
-		ImGui_ImplGlfw_NewFrame();
-		ImGui::NewFrame();
-
-		static constexpr const char *mode_names[] = {
-			// TODO: triangles with false positive coloring
-			"Shaded", "Transparent", "Wireframe",
-		};
-
-		ImGui::Begin("Meshes");
-		for (auto &[name, res] : meshes) {
-			ImGui::Checkbox(name.c_str(), &res.enabled);
-
-			// Select mode button for now
-			for (size_t i = 0; i < 3; i++) {
-				ImGui::SameLine();
-
-				std::string bstr = mode_names[i] + ("##" + name);
-				if (ImGui::Button(bstr.c_str()))
-					res.mode = (Mode) i;
-			}
-		}
-
-		ImGui::End();
-
-		ImGui::Render();
-		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
-
-		cmd.endRenderPass();
-		cmd.end();
-
-		// Submit command buffer while signaling the semaphore
-		vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-
-		vk::SubmitInfo submit_info {
-			1, &sync.image_available[frame],
-			&wait_stage,
-			1, &cmd,
-			1, &sync.render_finished[frame]
-		};
-
-		graphics_queue.submit(submit_info, sync.in_flight[frame]);
-
-                op = littlevk::present_image(present_queue, swapchain.swapchain, sync, op.index);
-		frame = 1 - frame;
-	}
-
-	bool destroy() override {
-		device.waitIdle();
-
-		ImGui_ImplVulkan_Shutdown();
-		ImGui_ImplGlfw_Shutdown();
-		ImGui::DestroyContext();
-
-		delete dal;
-		return littlevk::Skeleton::destroy();
-	}
-};
-
-// Mouse callback
-Viewer *viewer_ptr = nullptr;
-bool mouse_pressed = false;
-
-void mouse_button_callback(GLFWwindow *win, int button, int action, int mods)
-{
-	if (button == GLFW_MOUSE_BUTTON_LEFT) {
-		if (action == GLFW_RELEASE)
-			mouse_pressed = false;
-		else if (action == GLFW_PRESS)
-			mouse_pressed = true;
-
-		// glfwSetInputMode(win, GLFW_CURSOR,
-		// 	mouse_pressed ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
-	}
-}
-
-void cursor_position_callback(GLFWwindow *win, double x, double y)
-{
-	static double last_x;
-	static double last_y;
-	static bool first = true;
-
-	if (viewer_ptr && mouse_pressed) {
-		if (first) {
-			last_x = x;
-			last_y = y;
-			first = false;
-		}
-
-		double delta_x = x - last_x;
-		double delta_y = y - last_y;
-
-		constexpr float sensitivity = 0.0001f;
-		// viewer_ptr->camera.rot.x += delta_y * sensitivity;
-		// viewer_ptr->camera.rot.y += delta_x * sensitivity;
-		//
-		// if (viewer_ptr->camera.rot.x < -M_PI / 2.0f)
-		// 	viewer_ptr->camera.rot.x = -M_PI / 2.0f;
-		// if (viewer_ptr->camera.rot.x > M_PI / 2.0f)
-		// 	viewer_ptr->camera.rot.x = M_PI / 2.0f;
-	}
-
-	last_x = x;
-	last_y = y;
-}
-
-// Bounding box of mesh
-std::pair <glm::vec3, glm::vec3> bound(const Mesh &mesh)
-{
-	glm::vec3 max = mesh.vertices[0];
-	glm::vec3 min = mesh.vertices[0];
-	for (const glm::vec3 &v : mesh.vertices) {
-		max = glm::max(max, v);
-		min = glm::min(min, v);
-	}
-
-	return { max, min };
-}
-
-// Closest point on triangle
-__forceinline__ __host__ __device__
-glm::vec3 triangle_closest_point(const glm::vec3 v0, const glm::vec3 &v1, const glm::vec3 &v2, const glm::vec3 &p)
-{
-	glm::vec3 B = v0;
-	glm::vec3 E1 = v1 - v0;
-	glm::vec3 E2 = v2 - v0;
-	glm::vec3 D = B - p;
-
-	float a = glm::dot(E1, E1);
-	float b = glm::dot(E1, E2);
-	float c = glm::dot(E2, E2);
-	float d = glm::dot(E1, D);
-	float e = glm::dot(E2, D);
-	float f = glm::dot(D, D);
-
-	float det = a * c - b * b;
-	float s = b * e - c * d;
-	float t = b * d - a * e;
-
-	if (s + t <= det) {
-		if (s < 0.0f) {
-			if (t < 0.0f) {
-				if (d < 0.0f) {
-					s = glm::clamp(-d / a, 0.0f, 1.0f);
-					t = 0.0f;
-				} else {
-					s = 0.0f;
-					t = glm::clamp(-e / c, 0.0f, 1.0f);
-				}
-			} else {
-				s = 0.0f;
-				t = glm::clamp(-e / c, 0.0f, 1.0f);
-			}
-		} else if (t < 0.0f) {
-			s = glm::clamp(-d / a, 0.0f, 1.0f);
-			t = 0.0f;
-		} else {
-			float invDet = 1.0f / det;
-			s *= invDet;
-			t *= invDet;
-		}
-	} else {
-		if (s < 0.0f) {
-			float tmp0 = b + d;
-			float tmp1 = c + e;
-			if (tmp1 > tmp0) {
-				float numer = tmp1 - tmp0;
-				float denom = a - 2 * b + c;
-				s = glm::clamp(numer / denom, 0.0f, 1.0f);
-				t = 1 - s;
-			} else {
-				t = glm::clamp(-e / c, 0.0f, 1.0f);
-				s = 0.0f;
-			}
-		} else if (t < 0.0f) {
-			if (a + d > b + e) {
-				float numer = c + e - b - d;
-				float denom = a - 2 * b + c;
-				s = glm::clamp(numer / denom, 0.0f, 1.0f);
-				t = 1 - s;
-			} else {
-				s = glm::clamp(-e / c, 0.0f, 1.0f);
-				t = 0.0f;
-			}
-		} else {
-			float numer = c + e - b - d;
-			float denom = a - 2 * b + c;
-			s = glm::clamp(numer / denom, 0.0f, 1.0f);
-			t = 1.0f - s;
-		}
-	}
-
-	return B + s * E1 + t * E2;
-}
-
-// Closest point caching acceleration structure
-struct dev_cas_grid {
-	glm::vec3 min;
-	glm::vec3 max;
-	glm::vec3 bin_size;
-
-	glm::vec3 *vertices;
-	glm::uvec3 *triangles;
-
-	uint32_t *query_triangles;
-	uint32_t *index0;
-	uint32_t *index1;
-
-	uint32_t vertex_count;
-	uint32_t triangle_count;
-	uint32_t resolution;
-};
-
-struct closest_point_kinfo {
-	glm::vec3 *points;
-	glm::vec3 *closest;
-
-	uint32_t point_count;
-};
-
-__global__
-void closest_point_kernel(dev_cas_grid cas, closest_point_kinfo kinfo)
-{
-	uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-	uint32_t stride = blockDim.x * gridDim.x;
-
-	for (uint32_t i = tid; i < kinfo.point_count; i += stride) {
-		glm::vec3 point = kinfo.points[i];
-		glm::vec3 closest;
-		
-		glm::vec3 bin_flt = glm::clamp((point - cas.min) / cas.bin_size,
-				glm::vec3(0), glm::vec3(cas.resolution - 1));
-
-		glm::ivec3 bin = glm::ivec3(bin_flt);
-		uint32_t bin_index = bin.x + bin.y * cas.resolution + bin.z * cas.resolution * cas.resolution;
-
-		uint32_t index0 = cas.index0[bin_index];
-		uint32_t index1 = cas.index1[bin_index];
-
-		float min_dist = FLT_MAX;
-		for (uint32_t j = index0; j < index1; j++) {
-			uint32_t triangle_index = cas.query_triangles[j];
-			glm::uvec3 triangle = cas.triangles[triangle_index];
-
-			glm::vec3 v0 = cas.vertices[triangle.x];
-			glm::vec3 v1 = cas.vertices[triangle.y];
-			glm::vec3 v2 = cas.vertices[triangle.z];
-
-			// TODO: prune triangles that are too far away (based on bbox)?
-			glm::vec3 candidate = triangle_closest_point(v0, v1, v2, point);
-			float dist = glm::distance(point, candidate);
-
-			if (dist < min_dist) {
-				min_dist = dist;
-				closest = candidate;
-			}
-		}
-
-		kinfo.closest[i] = closest;
-	}
-}
-
-struct cas_grid {
-	Mesh ref;
-
-	glm::vec3 min;
-	glm::vec3 max;
-	
-	uint32_t resolution;
-	glm::vec3 bin_size;
-
-	using query_bin = std::vector <uint32_t>;
-	std::vector <query_bin> overlapping_triangles;
-	std::vector <query_bin> query_triangles;
-	
-	dev_cas_grid dev_cas;
-
-	// Construct from mesh
-	cas_grid(const Mesh &ref_, uint32_t resolution_)
-			: ref(ref_), resolution(resolution_) {
-		uint32_t size = resolution * resolution * resolution;
-		overlapping_triangles.resize(size);
-		query_triangles.resize(size);
-
-		// Put triangles into bins
-		std::tie(max, min) = bound(ref);
-		glm::vec3 extent = max - min;
-		bin_size = extent / (float) resolution;
-
-		for (size_t i = 0; i < ref.triangles.size(); i++) {
-			const Triangle &triangle = ref.triangles[i];
-
-			// Triangle belongs to all bins it intersects
-			glm::vec3 v0 = ref.vertices[triangle[0]];
-			glm::vec3 v1 = ref.vertices[triangle[1]];
-			glm::vec3 v2 = ref.vertices[triangle[2]];
-
-			glm::vec3 tri_min = glm::min(glm::min(v0, v1), v2);
-			glm::vec3 tri_max = glm::max(glm::max(v0, v1), v2);
-
-			glm::vec3 min_bin = glm::clamp((tri_min - min) / bin_size, glm::vec3(0), glm::vec3(resolution - 1));
-			glm::vec3 max_bin = glm::clamp((tri_max - min) / bin_size, glm::vec3(0), glm::vec3(resolution - 1));
-
-			for (int x = min_bin.x; x <= max_bin.x; x++) {
-				for (int y = min_bin.y; y <= max_bin.y; y++) {
-					for (int z = min_bin.z; z <= max_bin.z; z++) {
-						int index = x + y * resolution + z * resolution * resolution;
-						overlapping_triangles[index].push_back(i);
-					}
-				}
-			}
-		}
-
-		dev_cas.vertices = 0;
-		dev_cas.triangles = 0;
-
-		dev_cas.query_triangles = 0;
-		dev_cas.index0 = 0;
-		dev_cas.index1 = 0;
-	}
-
-	uint32_t to_index(const glm::ivec3 &bin) const {
-		return bin.x + bin.y * resolution + bin.z * resolution * resolution;
-	}
-
-	uint32_t to_index(const glm::vec3 &p) const {
-		glm::vec3 bin_flt = glm::clamp((p - min) / bin_size, glm::vec3(0), glm::vec3(resolution - 1));
-		glm::ivec3 bin = glm::ivec3(bin_flt);
-		return to_index(bin);
-	}
-
-	// Find the complete set of query triangles for a point
-	std::unordered_set <uint32_t> closest_triangles(const glm::vec3 &p) const {
-		// Get the current bin
-		glm::vec3 bin_flt = glm::clamp((p - min) / bin_size, glm::vec3(0), glm::vec3(resolution - 1));
-		glm::ivec3 bin = glm::ivec3(bin_flt);
-		uint32_t bin_index = to_index(p);
-
-		// Find the closest non-empty bins
-		std::vector <glm::ivec3> closest_bins;
-
-		if (!overlapping_triangles[bin_index].empty()) {
-			closest_bins.push_back(bin);
-		} else {
-			std::vector <glm::ivec3> plausible_bins;
-			std::queue <glm::ivec3> queue;
-
-			std::unordered_set <glm::ivec3> visited;
-			bool stop = false;
-
-			queue.push(bin);
-			while (!queue.empty()) {
-				glm::ivec3 current = queue.front();
-				queue.pop();
-
-				// If visited, continue
-				if (visited.find(current) != visited.end())
-					continue;
-
-				visited.insert(current);
-
-				// If non-empty, add to plausible bins and continue
-				uint32_t current_index = current.x + current.y * resolution + current.z * resolution * resolution;
-				if (!overlapping_triangles[current_index].empty()) {
-					plausible_bins.push_back(current);
-
-					// Also set the stop flag to stop adding neighbors
-					stop = true;
-					continue;
-				}
-
-				if (stop)
-					continue;
-
-				int dx[] = { -1, 0, 0, 1, 0, 0 };
-				int dy[] = { 0, -1, 0, 0, 1, 0 };
-				int dz[] = { 0, 0, -1, 0, 0, 1 };
-
-				// Add all neighbors to queue...
-				for (int i = 0; i < 6; i++) {
-					glm::ivec3 next = current + glm::ivec3(dx[i], dy[i], dz[i]);
-					if (next.x < 0 || next.x >= resolution ||
-						next.y < 0 || next.y >= resolution ||
-						next.z < 0 || next.z >= resolution)
-						continue;
-
-					// ...if not visited
-					if (visited.find(next) == visited.end())
-						queue.push(next);
-				}
-			}
-
-			// Sort plausible bins by distance
-			std::sort(plausible_bins.begin(), plausible_bins.end(),
-				[&](const glm::ivec3 &a, const glm::ivec3 &b) {
-					return glm::distance(bin_flt, glm::vec3(a)) < glm::distance(bin_flt, glm::vec3(b));
-				}
-			);
-
-			assert(!plausible_bins.empty());
-
-			// Add first one always; stop adding when difference is larger than voxel size
-			closest_bins.push_back(plausible_bins[0]);
-			for (uint32_t i = 1; i < plausible_bins.size(); i++) {
-				glm::vec3 a = glm::vec3(plausible_bins[i - 1]);
-				glm::vec3 b = glm::vec3(plausible_bins[i]);
-
-				if (glm::distance(a, b) > 1.1f)
-					break;
-
-				closest_bins.push_back(plausible_bins[i]);
-			}
-		}
-
-		assert(!closest_bins.empty());
-
-		// Within the final collection, make sure to search immediate neighbors
-		std::unordered_set <uint32_t> final_bins;
-
-		for (const glm::ivec3 &bin : closest_bins) {
-			int dx[] = { 0, -1, 0, 0, 1, 0, 0 };
-			int dy[] = { 0, 0, -1, 0, 0, 1, 0 };
-			int dz[] = { 0, 0, 0, -1, 0, 0, 1 };
-
-			for (int i = 0; i < 7; i++) {
-				glm::ivec3 next = bin + glm::ivec3(dx[i], dy[i], dz[i]);
-				if (next.x < 0 || next.x >= resolution ||
-					next.y < 0 || next.y >= resolution ||
-					next.z < 0 || next.z >= resolution)
-					continue;
-
-				uint32_t next_index = to_index(next);
-				if (!overlapping_triangles[next_index].empty())
-					final_bins.insert(next_index);
-			}
-		}
-
-		std::unordered_set <uint32_t> final_triangles;
-		for (uint32_t bin_index : final_bins) {
-			for (uint32_t index : overlapping_triangles[bin_index])
-				final_triangles.insert(index);
-		}
-
-		return final_triangles;
-	}
-
-	// Load the cached query triangles if not already loaded
-	bool precache_query(const glm::vec3 &p) {
-		// Check if the bin is already cached
-		uint32_t bin_index = to_index(p);
-		// printf("  Precaching bin %d\n", bin_index);
-		// printf("  p = (%f, %f, %f)\n", p.x, p.y, p.z);
-		// printf("  max = (%f, %f, %f)\n", max.x, max.y, max.z);
-		// printf("  min = (%f, %f, %f)\n", min.x, min.y, min.z);
-		assert(bin_index < query_triangles.size());
-
-		if (!query_triangles[bin_index].empty())
-			return false;
-
-		// Otherwise, load the bin
-		auto set = closest_triangles(p);
-		query_triangles[bin_index] = query_bin(set.begin(), set.end());
-		return true;
-	}
-
-	// Precache a collection of query points
-	bool precache_query(const std::vector <glm::vec3> &points) {
-		uint32_t any_count = 0;
-		for (const glm::vec3 &p : points)
-			any_count += precache_query(p);
-
-		printf("Cache hit rate: %f\n", 1 - (float) any_count / points.size());
-		return any_count > 0;
-	}
-
-	// Single point query
-	glm::vec3 query(const glm::vec3 &p) const {
-		// Assuming the point is precached already
-		uint32_t bin_index = to_index(p);
-		assert(bin_index < overlapping_triangles.size());
-
-		const std::vector <uint32_t> &bin = query_triangles[bin_index];
-		assert(bin.size() > 0);
-
-		float min_dist = FLT_MAX;
-		
-		glm::vec3 closest = p;
-		for (uint32_t index : bin) {
-			const Triangle &tri = ref.triangles[index];
-			glm::vec3 a = ref.vertices[tri[0]];
-			glm::vec3 b = ref.vertices[tri[1]];
-			glm::vec3 c = ref.vertices[tri[2]];
-
-			glm::vec3 point = triangle_closest_point(a, b, c, p);
-
-			float dist = glm::distance(p, point);
-			if (dist < min_dist) {
-				min_dist = dist;
-				closest = point;
-			}
-		}
-
-		return closest;
-	}
-
-	// Host-side query
-	void query(const std::vector <glm::vec3> &sources, std::vector <glm::vec3> &dst) const {
-		// Assuming all elements are precached already
-		// and that the dst vector is already allocated
-		assert(sources.size() == dst.size());
-
-		#pragma omp parallel for
-		for (uint32_t i = 0; i < sources.size(); i++) {
-			uint32_t bin_index = to_index(sources[i]);
-			dst[i] = query(sources[i]);
-		}
-	}
-
-	void precache_device() {
-		dev_cas.min = min;
-		dev_cas.max = max;
-		dev_cas.bin_size = bin_size;
-
-		dev_cas.resolution = resolution;
-		dev_cas.vertex_count = ref.vertices.size();
-		dev_cas.triangle_count = ref.triangles.size();
-
-		std::vector <uint32_t> linear_query_triangles;
-		std::vector <uint32_t> index0;
-		std::vector <uint32_t> index1;
-
-		uint32_t size = resolution * resolution * resolution;
-		uint32_t offset = 0;
-
-		for (uint32_t i = 0; i < size; i++) {
-			uint32_t query_size = query_triangles[i].size();
-			linear_query_triangles.insert(linear_query_triangles.end(),
-					query_triangles[i].begin(),
-					query_triangles[i].end());
-
-			index0.push_back(offset);
-			index1.push_back(offset + query_size);
-			offset += query_size;
-		}
-
-		// Free old memory
-		if (dev_cas.vertices != nullptr)
-			cudaFree(dev_cas.vertices);
-
-		if (dev_cas.triangles != nullptr)
-			cudaFree(dev_cas.triangles);
-
-		if (dev_cas.query_triangles != nullptr)
-			cudaFree(dev_cas.query_triangles);
-
-		if (dev_cas.index0 != nullptr)
-			cudaFree(dev_cas.index0);
-
-		if (dev_cas.index1 != nullptr)
-			cudaFree(dev_cas.index1);
-
-		// Allocate new memory
-		cudaMalloc(&dev_cas.vertices, sizeof(glm::vec3) * ref.vertices.size());
-		cudaMalloc(&dev_cas.triangles, sizeof(glm::uvec3) * ref.triangles.size());
-
-		cudaMalloc(&dev_cas.query_triangles, sizeof(uint32_t) * linear_query_triangles.size());
-		cudaMalloc(&dev_cas.index0, sizeof(uint32_t) * index0.size());
-		cudaMalloc(&dev_cas.index1, sizeof(uint32_t) * index1.size());
-
-		cudaMemcpy(dev_cas.vertices, ref.vertices.data(), sizeof(glm::vec3) * ref.vertices.size(), cudaMemcpyHostToDevice);
-		cudaMemcpy(dev_cas.triangles, ref.triangles.data(), sizeof(glm::uvec3) * ref.triangles.size(), cudaMemcpyHostToDevice);
-
-		cudaMemcpy(dev_cas.query_triangles, linear_query_triangles.data(), sizeof(uint32_t) * linear_query_triangles.size(), cudaMemcpyHostToDevice);
-		cudaMemcpy(dev_cas.index0, index0.data(), sizeof(uint32_t) * index0.size(), cudaMemcpyHostToDevice);
-		cudaMemcpy(dev_cas.index1, index1.data(), sizeof(uint32_t) * index1.size(), cudaMemcpyHostToDevice);
-	}
-
-	void query_device(closest_point_kinfo kinfo) {
-		dim3 block(256);
-		dim3 grid((kinfo.point_count + block.x - 1) / block.x);
-
-		closest_point_kernel <<< grid, block >>> (dev_cas, kinfo);
-	}
-};
-
-// Closest point queries
-// struct closest_points_kinfo {
-// 	glm::vec3 *points;
-// 	glm::vec3 *closest;
-// 	
-// 	glm::vec3 *targets;
-// 	glm::uvec3 *triangles;
-//
-// 	uint32_t point_count;
-// 	uint32_t target_count;
-// 	uint32_t triangle_count;
+#include "viewer.hpp"
+
+// struct push_constants {
+// 	glm::mat4 model;
+// 	glm::mat4 view;
+// 	glm::mat4 proj;
 // };
 //
-// __global__
-// void closest_points(closest_points_kinfo kinfo)
+// const char *vertex_shader = R"(
+// #version 450
+//
+// layout (location = 0) in vec3 position;
+// layout (location = 1) in vec3 normal;
+//
+// layout (push_constant) uniform VertexPushConstants {
+// 	mat4 model;
+// 	mat4 view;
+// 	mat4 proj;
+// };
+//
+// layout (location = 0) out vec3 out_normal;
+//
+// void main()
 // {
-// 	uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-// 	uint32_t stride = blockDim.x * gridDim.x;
+// 	gl_Position = proj * view * model * vec4(position, 1.0);
+// 	gl_Position.y = -gl_Position.y;
+// 	gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
+// 	out_normal = mat3(transpose(inverse(model))) * normal;
+// }
+// )";
 //
-// 	for (uint32_t i = tid; i < kinfo.point_count; i += stride) {
-// 		glm::vec3 point = kinfo.points[i];
-// 		glm::vec3 closest;
+// const char *shaded_fragment_shader = R"(
+// #version 450
 //
-// 		float min_dist = FLT_MAX;
-// 		for (uint32_t j = 0; j < kinfo.triangle_count; j++) {
-// 			glm::uvec3 triangle = kinfo.triangles[j];
-// 			glm::vec3 v0 = kinfo.targets[triangle.x];
-// 			glm::vec3 v1 = kinfo.targets[triangle.y];
-// 			glm::vec3 v2 = kinfo.targets[triangle.z];
+// layout (location = 0) in vec3 in_normal;
 //
-// 			glm::vec3 p = triangle_closest_point(v0, v1, v2, point);
+// layout (location = 0) out vec4 fragment;
 //
-// 			float dist = glm::distance(point, p);
-// 			if (dist < min_dist) {
-// 				min_dist = dist;
-// 				closest = p;
+// void main()
+// {
+// 	vec3 light_direction = normalize(vec3(1.0, 1.0, 1.0));
+// 	float light_intensity = max(0.0, dot(in_normal, light_direction));
+// 	vec3 color = vec3(light_intensity + 0.1);
+// 	fragment = vec4(color, 1.0);
+// }
+// )";
+//
+// const char *transparent_fragment_shader = R"(
+// #version 450
+//
+// layout (location = 0) out vec4 fragment;
+//
+// void main()
+// {
+// 	fragment = vec4(1.0, 0.5, 0.5, 0.5);
+// }
+// )";
+//
+// struct wireframe_push_constants {
+// 	glm::mat4 model;
+// 	glm::mat4 view;
+// 	glm::mat4 proj;
+// 	glm::vec3 color;
+// };
+//
+// const char *wireframe_fragment_shader = R"(
+// #version 450
+//
+// layout (push_constant) uniform FragmentPushConstants {
+// 	layout (offset = 192) vec3 color;
+// };
+//
+// layout (location = 0) out vec4 fragment;
+//
+// void main()
+// {
+// 	fragment = vec4(color, 1.0);
+// }
+// )";
+//
+// struct Viewer : littlevk::Skeleton {
+// 	// Different viewing modes
+// 	enum class Mode : uint32_t {
+// 		Shaded,
+// 		Transparent,
+// 		Wireframe,
+// 		Count
+// 	};
+//
+// 	// General Vulkan resources
+// 	vk::PhysicalDevice phdev;
+// 	vk::PhysicalDeviceMemoryProperties mem_props;
+//
+// 	littlevk::Deallocator *dal = nullptr;
+//
+// 	vk::RenderPass render_pass;
+//
+// 	using Pipeline = std::pair <vk::PipelineLayout, vk::Pipeline>;
+// 	std::array <Pipeline, (uint32_t) Mode::Count> pipelines;
+//
+// 	std::vector <vk::Framebuffer> framebuffers;
+//
+// 	vk::CommandPool command_pool;
+// 	std::vector <vk::CommandBuffer> command_buffers;
+//
+// 	vk::DescriptorPool imgui_pool;
+//
+// 	littlevk::PresentSyncronization sync;
+//
+// 	// Constructor loads a device and starts the initialization process
+// 	Viewer() {
+// 		// Load Vulkan physical device
+// 		auto predicate = [](const vk::PhysicalDevice &dev) {
+// 			return littlevk::physical_device_able(dev, {
+// 				VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+// 			});
+// 		};
+//
+// 		vk::PhysicalDevice dev = littlevk::pick_physical_device(predicate);
+// 		skeletonize(dev, { 2560, 1440 }, "Viewer");
+// 		from(dev);
+// 	}
+//
+// 	// Vertex properties
+// 	static constexpr vk::VertexInputBindingDescription vertex_binding {
+// 		0, 2 * sizeof(glm::vec3), vk::VertexInputRate::eVertex
+// 	};
+//
+// 	static constexpr std::array <vk::VertexInputAttributeDescription, 2> vertex_attributes {
+// 		vk::VertexInputAttributeDescription {
+// 			0, 0, vk::Format::eR32G32B32Sfloat, 0
+// 		},
+// 		vk::VertexInputAttributeDescription {
+// 			1, 0, vk::Format::eR32G32B32Sfloat, sizeof(glm::vec3)
+// 		},
+// 	};
+//
+// 	// Initialize the viewer
+// 	void from(const vk::PhysicalDevice &phdev_) {
+// 		// Copy the physical device and properties
+// 		phdev = phdev_;
+// 		mem_props = phdev.getMemoryProperties();
+//
+// 		// Configure basic resources
+// 		dal = new littlevk::Deallocator(device);
+//
+// 		// Create the render pass
+// 		std::array <vk::AttachmentDescription, 2> attachments {
+// 			littlevk::default_color_attachment(swapchain.format),
+// 			littlevk::default_depth_attachment(),
+// 		};
+//
+// 		std::array <vk::AttachmentReference, 1> color_attachments {
+// 			vk::AttachmentReference {
+// 				0, vk::ImageLayout::eColorAttachmentOptimal,
+// 			}
+// 		};
+//
+// 		vk::AttachmentReference depth_attachment {
+// 			1, vk::ImageLayout::eDepthStencilAttachmentOptimal,
+// 		};
+//
+// 		vk::SubpassDescription subpass {
+// 			{}, vk::PipelineBindPoint::eGraphics,
+// 			{}, color_attachments,
+// 			{}, &depth_attachment,
+// 		};
+//
+// 		render_pass = littlevk::render_pass(
+// 			device,
+// 			vk::RenderPassCreateInfo {
+// 				{}, attachments, subpass
+// 			}
+// 		).unwrap(dal);
+//
+// 		// Create a depth buffer
+// 		littlevk::ImageCreateInfo depth_info {
+// 			window->extent.width,
+// 			window->extent.height,
+// 			vk::Format::eD32Sfloat,
+// 			vk::ImageUsageFlagBits::eDepthStencilAttachment,
+// 			vk::ImageAspectFlagBits::eDepth,
+// 		};
+//
+// 		littlevk::Image depth_buffer = littlevk::image(
+// 			device,
+// 			depth_info,
+// 			mem_props
+// 		).unwrap(dal);
+//
+// 		// Create framebuffers from the swapchain
+// 		littlevk::FramebufferSetInfo fb_info;
+// 		fb_info.swapchain = &swapchain;
+// 		fb_info.render_pass = render_pass;
+// 		fb_info.extent = window->extent;
+// 		fb_info.depth_buffer = &depth_buffer.view;
+//
+// 		framebuffers = littlevk::framebuffers(device, fb_info).unwrap(dal);
+//
+// 		// Allocate command buffers
+// 		command_pool = littlevk::command_pool(device,
+// 			vk::CommandPoolCreateInfo {
+// 				vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+// 				littlevk::find_graphics_queue_family(phdev)
+// 			}
+// 		).unwrap(dal);
+//
+// 		command_buffers = device.allocateCommandBuffers({
+// 			command_pool, vk::CommandBufferLevel::ePrimary, 2
+// 		});
+//
+// 		// Compile shader modules
+// 		vk::ShaderModule vertex_module = littlevk::shader::compile(
+// 			device, std::string(vertex_shader),
+// 			vk::ShaderStageFlagBits::eVertex
+// 		).unwrap(dal);
+//
+// 		vk::ShaderModule shaded_fragment_module = littlevk::shader::compile(
+// 			device, std::string(shaded_fragment_shader),
+// 			vk::ShaderStageFlagBits::eFragment
+// 		).unwrap(dal);
+//
+// 		vk::ShaderModule transparent_fragment_module = littlevk::shader::compile(
+// 			device, std::string(transparent_fragment_shader),
+// 			vk::ShaderStageFlagBits::eFragment
+// 		).unwrap(dal);
+//
+// 		vk::ShaderModule wireframe_fragment_module = littlevk::shader::compile(
+// 			device, std::string(wireframe_fragment_shader),
+// 			vk::ShaderStageFlagBits::eFragment
+// 		).unwrap(dal);
+//
+// 		// Create the pipeline
+// 		vk::PushConstantRange push_constant_range {
+// 			vk::ShaderStageFlagBits::eVertex,
+// 			0, sizeof(push_constants)
+// 		};
+//
+// 		littlevk::pipeline::GraphicsCreateInfo pipeline_info;
+// 		pipeline_info.vertex_binding = vertex_binding;
+// 		pipeline_info.vertex_attributes = vertex_attributes;
+// 		pipeline_info.vertex_shader = vertex_module;
+// 		pipeline_info.extent = window->extent;
+// 		pipeline_info.render_pass = render_pass;
+// 		pipeline_info.cull_mode = vk::CullModeFlagBits::eNone;
+//
+//
+// 		{
+// 			vk::PipelineLayout pipeline_layout = littlevk::pipeline_layout(
+// 				device,
+// 				vk::PipelineLayoutCreateInfo {
+// 					{}, nullptr, push_constant_range
+// 				}
+// 			).unwrap(dal);
+//
+// 			pipeline_info.fragment_shader = shaded_fragment_module;
+// 			pipeline_info.pipeline_layout = pipeline_layout;
+//
+// 			pipelines[0].first = pipeline_layout;
+// 			pipelines[0].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
+// 		}
+//
+// 		{
+// 			vk::PipelineLayout pipeline_layout = littlevk::pipeline_layout(
+// 				device,
+// 				vk::PipelineLayoutCreateInfo {
+// 					{}, nullptr, push_constant_range
+// 				}
+// 			).unwrap(dal);
+//
+// 			pipeline_info.fragment_shader = transparent_fragment_module;
+// 			pipeline_info.pipeline_layout = pipeline_layout;
+//
+// 			pipelines[1].first = pipeline_layout;
+// 			pipelines[1].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
+// 		}
+//
+// 		{
+// 			std::array <vk::PushConstantRange, 2> push_constant_ranges {
+// 				vk::PushConstantRange {
+// 					vk::ShaderStageFlagBits::eVertex,
+// 					0, 3 * sizeof(glm::mat4)
+// 				},
+// 				vk::PushConstantRange {
+// 					vk::ShaderStageFlagBits::eFragment,
+// 					offsetof(wireframe_push_constants, color), sizeof(glm::vec3)
+// 				},
+// 			};
+//
+// 			vk::PipelineLayout pipeline_layout = littlevk::pipeline_layout(
+// 				device,
+// 				vk::PipelineLayoutCreateInfo {
+// 					{}, nullptr, push_constant_ranges
+// 				}
+// 			).unwrap(dal);
+//
+// 			pipeline_info.fragment_shader = wireframe_fragment_module;
+// 			pipeline_info.pipeline_layout = pipeline_layout;
+// 			pipeline_info.fill_mode = vk::PolygonMode::eLine;
+//
+// 			pipelines[2].first = pipeline_layout;
+// 			pipelines[2].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
+// 		}
+//
+// 		// Create the syncronization objects
+// 		sync = littlevk::present_syncronization(device, 2).unwrap(dal);
+//
+// 		// Configure ImGui
+// 		ImGui::CreateContext();
+// 		ImGui_ImplGlfw_InitForVulkan(window->handle, true);
+//
+// 		// Allow popups
+// 		ImGui::GetIO().ConfigFlags |= ImGuiWindowFlags_Popup;
+//
+// 		std::array <vk::DescriptorPoolSize, 4> imgui_pool_sizes {
+// 			vk::DescriptorPoolSize {
+// 				vk::DescriptorType::eSampler,
+// 				1000
+// 			},
+// 			vk::DescriptorPoolSize {
+// 				vk::DescriptorType::eCombinedImageSampler,
+// 				1000
+// 			},
+// 			vk::DescriptorPoolSize {
+// 				vk::DescriptorType::eSampledImage,
+// 				1000
+// 			},
+// 			vk::DescriptorPoolSize {
+// 				vk::DescriptorType::eUniformBuffer,
+// 				1000
+// 			},
+// 		};
+//
+// 		imgui_pool = littlevk::descriptor_pool(
+// 			device,
+// 			vk::DescriptorPoolCreateInfo {
+// 				{
+// 					vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+// 				},
+// 				1000, imgui_pool_sizes
+// 			}
+// 		).unwrap(dal);
+//
+// 		ImGui_ImplVulkan_InitInfo init_info {};
+// 		init_info.Instance = littlevk::detail::get_vulkan_instance();
+// 		init_info.PhysicalDevice = phdev;
+// 		init_info.Device = device;
+// 		init_info.QueueFamily = littlevk::find_graphics_queue_family(phdev);
+// 		init_info.Queue = graphics_queue;
+// 		init_info.DescriptorPool = imgui_pool;
+// 		init_info.MinImageCount = 2;
+// 		init_info.ImageCount = 2;
+//
+// 		ImGui_ImplVulkan_Init(&init_info, render_pass);
+//
+// 		// Create font atlas
+// 		littlevk::submit_now(device, command_pool, graphics_queue,
+// 			[&](const vk::CommandBuffer &cmd) {
+// 				ImGui_ImplVulkan_CreateFontsTexture(cmd);
+// 			}
+// 		);
+//
+// 		ImGui_ImplVulkan_DestroyFontUploadObjects();
+// 	}
+//
+// 	// Local resources
+// 	struct MeshResource {
+// 		littlevk::Buffer vertex_buffer;
+// 		littlevk::Buffer index_buffer;
+// 		size_t index_count;
+// 		Mode mode;
+// 		bool enabled = true;
+// 		glm::vec3 color = { 0.3, 0.7, 0.3 };
+// 	};
+//
+// 	std::map <std::string, MeshResource> meshes;
+//
+// 	void add(const std::string &name, const Mesh &mesh, Mode mode) {
+// 		MeshResource res;
+//
+// 		Mesh local = mesh;
+// 		recompute_normals(local);
+//
+// 		// Interleave the vertex data
+// 		assert(local.vertices.size() == local.normals.size());
+//
+// 		std::vector <glm::vec3> vertices;
+// 		vertices.reserve(2 * local.vertices.size());
+//
+// 		for (size_t i = 0; i < local.vertices.size(); i++) {
+// 			vertices.push_back(local.vertices[i]);
+// 			vertices.push_back(local.normals[i]);
+// 		}
+//
+// 		res.vertex_buffer = littlevk::buffer(device,
+// 			vertices,
+// 			vk::BufferUsageFlagBits::eVertexBuffer,
+// 			mem_props
+// 		).unwrap(dal);
+//
+// 		res.index_buffer = littlevk::buffer(device,
+// 			mesh.triangles,
+// 			vk::BufferUsageFlagBits::eIndexBuffer,
+// 			mem_props
+// 		).unwrap(dal);
+//
+// 		res.index_count = mesh.triangles.size() * 3;
+// 		res.mode = mode;
+//
+// 		meshes[name] = res;
+// 	}
+//
+// 	void refresh(const std::string &name, const Mesh &mesh) {
+// 		auto it = meshes.find(name);
+// 		if (it == meshes.end())
+// 			return;
+//
+// 		Mesh local = mesh;
+// 		recompute_normals(local);
+//
+// 		// Interleave the vertex data
+// 		std::vector <glm::vec3> vertices;
+// 		for (size_t i = 0; i < local.vertices.size(); i++) {
+// 			vertices.push_back(local.vertices[i]);
+// 			vertices.push_back(local.normals[i]);
+// 		}
+//
+// 		littlevk::upload(device, it->second.vertex_buffer, vertices);
+// 	}
+//
+// 	void replace(const std::string &name, const Mesh &mesh) {
+// 		auto it = meshes.find(name);
+// 		if (it == meshes.end())
+// 			return;
+//
+// 		Mesh local = mesh;
+// 		recompute_normals(local);
+//
+// 		// Interleave the vertex data
+// 		std::vector <glm::vec3> vertices;
+// 		for (size_t i = 0; i < local.vertices.size(); i++) {
+// 			vertices.push_back(local.vertices[i]);
+// 			vertices.push_back(local.normals[i]);
+// 		}
+//
+// 		it->second.vertex_buffer = littlevk::buffer(device,
+// 			vertices,
+// 			vk::BufferUsageFlagBits::eVertexBuffer,
+// 			mem_props
+// 		).unwrap(dal);
+//
+// 		it->second.index_buffer = littlevk::buffer(device,
+// 			mesh.triangles,
+// 			vk::BufferUsageFlagBits::eIndexBuffer,
+// 			mem_props
+// 		).unwrap(dal);
+//
+// 		it->second.index_count = mesh.triangles.size() * 3;
+// 	}
+//
+// 	MeshResource *ref(const std::string &name) const {
+// 		auto it = meshes.find(name);
+// 		if (it == meshes.end())
+// 			return nullptr;
+//
+// 		return (MeshResource *) &it->second;
+// 	}
+//
+// 	// Camera state
+// 	struct {
+// 		float radius = 10.0f;
+// 		float theta = 0.0f;
+// 		float phi = 0.0f;
+// 		float fov = 45.0f;
+//
+// 		glm::mat4 proj(const vk::Extent2D &ext) const {
+// 			return glm::perspective(
+// 				glm::radians(fov),
+// 				(float) ext.width / (float) ext.height,
+// 				0.1f, 1e5f
+// 			);
+// 		}
+//
+// 		glm::mat4 view() const {
+// 			glm::vec3 eye = {
+// 				radius * std::sin(theta),
+// 				radius * std::sin(phi),
+// 				radius * std::cos(theta)
+// 			};
+//
+// 			return glm::lookAt(eye, { 0, 0, 0 }, { 0, 1, 0 });
+// 		}
+// 	} camera;
+//
+// 	// Rendering a frame
+// 	size_t frame = 0;
+//
+// 	void render() {
+// 		littlevk::SurfaceOperation op;
+//                 op = littlevk::acquire_image(device, swapchain.swapchain, sync, frame);
+//
+// 		// Start empty render pass
+// 		std::array <vk::ClearValue, 2> clear_values {
+// 			vk::ClearColorValue { std::array <float, 4> { 0.0f, 0.0f, 0.0f, 1.0f } },
+// 			vk::ClearDepthStencilValue { 1.0f, 0 }
+// 		};
+//
+// 		vk::RenderPassBeginInfo render_pass_info {
+// 			render_pass, framebuffers[op.index],
+// 			vk::Rect2D { {}, window->extent },
+// 			clear_values
+// 		};
+//
+// 		// Record command buffer
+// 		vk::CommandBuffer &cmd = command_buffers[frame];
+//
+// 		cmd.begin(vk::CommandBufferBeginInfo {});
+// 		cmd.beginRenderPass(render_pass_info, vk::SubpassContents::eInline);
+//
+// 		// Configure the push constants
+// 		push_constants constants;
+//
+// 		constants.proj = camera.proj(window->extent);
+// 		constants.view = camera.view();
+// 		constants.model = glm::mat4(1.0f);
+//
+// 		// Draw main interface
+// 		for (const auto &[name, res] : meshes) {
+// 			if (!res.enabled)
+// 				continue;
+//
+// 			uint32_t mode = (uint32_t) res.mode;
+// 			if (res.mode == Mode::Wireframe) {
+// 				wireframe_push_constants wf_constants;
+// 				wf_constants.proj = constants.proj;
+// 				wf_constants.view = constants.view;
+// 				wf_constants.model = constants.model;
+// 				wf_constants.color = res.color;
+//
+// 				cmd.pushConstants(
+// 					pipelines[mode].first,
+// 					vk::ShaderStageFlagBits::eVertex,
+// 					0, 3 * sizeof(glm::mat4), &wf_constants);
+//
+// 				cmd.pushConstants(
+// 					pipelines[mode].first,
+// 					vk::ShaderStageFlagBits::eFragment,
+// 					offsetof(wireframe_push_constants, color), sizeof(glm::vec3), &wf_constants.color);
+// 			} else {
+// 				cmd.pushConstants <push_constants> (
+// 					pipelines[mode].first,
+// 					vk::ShaderStageFlagBits::eVertex,
+// 					0, constants);
+// 			}
+//
+// 			cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines[mode].second);
+// 			cmd.bindVertexBuffers(0, *res.vertex_buffer, { 0 });
+// 			cmd.bindIndexBuffer(*res.index_buffer, 0, vk::IndexType::eUint32);
+// 			cmd.drawIndexed(res.index_count, 1, 0, 0, 0);
+// 		}
+//
+// 		// Draw ImGui
+// 		ImGui_ImplVulkan_NewFrame();
+// 		ImGui_ImplGlfw_NewFrame();
+// 		ImGui::NewFrame();
+//
+// 		static constexpr const char *mode_names[] = {
+// 			// TODO: triangles with false positive coloring
+// 			"Shaded", "Transparent", "Wireframe",
+// 		};
+//
+// 		ImGui::Begin("Meshes");
+// 		for (auto &[name, res] : meshes) {
+// 			ImGui::Checkbox(name.c_str(), &res.enabled);
+//
+// 			// Select mode button for now
+// 			for (size_t i = 0; i < 3; i++) {
+// 				ImGui::SameLine();
+//
+// 				std::string bstr = mode_names[i] + ("##" + name);
+// 				if (ImGui::Button(bstr.c_str()))
+// 					res.mode = (Mode) i;
 // 			}
 // 		}
 //
-// 		kinfo.closest[i] = closest;
+// 		ImGui::End();
+//
+// 		ImGui::Render();
+// 		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+//
+// 		cmd.endRenderPass();
+// 		cmd.end();
+//
+// 		// Submit command buffer while signaling the semaphore
+// 		vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+//
+// 		vk::SubmitInfo submit_info {
+// 			1, &sync.image_available[frame],
+// 			&wait_stage,
+// 			1, &cmd,
+// 			1, &sync.render_finished[frame]
+// 		};
+//
+// 		graphics_queue.submit(submit_info, sync.in_flight[frame]);
+//
+//                 op = littlevk::present_image(present_queue, swapchain.swapchain, sync, op.index);
+// 		frame = 1 - frame;
 // 	}
-// }
+//
+// 	bool destroy() override {
+// 		device.waitIdle();
+//
+// 		ImGui_ImplVulkan_Shutdown();
+// 		ImGui_ImplGlfw_Shutdown();
+// 		ImGui::DestroyContext();
+//
+// 		delete dal;
+// 		return littlevk::Skeleton::destroy();
+// 	}
+// };
+
+inline bool ray_x_triangle(const Mesh &mesh, size_t tindex, const glm::vec3 &x, const glm::vec3 &d)
+{
+	const Triangle &tri = mesh.triangles[tindex];
+
+	glm::vec3 v0 = mesh.vertices[tri[0]];
+	glm::vec3 v1 = mesh.vertices[tri[1]];
+	glm::vec3 v2 = mesh.vertices[tri[2]];
+
+	glm::vec3 e1 = v1 - v0;
+	glm::vec3 e2 = v2 - v0;
+	glm::vec3 p = cross(d, e2);
+
+	float a = dot(e1, p);
+	if (std::abs(a) < 1e-6)
+		return false;
+
+	float f = 1.0 / a;
+	glm::vec3 s = x - v0;
+	float u = f * dot(s, p);
+
+	if (u < 0.0 || u > 1.0)
+		return false;
+
+	glm::vec3 q = cross(s, e1);
+	float v = f * dot(d, q);
+
+	if (v < 0.0 || u + v > 1.0)
+		return false;
+
+	float t = f * dot(e2, q);
+	return t > 1e-6;
+}
 
 int main(int argc, char *argv[])
 {
@@ -1253,38 +752,6 @@ int main(int argc, char *argv[])
 	// Find all voxels that are occupied in the dense grid using an interior check
 	std::vector <uint32_t> voxels(resolution * resolution * resolution, 0);
 
-	auto ray_x_triangle = [&](size_t tindex, const glm::vec3 &x, const glm::vec3 &d) -> bool {
-		const Triangle &tri = mesh.triangles[tindex];
-
-		glm::vec3 v0 = mesh.vertices[tri[0]];
-		glm::vec3 v1 = mesh.vertices[tri[1]];
-		glm::vec3 v2 = mesh.vertices[tri[2]];
-
-		glm::vec3 e1 = v1 - v0;
-		glm::vec3 e2 = v2 - v0;
-		glm::vec3 p = cross(d, e2);
-
-		float a = dot(e1, p);
-		if (std::abs(a) < 1e-6)
-			return false;
-
-		float f = 1.0 / a;
-		glm::vec3 s = x - v0;
-		float u = f * dot(s, p);
-
-		if (u < 0.0 || u > 1.0)
-			return false;
-
-		glm::vec3 q = cross(s, e1);
-		float v = f * dot(d, q);
-
-		if (v < 0.0 || u + v > 1.0)
-			return false;
-
-		float t = f * dot(e2, q);
-		return t > 1e-6;
-	};
-
 	uint32_t voxel_count = 0;
 
 	#pragma omp parallel for reduction(+:voxel_count)
@@ -1305,10 +772,10 @@ int main(int argc, char *argv[])
 		uint32_t xy_count_neg = 0;
 
 		for (size_t tindex : bins_xy[x + y * resolution]) {
-			if (ray_x_triangle(tindex, center, dz))
+			if (ray_x_triangle(mesh, tindex, center, dz))
 				xy_count++;
 
-			if (ray_x_triangle(tindex, center, -dz))
+			if (ray_x_triangle(mesh, tindex, center, -dz))
 				xy_count_neg++;
 		}
 
@@ -1316,10 +783,10 @@ int main(int argc, char *argv[])
 		uint32_t xz_count_neg = 0;
 
 		for (size_t tindex : bins_xz[x + z * resolution]) {
-			if (ray_x_triangle(tindex, center, dy))
+			if (ray_x_triangle(mesh, tindex, center, dy))
 				xz_count++;
 
-			if (ray_x_triangle(tindex, center, -dy))
+			if (ray_x_triangle(mesh, tindex, center, -dy))
 				xz_count_neg++;
 		}
 
@@ -1327,10 +794,10 @@ int main(int argc, char *argv[])
 		uint32_t yz_count_neg = 0;
 
 		for (size_t tindex : bins_yz[y + z * resolution]) {
-			if (ray_x_triangle(tindex, center, dx))
+			if (ray_x_triangle(mesh, tindex, center, dx))
 				yz_count++;
 
-			if (ray_x_triangle(tindex, center, -dx))
+			if (ray_x_triangle(mesh, tindex, center, -dx))
 				yz_count_neg++;
 		}
 
@@ -1398,7 +865,7 @@ int main(int argc, char *argv[])
 	}
 
 	voxel_mesh.normals.resize(voxel_mesh.vertices.size());
-	voxel_mesh = deduplicate(voxel_mesh);
+	voxel_mesh = deduplicate(voxel_mesh).first;
 
 	printf("Voxel mesh: %u vertices, %u triangles\n", voxel_mesh.vertices.size(), voxel_mesh.triangles.size());
 
@@ -1493,7 +960,7 @@ int main(int argc, char *argv[])
 			return a.size() > b.size();
 		}
 	);
-	
+
 	std::unordered_set <uint32_t> working_set = components[0];
 
 	// Extract the voxel mesh
@@ -1506,7 +973,7 @@ int main(int argc, char *argv[])
 	}
 
 	reduced_mesh.normals.resize(reduced_mesh.vertices.size());
-	reduced_mesh = deduplicate(reduced_mesh);
+	reduced_mesh = deduplicate(reduced_mesh).first;
 
 	// Remove all the duplicate triangles
 	auto triangle_eq = [](const Triangle &t1, const Triangle &t2) {
@@ -1553,16 +1020,9 @@ int main(int argc, char *argv[])
 	}
 
 	skin_mesh.triangles = new_triangles;
-	skin_mesh = deduplicate(skin_mesh);
+	skin_mesh = deduplicate(skin_mesh).first;
 
-	printf("Skin mesh has %u vertices and %u triangles\n", skin_mesh.vertices.size(), skin_mesh.triangles.size());
-
-	Viewer viewer;
-	viewer.add("mesh", mesh, Viewer::Mode::Shaded);
-	viewer.add("skin", skin_mesh, Viewer::Mode::Wireframe);
-
-	viewer_ptr = &viewer;
-	viewer.ref("skin")->color = { 1.0f, 0.0f, 1.0f };
+	// printf("Skin mesh has %u vertices and %u triangles\n", skin_mesh.vertices.size(), skin_mesh.triangles.size());
 
 	glm::vec3 color_wheel[] = {
 		{ 0.910, 0.490, 0.490 },
@@ -1583,7 +1043,7 @@ int main(int argc, char *argv[])
 	// for (size_t i = 0; i < octree.size(); i++) {
 	// 	Mesh tmp = mesh;
 	// 	tmp.triangles.clear();
-	// 	
+	//
 	// 	for (size_t i : octree[i].triangles)
 	// 		tmp.triangles.push_back(mesh.triangles[i]);
 	//
@@ -1598,14 +1058,296 @@ int main(int argc, char *argv[])
 
 	printf("CAS grid has been preloaded\n");
 
+	// Precomputation setup for subdivision
+	auto [vgraph, egraph, dual] = build_graphs(skin_mesh);
+
+	// Find all complexes (4-cycles) with edges parallel to canonical axes
+	using complex = std::array <uint32_t, 4>;
+
+	auto complex_eq = [](const complex &c1, const complex &c2) {
+		// Equal if they are the same under rotation
+		bool same = false;
+
+		for (size_t i = 0; i < 4; i++) {
+			bool found = true;
+
+			for (size_t j = 0; j < 4; j++) {
+				if (c1[j] != c2[(i + j) % 4]) {
+					found = false;
+					break;
+				}
+			}
+
+			if (found) {
+				same = true;
+				break;
+			}
+		}
+
+		return same;
+	};
+
+	auto complex_hash = [](const complex &c) {
+		std::hash <uint32_t> hasher;
+		return hasher(c[0]) ^ hasher(c[1]) ^ hasher(c[2]) ^ hasher(c[3]);
+	};
+
+	std::unordered_set <complex, decltype(complex_hash), decltype(complex_eq)> complexes(0, complex_hash, complex_eq);
+
+	auto simplified_graph = vgraph;
+
+	// Remove non-axial edges
+	for (auto &[v, adj] : simplified_graph) {
+		glm::vec3 vv = skin_mesh.vertices[v];
+
+		for (auto it = adj.begin(); it != adj.end(); ) {
+			glm::vec3 va = skin_mesh.vertices[*it];
+			glm::vec3 e = va - vv;
+
+			uint32_t x_zero = std::abs(e.x) < 1e-6f;
+			uint32_t y_zero = std::abs(e.y) < 1e-6f;
+			uint32_t z_zero = std::abs(e.z) < 1e-6f;
+
+			if (x_zero + y_zero + z_zero < 2)
+				it = adj.erase(it);
+			else
+				it++;
+		}
+	}
+
+	for (size_t v = 0; v < skin_mesh.vertices.size(); v++) {
+		using cycle = std::array <uint32_t, 5>;
+		using cycle_state = std::tuple <cycle, uint32_t, uint32_t>;
+
+		std::vector <cycle> potential;
+		std::queue <cycle_state> q;
+		q.push({ { 0, 0, 0, 0, 0 }, v, 0 });
+
+		while (!q.empty()) {
+			// printf("Queue size: %zu\n", q.size());
+			auto [c, v, depth] = q.front();
+			q.pop();
+
+			if (depth == 5) {
+				potential.push_back(c);
+				continue;
+			}
+
+			c[depth] = v;
+			for (uint32_t e : simplified_graph[v]) {
+				// Fill the next index in the complex
+				cycle_state next = { c, e, depth + 1 };
+				q.push(next);
+				// printf("  Pushed complex: %u %u %u %u\n", std::get <0>(next)[0], std::get <0>(next)[1], std::get <0>(next)[2], std::get <0>(next)[3]);
+			}
+		}
+
+		// Find all cycles starting and ending with the same vertex
+		for (const auto &c : potential) {
+			if (c[0] != c[4])
+				continue;
+
+			// Cannot have duplicates in the middle
+			bool ok = true;
+			for (size_t i = 0; i < 4; i++) {
+				for (size_t j = i + 1; j < 4; j++) {
+					if (c[i] == c[j]) {
+						ok = false;
+						break;
+					}
+				}
+
+				if (!ok)
+					break;
+			}
+
+			if (!ok)
+				continue;
+
+			complex c2 = { c[0], c[1], c[2], c[3] };
+			complexes.insert(c2);
+		}
+	}
+
+	// TODO: remove interior complexes (midpoint is inside the mesh)
+
+	printf("Number of (unique) complexes: %zu\n", complexes.size());
+
+	// Linearize these canonical complexes and record their subdivision state
+	struct subdivision_state {
+		uint32_t size;
+		std::vector <uint32_t> vertices;
+
+		std::vector <glm::vec3> upscale(const Mesh &ref) const {
+			assert(vertices.size() == size * size);
+
+			std::vector <glm::vec3> base;
+			base.reserve(vertices.size());
+
+			for (uint32_t v : vertices)
+				base.push_back(ref.vertices[v]);
+
+			std::vector <glm::vec3> result;
+
+			uint32_t new_size = 2 * size;
+			result.resize(new_size * new_size);
+
+			// Bilerp each new vertex
+			for (uint32_t i = 0; i < new_size; i++) {
+				for (uint32_t j = 0; j < new_size; j++) {
+					float u = (float) i / (new_size - 1);
+					float v = (float) j / (new_size - 1);
+
+					float lu = u * (size - 1);
+					float lv = v * (size - 1);
+
+					uint32_t u0 = std::floor(lu);
+					uint32_t u1 = std::ceil(lu);
+
+					uint32_t v0 = std::floor(lv);
+					uint32_t v1 = std::ceil(lv);
+
+					glm::vec3 p00 = base[u0 * size + v0];
+					glm::vec3 p10 = base[u1 * size + v0];
+					glm::vec3 p01 = base[u0 * size + v1];
+					glm::vec3 p11 = base[u1 * size + v1];
+
+					lu -= u0;
+					lv -= v0;
+
+					glm::vec3 p = p00 * (1.0f - lu) * (1.0f - lv) +
+					              p10 * lu * (1.0f - lv) +
+					              p01 * (1.0f - lu) * lv +
+					              p11 * lu * lv;
+
+					result[i * new_size + j] = p;
+				}
+			}
+
+			return result;
+		}
+	};
+
+	struct srnm_optimizer {
+		Mesh ref;
+
+		uint32_t size;
+
+		std::vector <complex> complexes;
+		std::vector <subdivision_state> subdivision_states;
+
+		srnm_optimizer(const Mesh &ref_, const std::vector <complex> &complexes_)
+				: ref(ref_), complexes(complexes_), size(2) {
+			subdivision_states.resize(complexes.size());
+
+			for (size_t i = 0; i < complexes.size(); i++) {
+				complex c = complexes[i];
+				subdivision_state &s = subdivision_states[i];
+
+				s.size = 2;
+				s.vertices.resize(4);
+
+				s.vertices[0] = c[0];
+				s.vertices[1] = c[1];
+				s.vertices[2] = c[2];
+				s.vertices[3] = c[3];
+			}
+		}
+
+		srnm_optimizer(const Mesh &ref_, const std::vector <complex> &complexes_, const std::vector <subdivision_state> &subdivision_states_, uint32_t size_)
+				: ref(ref_), complexes(complexes_), subdivision_states(subdivision_states_), size(size_) {}
+
+		srnm_optimizer upscale() const {
+			Mesh new_ref;
+
+			uint32_t new_size = 2 * size;
+			printf("Upscaling from %d to %d\n", size, new_size);
+
+			std::vector <complex> new_complexes;
+			std::vector <subdivision_state> new_subdivision_states;
+
+			for (const auto &sdv : subdivision_states) {
+				auto new_vertices = sdv.upscale(ref);
+
+				subdivision_state new_sdv;
+				new_sdv.size = new_size;
+
+				// Fill the vertices
+				uint32_t offset = new_ref.vertices.size();
+				for (const auto &v : new_vertices) {
+					new_sdv.vertices.push_back(new_ref.vertices.size());
+					new_ref.vertices.push_back(v);
+					new_ref.normals.push_back(glm::vec3(0.0f));
+				}
+
+				// Fill the triangles
+				for (uint32_t i = 0; i < new_size - 1; i++) {
+					for (uint32_t j = 0; j < new_size - 1; j++) {
+						uint32_t i00 = i * new_size + j;
+						uint32_t i10 = (i + 1) * new_size + j;
+						uint32_t i01 = i * new_size + j + 1;
+						uint32_t i11 = (i + 1) * new_size + j + 1;
+
+						Triangle t1 { offset + i00, offset + i10, offset + i11 };
+						Triangle t2 { offset + i00, offset + i01, offset + i11 };
+
+						new_ref.triangles.push_back(t1);
+						new_ref.triangles.push_back(t2);
+					}
+				}
+
+				complex new_c;
+				new_c[0] = new_sdv.vertices[0];
+				new_c[1] = new_sdv.vertices[new_size - 1];
+				new_c[2] = new_sdv.vertices[new_size * (new_size - 1)];
+				new_c[3] = new_sdv.vertices[new_size * new_size - 1];
+
+				new_complexes.push_back(new_c);
+				new_subdivision_states.push_back(new_sdv);
+			}
+
+			// TODO: deduplicate vertices
+			auto res = deduplicate(new_ref, 1e-6f);
+			printf("Before/after: %d/%d\n", new_ref.vertices.size(), res.first.vertices.size());
+			new_ref = res.first;
+
+			auto remap = res.second;
+			for (auto &c : new_complexes) {
+				for (auto &v : c)
+					v = remap[v];
+			}
+
+			for (auto &sdv : new_subdivision_states) {
+				for (auto &v : sdv.vertices)
+					v = remap[v];
+			}
+
+			return srnm_optimizer(new_ref, new_complexes, new_subdivision_states, new_size);
+		}
+	};
+
+	// Create the initial optimization state
+	std::vector <complex> complexes_linearized(complexes.begin(), complexes.end());
+
+	// Reorder the complexes from cyclic to array format
+	for (auto &c : complexes_linearized)
+		std::swap(c[2], c[3]);
+
+	srnm_optimizer optimizer(skin_mesh, complexes_linearized);
+	printf("Optimizer ref details: %u vertices, %u faces\n", optimizer.ref.vertices.size(), optimizer.ref.triangles.size());
+
+	Viewer viewer;
+	viewer.add("mesh", mesh, Viewer::Mode::Shaded);
+	viewer.add("ref", optimizer.ref, Viewer::Mode::Wireframe);
+	viewer.add("skin", skin_mesh, Viewer::Mode::Wireframe);
+	viewer.ref("ref")->color = { 0.3f, 0.8f, 0.3f };
+
 	// Optimization (while rendering)
 	closest_point_kinfo kinfo;
-	kinfo.point_count = skin_mesh.vertices.size();
+	kinfo.point_count = optimizer.ref.vertices.size();
 
-	cudaMalloc(&kinfo.points, sizeof(glm::vec3) * skin_mesh.vertices.size());
-	cudaMalloc(&kinfo.closest, sizeof(glm::vec3) * skin_mesh.vertices.size());
-
-	// auto [vgraph, egraph, dual] = build_graphs(skin_mesh);
+	cudaMalloc(&kinfo.points, sizeof(glm::vec3) * optimizer.ref.vertices.size());
+	cudaMalloc(&kinfo.closest, sizeof(glm::vec3) * optimizer.ref.vertices.size());
 
 	while (true) {
 		GLFWwindow *window = viewer.window->handle;
@@ -1633,40 +1375,55 @@ int main(int argc, char *argv[])
 
 		viewer.camera.phi = glm::clamp(viewer.camera.phi, float(-M_PI / 2.0f), float(M_PI / 2.0f));
 
+		// Refine on enter
+		if (glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS) {
+			optimizer = optimizer.upscale();
+			viewer.replace("ref", optimizer.ref);
+			printf("Upscaled ref details: %u vertices, %u faces\n", optimizer.ref.vertices.size(), optimizer.ref.triangles.size());
+
+			cudaFree(kinfo.points);
+			cudaFree(kinfo.closest);
+
+			kinfo.point_count = optimizer.ref.vertices.size();
+			cudaMalloc(&kinfo.points, sizeof(glm::vec3) * optimizer.ref.vertices.size());
+			cudaMalloc(&kinfo.closest, sizeof(glm::vec3) * optimizer.ref.vertices.size());
+		}
+
 		// Optimize the skin mesh around the target (original) mesh
-		std::vector <glm::vec3> host_closest(skin_mesh.vertices.size());
+		std::vector <glm::vec3> host_closest(optimizer.ref.vertices.size());
 
 		// TODO: memcpy async while caching
-		cudaMemcpy(kinfo.points, skin_mesh.vertices.data(),
-				sizeof(glm::vec3) * skin_mesh.vertices.size(),
+		cudaMemcpy(kinfo.points, optimizer.ref.vertices.data(),
+				sizeof(glm::vec3) * optimizer.ref.vertices.size(),
 				cudaMemcpyHostToDevice);
 
-		bool updated = cas.precache_query(skin_mesh.vertices);
+		bool updated = cas.precache_query(optimizer.ref.vertices);
 		if (updated)
 			cas.precache_device();
 
-		// cas.query(skin_mesh.vertices, host_closest);
+		// cas.query(optimizer.ref.vertices, host_closest);
 		cas.query_device(kinfo);
 
 		cudaMemcpy(host_closest.data(), kinfo.closest,
-				sizeof(glm::vec3) * skin_mesh.vertices.size(),
+				sizeof(glm::vec3) * optimizer.ref.vertices.size(),
 				cudaMemcpyDeviceToHost);
 		cudaDeviceSynchronize();
 
 		std::vector <glm::vec3> gradients;
-		gradients.reserve(skin_mesh.vertices.size());
+		gradients.reserve(optimizer.ref.vertices.size());
 
-		for (uint32_t i = 0; i < skin_mesh.vertices.size(); i++) {
-			const glm::vec3 &v = skin_mesh.vertices[i];
+		for (uint32_t i = 0; i < optimizer.ref.vertices.size(); i++) {
+			const glm::vec3 &v = optimizer.ref.vertices[i];
 			const glm::vec3 &w = host_closest[i];
 			gradients[i] = (w - v);
 		}
 
 		// TODO: adam optimizer...
-		for (uint32_t i = 0; i < skin_mesh.vertices.size(); i++)
-			skin_mesh.vertices[i] += 0.01f * gradients[i];
+		// TODO: apply gradients in cuda, using the imported vulkan buffer
+		for (uint32_t i = 0; i < optimizer.ref.vertices.size(); i++)
+			optimizer.ref.vertices[i] += 0.01f * gradients[i];
 
-		viewer.refresh("skin", skin_mesh);
+		viewer.refresh("ref", optimizer.ref);
 		viewer.render();
 	}
 

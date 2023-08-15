@@ -30,8 +30,8 @@ struct Mesh {
 	std::vector <Triangle> triangles;
 };
 
-// Vertex deduplication
-inline Mesh deduplicate(const Mesh &ref)
+// Lossless vertex deduplication
+inline std::pair <Mesh, std::unordered_map <uint32_t, uint32_t>> deduplicate(const Mesh &ref)
 {
 	std::unordered_map <glm::vec3, uint32_t> existing;
 
@@ -58,7 +58,61 @@ inline Mesh deduplicate(const Mesh &ref)
 		});
 	}
 
-	return fixed;
+	std::unordered_map <uint32_t, uint32_t> remap;
+	for (size_t i = 0; i < ref.vertices.size(); i++)
+		remap[i] = add_uniquely(i);
+
+	return { fixed, remap };
+}
+
+// Lossy vertex deduplication
+inline std::pair <Mesh, std::unordered_map <uint32_t, uint32_t>> deduplicate(const Mesh &ref, float threshold, float scale = 1e4f)
+{
+	auto hasher = [&](const glm::vec3 &v) -> size_t {
+		uint64_t x = v.x * scale;
+		uint64_t y = v.y * scale;
+		uint64_t z = v.z * scale;
+
+		std::hash <uint64_t> h;
+		return h(x) ^ h(y) ^ h(z);
+	};
+
+	auto eq = [&](const glm::vec3 &a, const glm::vec3 &b) -> bool {
+		return glm::distance(a, b) < threshold;
+	};
+
+	std::unordered_map <glm::vec3, uint32_t, decltype(hasher), decltype(eq)> existing(0, hasher, eq);
+
+	Mesh fixed;
+	auto add_uniquely = [&](int32_t i) -> uint32_t {
+		// TODO: sort the vertices?
+		glm::vec3 v = ref.vertices[i];
+		
+		if (existing.find(v) == existing.end()) {
+			int32_t csize = fixed.vertices.size();
+			fixed.vertices.push_back(v);
+			fixed.normals.push_back(ref.normals[i]);
+
+			existing[v] = csize;
+			return csize;
+		}
+
+		return existing[v];
+	};
+
+	for (const Triangle &t : ref.triangles) {
+		fixed.triangles.push_back(Triangle {
+			add_uniquely(t[0]),
+			add_uniquely(t[1]),
+			add_uniquely(t[2])
+		});
+	}
+
+	std::unordered_map <uint32_t, uint32_t> remap;
+	for (size_t i = 0; i < ref.vertices.size(); i++)
+		remap[i] = add_uniquely(i);
+
+	return { fixed, remap };
 }
 
 // Recompute normals
@@ -111,7 +165,7 @@ inline Mesh remesh(const Mesh &ref, const std::unordered_set <uint32_t> &complex
 		out.normals.push_back(ref.normals[t[2]]);
 	}
 
-	return deduplicate(out);
+	return deduplicate(out).first;
 }
 
 // Vertex adjacency graph

@@ -11,6 +11,8 @@ find_package(glslang REQUIRED)
 
 add_executable(cellulize
 	cellulize.cu
+	closest_point.cu
+	viewer.cpp
 	
 	imgui/imgui.cpp
 	imgui/imgui_draw.cpp
