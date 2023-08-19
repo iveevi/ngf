@@ -27,6 +27,7 @@ corner_encodings = data_dir + '/encodings.bin'
 corner_encodings = torch.load(corner_encodings)
 
 ref = data_dir + '/ref.obj'
+print('Loading reference model:', ref)
 ref = trimesh.load(ref)
 print('Reference model loaded:', ref.vertices.shape, ref.faces.shape)
 

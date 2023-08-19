@@ -33,7 +33,7 @@ print('Points:', points.shape)
 
 complexes_count = int.from_bytes(sdv_complexes_file.read(4), byteorder='little')
 complexes = sdv_complexes_file.read(16 * complexes_count)
-complexes = np.frombuffer(complexes, dtype=np.int32)
+complexes = np.frombuffer(complexes, dtype=np.int32).astype(np.int64)
 complexes = complexes.reshape((complexes_count, 4))
 print('Complexes:', complexes.shape)
 
@@ -58,6 +58,8 @@ print(complexes)
 corner_points = torch.from_numpy(points).cuda()
 corner_encodings = torch.randn((point_count, POINT_ENCODING_SIZE), requires_grad=True, device='cuda')
 
+# TODO: its also possible to encoding the lipschitz constants within the points to describe the local curvature?
+
 print(corner_points.shape)
 print(corner_encodings.shape)
 
@@ -72,11 +74,11 @@ args = {
     'resolution': resolution
 }
 
-srnm = SRNM().cuda()
+srnm = NSC().cuda()
 optimizer = torch.optim.Adam(list(srnm.parameters()) + [ corner_encodings ], lr=1e-3)
 iterations = 20_000
 
-history = []
+history = { 'loss': [], 'lipschitz': [] }
 for i in tqdm.trange(iterations):
     vertices, lipschitz = srnm(args)
     loss = torch.mean(torch.pow(vertices - targets, 2)) # + 0.1 * torch.pow(lipschitz - 1.0, 2)
@@ -85,7 +87,8 @@ for i in tqdm.trange(iterations):
     loss.backward()
     optimizer.step()
 
-    history.append(loss.item())
+    history['loss'].append(loss.item())
+    history['lipschitz'].append(lipschitz.item())
 
     if i == iterations // 2:
         # Only train the encodings
@@ -94,7 +97,8 @@ for i in tqdm.trange(iterations):
 # Save plot
 sns.set()
 plt.figure(figsize=(20, 10))
-plt.plot(history, label='loss')
+plt.plot(history['loss'], label='loss')
+plt.plot(history['lipschitz'], label='lipschitz')
 plt.legend()
 plt.xlabel('iteration')
 plt.ylabel('loss')

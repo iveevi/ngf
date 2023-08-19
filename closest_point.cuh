@@ -10,9 +10,25 @@
 struct closest_point_kinfo {
 	glm::vec3 *points;
 	glm::vec3 *closest;
+	glm::vec3 *bary;
+	uint32_t *triangles;
 
 	uint32_t point_count;
 };
+
+inline closest_point_kinfo closest_point_kinfo_alloc(uint32_t point_count)
+{
+	closest_point_kinfo kinfo;
+
+	cudaMalloc(&kinfo.points, point_count * sizeof(glm::vec3));
+	cudaMalloc(&kinfo.closest, point_count * sizeof(glm::vec3));
+	cudaMalloc(&kinfo.bary, point_count * sizeof(glm::vec3));
+	cudaMalloc(&kinfo.triangles, point_count * sizeof(uint32_t));
+
+	kinfo.point_count = point_count;
+
+	return kinfo;
+}
 
 struct dev_cas_grid {
 	glm::vec3 min;
@@ -66,7 +82,7 @@ struct cas_grid {
 
 // Closest point on triangle
 __forceinline__ __host__ __device__
-glm::vec3 triangle_closest_point(const glm::vec3 &v0, const glm::vec3 &v1, const glm::vec3 &v2, const glm::vec3 &p)
+void triangle_closest_point(const glm::vec3 &v0, const glm::vec3 &v1, const glm::vec3 &v2, const glm::vec3 &p, glm::vec3 *closest, glm::vec3 *bary, float *distance)
 {
 	glm::vec3 B = v0;
 	glm::vec3 E1 = v1 - v0;
@@ -137,6 +153,8 @@ glm::vec3 triangle_closest_point(const glm::vec3 &v0, const glm::vec3 &v1, const
 		}
 	}
 
-	return B + s * E1 + t * E2;
+	*closest = B + s * E1 + t * E2;
+	*bary = glm::vec3(1.0f - s - t, s, t);
+	*distance = glm::length(*closest - p);
 }
 

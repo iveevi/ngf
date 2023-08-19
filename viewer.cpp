@@ -91,7 +91,96 @@ static constexpr std::array <vk::VertexInputAttributeDescription, 2> vertex_attr
 		1, 0, vk::Format::eR32G32B32Sfloat, sizeof(glm::vec3)
 	},
 };
-	
+
+// Mouse handling
+struct {
+	float last_x = 0.0f;
+	float last_y = 0.0f;
+
+	bool dragging = false;
+
+	decltype(Viewer::camera) *camera = nullptr;
+} mouse;
+
+void mouse_button_callback(GLFWwindow *window, int button, int action, int mods)
+{
+	// Check if mouse is in an ImGui window
+	ImGuiIO &io = ImGui::GetIO();
+	io.AddMouseButtonEvent(button, action);
+
+	bool mouse_in_window = io.WantCaptureMouse;
+
+	if (button == GLFW_MOUSE_BUTTON_LEFT)
+		mouse.dragging = (action == GLFW_PRESS) && !mouse_in_window;
+}
+
+void mouse_position_callback(GLFWwindow *window, double xpos, double ypos)
+{
+	constexpr float sensitivity = 0.05f;
+
+	ImGuiIO &io = ImGui::GetIO();
+
+	if (mouse.dragging) {
+		float dx = xpos - mouse.last_x;
+		float dy = ypos - mouse.last_y;
+
+		glm::vec2 delta = { dy, -dx };
+		mouse.camera->rotate(delta * sensitivity);
+	} else {
+		io.AddMousePosEvent(xpos, ypos);
+	}
+
+	mouse.last_x = xpos;
+	mouse.last_y = ypos;
+}
+
+// Viewer camera controls
+glm::mat4 Camera::proj(const vk::Extent2D &ext) const
+{
+	return glm::perspective(
+		glm::radians(fov),
+		(float) ext.width / (float) ext.height,
+		0.1f, 1e5f
+	);
+}
+
+glm::mat4 Camera::view() const
+{
+	glm::quat q = glm::quat(glm::radians(rotation));
+	glm::mat4 rot = glm::mat4_cast(q);
+	glm::mat4 mat = glm::translate(glm::mat4(1.0f), position);
+	glm::mat4 view = rot * mat;
+
+	constexpr glm::vec4 up = { 0, 1, 0, 0 };
+	constexpr glm::vec4 forward = { 0, 0, 1, 0 };
+
+	glm::vec3 l_forward = glm::normalize(glm::vec3(view * forward));
+	glm::vec3 l_up = glm::normalize(glm::vec3(view * up));
+
+	return glm::lookAt(position, position + l_forward, l_up);
+}
+
+void Camera::move(const glm::vec3 &delta)
+{
+	glm::quat q = glm::quat(glm::radians(rotation));
+	glm::mat4 rot = glm::mat4_cast(q);
+	glm::mat4 mat = glm::translate(glm::mat4(1.0f), position);
+	glm::mat4 view = rot * mat;
+	glm::vec3 l_delta = glm::vec3(view * glm::vec4(delta, 0.0f));
+	position += l_delta;
+}
+
+void Camera::rotate(const glm::vec2 &delta)
+{
+	pitch += delta.x;
+	yaw += delta.y;
+
+	constexpr float limit = 89.0f;
+	pitch = glm::clamp(pitch, -limit, limit);
+
+	rotation = { pitch, yaw, 0 };
+}
+
 // Constructor loads a device and starts the initialization process
 Viewer::Viewer()
 {
@@ -102,9 +191,15 @@ Viewer::Viewer()
 		});
 	};
 
+	// Initialize the window and resources
 	vk::PhysicalDevice dev = littlevk::pick_physical_device(predicate);
 	skeletonize(dev, { 2560, 1440 }, "Viewer");
 	from(dev);
+
+	// Setup callbacks
+	glfwSetMouseButtonCallback(window->handle, mouse_button_callback);
+	glfwSetCursorPosCallback(window->handle, mouse_position_callback);
+	mouse.camera = &camera;
 }
 
 // Initialize the viewer
@@ -441,6 +536,25 @@ void Viewer::clear()
 
 void Viewer::render()
 {
+	// First handle inputs
+	glm::vec3 delta { 0.0f };
+	if (glfwGetKey(window->handle, GLFW_KEY_W) == GLFW_PRESS)
+		delta += glm::vec3 { 0.0f, 0.0f, +1.0f };
+	if (glfwGetKey(window->handle, GLFW_KEY_S) == GLFW_PRESS)
+		delta += glm::vec3 { 0.0f, 0.0f, -1.0f };
+
+	if (glfwGetKey(window->handle, GLFW_KEY_A) == GLFW_PRESS)
+		delta += glm::vec3 { +1.0f, 0.0f, 0.0f };
+	if (glfwGetKey(window->handle, GLFW_KEY_D) == GLFW_PRESS)
+		delta += glm::vec3 { -1.0f, 0.0f, 0.0f };
+
+	if (glfwGetKey(window->handle, GLFW_KEY_Q) == GLFW_PRESS)
+		delta += glm::vec3 { 0.0f, -1.0f, 0.0f };
+	if (glfwGetKey(window->handle, GLFW_KEY_E) == GLFW_PRESS)
+		delta += glm::vec3 { 0.0f, +1.0f, 0.0f };
+
+	camera.move(delta * 0.1f);
+
 	littlevk::SurfaceOperation op;
 	op = littlevk::acquire_image(device, swapchain.swapchain, sync, frame);
 

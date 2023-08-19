@@ -7,6 +7,20 @@
 #include <littlevk/littlevk.hpp>
 
 #include "mesh.hpp"
+	
+struct Camera {
+	glm::vec3 position = { 0, 0, -10 };
+	glm::vec3 rotation = { 0, 0, 0 };
+
+	float pitch = 0.0f;
+	float yaw = 0.0f;
+	float fov = 45.0f;
+
+	glm::mat4 proj(const vk::Extent2D &) const;
+	glm::mat4 view() const;
+	void move(const glm::vec3 &);
+	void rotate(const glm::vec2 &);
+};
 
 struct Viewer : littlevk::Skeleton {
 	// Different viewing modes
@@ -62,30 +76,7 @@ struct Viewer : littlevk::Skeleton {
 	void clear();
 
 	// Camera state
-	struct {
-		float radius = 10.0f;
-		float theta = 0.0f;
-		float phi = 0.0f;
-		float fov = 45.0f;
-
-		glm::mat4 proj(const vk::Extent2D &ext) const {
-			return glm::perspective(
-				glm::radians(fov),
-				(float) ext.width / (float) ext.height,
-				0.1f, 1e5f
-			);
-		}
-
-		glm::mat4 view() const {
-			glm::vec3 eye = {
-				radius * std::sin(theta),
-				radius * std::sin(phi),
-				radius * std::cos(theta)
-			};
-
-			return glm::lookAt(eye, { 0, 0, 0 }, { 0, 1, 0 });
-		}
-	} camera;
+	Camera camera;
 
 	// Rendering a frame
 	size_t frame = 0;

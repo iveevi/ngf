@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(srnm CXX CUDA)
+project(nsc CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR})
@@ -9,8 +9,8 @@ find_package(OpenMP REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(glslang REQUIRED)
 
-add_executable(cellulize
-	cellulize.cu
+add_executable(nsc
+	nsc.cu
 	closest_point.cu
 	viewer.cpp
 	
@@ -22,7 +22,7 @@ add_executable(cellulize
 	imgui/backends/imgui_impl_vulkan.cpp
 )
 
-target_link_libraries(cellulize
+target_link_libraries(nsc
 	glfw
 	assimp
 	OpenMP::OpenMP_CXX

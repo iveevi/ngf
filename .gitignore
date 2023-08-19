@@ -1,3 +1,4 @@
+*.tar.gz
 .cache/
 .polyscope.ini
 __pycache__/

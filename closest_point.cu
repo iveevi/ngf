@@ -24,7 +24,8 @@ static void closest_point_kernel(dev_cas_grid cas, closest_point_kinfo kinfo)
 	for (uint32_t i = tid; i < kinfo.point_count; i += stride) {
 		glm::vec3 point = kinfo.points[i];
 		glm::vec3 closest;
-		
+		uint32_t triangle;
+
 		glm::vec3 bin_flt = glm::clamp((point - cas.min) / cas.bin_size,
 				glm::vec3(0), glm::vec3(cas.resolution - 1));
 
@@ -34,26 +35,31 @@ static void closest_point_kernel(dev_cas_grid cas, closest_point_kinfo kinfo)
 		uint32_t index0 = cas.index0[bin_index];
 		uint32_t index1 = cas.index1[bin_index];
 
-		float min_dist = FLT_MAX;
+		float min_distance = FLT_MAX;
 		for (uint32_t j = index0; j < index1; j++) {
 			uint32_t triangle_index = cas.query_triangles[j];
-			glm::uvec3 triangle = cas.triangles[triangle_index];
+			glm::uvec3 tri = cas.triangles[triangle_index];
 
-			glm::vec3 v0 = cas.vertices[triangle.x];
-			glm::vec3 v1 = cas.vertices[triangle.y];
-			glm::vec3 v2 = cas.vertices[triangle.z];
+			glm::vec3 v0 = cas.vertices[tri.x];
+			glm::vec3 v1 = cas.vertices[tri.y];
+			glm::vec3 v2 = cas.vertices[tri.z];
 
 			// TODO: prune triangles that are too far away (based on bbox)?
-			glm::vec3 candidate = triangle_closest_point(v0, v1, v2, point);
-			float dist = glm::distance(point, candidate);
+			glm::vec3 candidate;
+			glm::vec3 bary;
+			float distance;
 
-			if (dist < min_dist) {
-				min_dist = dist;
+			triangle_closest_point(v0, v1, v2, point, &candidate, &bary, &distance);
+
+			if (distance < min_distance) {
+				min_distance = distance;
 				closest = candidate;
+				triangle = triangle_index;
 			}
 		}
 
 		kinfo.closest[i] = closest;
+		kinfo.triangles[i] = triangle;
 	}
 }
 
@@ -271,8 +277,8 @@ glm::vec3 cas_grid::query(const glm::vec3 &p) const
 	const std::vector <uint32_t> &bin = query_triangles[bin_index];
 	assert(bin.size() > 0);
 
-	float min_dist = FLT_MAX;
-	
+	float min_distance = FLT_MAX;
+
 	glm::vec3 closest = p;
 	for (uint32_t index : bin) {
 		const Triangle &tri = ref.triangles[index];
@@ -280,11 +286,12 @@ glm::vec3 cas_grid::query(const glm::vec3 &p) const
 		glm::vec3 b = ref.vertices[tri[1]];
 		glm::vec3 c = ref.vertices[tri[2]];
 
-		glm::vec3 point = triangle_closest_point(a, b, c, p);
-
-		float dist = glm::distance(p, point);
-		if (dist < min_dist) {
-			min_dist = dist;
+		glm::vec3 point;
+		glm::vec3 bary;
+		float distance;
+		triangle_closest_point(a, b, c, p, &point, &bary, &distance);
+		if (distance < min_distance) {
+			min_distance = distance;
 			closest = point;
 		}
 	}

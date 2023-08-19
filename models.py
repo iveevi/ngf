@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-POINT_ENCODING_SIZE = 10
+POINT_ENCODING_SIZE = 100
 
 # SRNM subdivision complex indices
 # TODO: refactor the project to SRCM?
@@ -30,9 +30,9 @@ class LipschitzNormalization(nn.Module):
         scale = torch.min(LipschitzNormalization.one, softplus_c/absrowsum)
         return W * scale.unsqueeze(1)
 
-class SRNM(nn.Module):
+class NSC(nn.Module):
     def __init__(self) -> None:
-        super(SRNM, self).__init__()
+        super(NSC, self).__init__()
 
         self.encoding_linears = [
             nn.Linear(POINT_ENCODING_SIZE + 3, 128),
@@ -43,7 +43,7 @@ class SRNM(nn.Module):
         ]
 
         # Regularizers only for the encoding layers
-        c0 = torch.pow(torch.tensor(0.01), 1.0/len(self.encoding_linears))
+        c0 = torch.pow(torch.tensor(1e3), 1.0/len(self.encoding_linears))
         c0 = torch.log(torch.exp(c0) - LipschitzNormalization.one)
         self.regularizers = [
             LipschitzNormalization(c0),
@@ -62,24 +62,8 @@ class SRNM(nn.Module):
         complexes = args['complexes']
         resolution = args['resolution']
 
-        # Extract encoding samples for each complex (using gather)
-        local_points = []
-        local_encodings = []
-
-        # TODO: use gather operations
-        for indices in complexes:
-            lp = []
-            le = []
-
-            for i in indices:
-                lp.append(points[i])
-                le.append(encodings[i])
-
-            local_points.append(torch.stack(lp))
-            local_encodings.append(torch.stack(le))
-
-        local_points = torch.stack(local_points)
-        local_encodings = torch.stack(local_encodings)
+        local_points = points[complexes, :]
+        local_encodings = encodings[complexes, :]
 
         local_points = local_points.reshape(-1, 2, 2, 3).permute(0, 3, 1, 2)
         p = F.interpolate(local_points, size=(resolution, resolution), mode='bilinear', align_corners=True)
