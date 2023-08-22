@@ -570,7 +570,7 @@ struct scm {
 					uint32_t i11 = (i + 1) * new_size + j + 1;
 
 					Triangle t1 { offset + i00, offset + i10, offset + i11 };
-					Triangle t2 { offset + i00, offset + i01, offset + i11 };
+					Triangle t2 { offset + i00, offset + i11, offset + i01 };
 
 					new_ref.triangles.push_back(t1);
 					new_ref.triangles.push_back(t2);
@@ -604,6 +604,33 @@ struct scm {
 		}
 
 		return scm(new_ref, new_complexes, new_subdivision_states, new_size);
+	}
+
+	void repair_normals(const Mesh &target, cas_grid &cas) {
+		for (uint32_t  i = 0; i < ref.triangles.size(); i++) {
+			Triangle &t = ref.triangles[i];
+
+			glm::vec3 p0 = ref.vertices[t[0]];
+			glm::vec3 p1 = ref.vertices[t[1]];
+			glm::vec3 p2 = ref.vertices[t[2]];
+
+			glm::vec3 mid = (p0 + p1 + p2) / 3.0f;
+
+			cas.precache_query(mid);
+			uint32_t t_id = cas.query_primitive(mid);
+
+			const Triangle &t2 = target.triangles[t_id];
+
+			glm::vec3 v0 = target.vertices[t2[0]];
+			glm::vec3 v1 = target.vertices[t2[1]];
+			glm::vec3 v2 = target.vertices[t2[2]];
+
+			glm::vec3 nexp = glm::normalize(glm::cross(v1 - v0, v2 - v0));
+			glm::vec3 nact = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+
+			if (glm::dot(nexp, nact) < 0.0f)
+				std::swap(t[1], t[2]);
+		}
 	}
 
 	void save(const std::filesystem::path &path) const {
@@ -733,11 +760,35 @@ int main(int argc, char *argv[])
 	printf("Resolution: %lu\n", resolution);
 
 	// Construct the voxel mesh
-	ipqas interior_query_as(mesh, resolution);
-	interior_query_as.dump();
+	ipqas iquery_as(mesh, resolution);
+	iquery_as.dump();
 
-	glm::vec3 ext_min = interior_query_as.ext_min;
-	glm::vec3 ext_max = interior_query_as.ext_max;
+	// Check whether normals need to be flipped based on interior queries
+	uint32_t flip_count = 0;
+
+	recompute_normals(mesh);
+
+	#pragma omp parallel for reduction(+:flip_count)
+	for (uint32_t i = 0; i < mesh.vertices.size(); i++) {
+		glm::vec3 p = mesh.vertices[i];
+		glm::vec3 n = mesh.normals[i];
+		p += 0.01f * n;
+
+		if (iquery_as.query(p))
+			flip_count++;
+	}
+
+	if (flip_count > mesh.vertices.size()/2) {
+		printf("Flipping normals\n");
+		for (uint32_t i = 0; i < mesh.normals.size(); i++)
+			mesh.normals[i] = -mesh.normals[i];
+	} else {
+		printf("Normals are correct\n");
+	}
+
+	// Construct the voxel grid
+	glm::vec3 ext_min = iquery_as.ext_min;
+	glm::vec3 ext_max = iquery_as.ext_max;
 
 	uint32_t voxel_count = 0;
 	std::vector <uint32_t> voxels;
@@ -752,7 +803,7 @@ int main(int argc, char *argv[])
 		glm::vec3 center = glm::vec3(x + 0.5f, y + 0.5f, z + 0.5f) / (float) resolution;
 		center = center * (ext_max - ext_min) + ext_min;
 
-		if (interior_query_as.query(center)) {
+		if (iquery_as.query(center)) {
 			voxels[i] = 1;
 			voxel_count++;
 		}
@@ -1100,6 +1151,8 @@ int main(int argc, char *argv[])
 	scm opt(skin_mesh, complexes_linearized);
 	printf("Optimizer ref details: %u vertices, %u faces\n", opt.ref.vertices.size(), opt.ref.triangles.size());
 
+	recompute_normals(mesh);
+
 	Viewer viewer;
 	viewer.add("mesh", mesh, Viewer::Mode::Shaded);
 	viewer.add("ref", opt.ref, Viewer::Mode::Wireframe);
@@ -1148,6 +1201,8 @@ int main(int argc, char *argv[])
 	// TODO: meshlet rendering, with different colors for each patch...
 	momentum mopt(opt.ref.vertices.size());
 
+	opt.repair_normals(mesh, cas);
+
 	while (true) {
 		GLFWwindow *window = viewer.window->handle;
 
@@ -1159,6 +1214,8 @@ int main(int argc, char *argv[])
 		// Refine on enter
 		if (glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS) {
 			opt = opt.upscale();
+			opt.repair_normals(mesh, cas);
+
 			viewer.replace("ref", opt.ref);
 			printf("Upscaled ref details: %u vertices, %u faces\n", opt.ref.vertices.size(), opt.ref.triangles.size());
 
@@ -1171,6 +1228,20 @@ int main(int argc, char *argv[])
 
 			std::tie(vgraph, egraph, dual) = build_graphs(opt.ref);
 		}
+
+		recompute_normals(opt.ref);
+
+		uint32_t interior_points = 0;
+		for (uint32_t i = 0; i < opt.ref.vertices.size(); i++) {
+			glm::vec3 p = opt.ref.vertices[i];
+			glm::vec3 n = opt.ref.normals[i];
+			p += n * 0.01f;
+
+			if (iquery_as.query(p))
+				interior_points++;
+		}
+
+		printf("Interior points: %u/%u\n", interior_points, opt.ref.vertices.size());
 
 		// Optimize the skin mesh around the target (original) mesh
 		std::vector <glm::vec3> host_closest(opt.ref.vertices.size());
@@ -1209,7 +1280,7 @@ int main(int argc, char *argv[])
 		}
 
 		std::vector <glm::vec3> gradients;
-		gradients.reserve(opt.ref.vertices.size());
+		gradients.resize(opt.ref.vertices.size(), glm::vec3(0.0f));
 
 		for (uint32_t i = 0; i < opt.ref.vertices.size(); i++) {
 			const glm::vec3 &v = opt.ref.vertices[i];
@@ -1271,109 +1342,109 @@ int main(int argc, char *argv[])
 		}
 
 		// Compute average triangle area
-		float total_area = 0.0f;
-		for (uint32_t i = 0; i < opt.ref.triangles.size(); i++) {
-			const Triangle &tri = opt.ref.triangles[i];
-			const glm::vec3 &v0 = opt.ref.vertices[tri[0]];
-			const glm::vec3 &v1 = opt.ref.vertices[tri[1]];
-			const glm::vec3 &v2 = opt.ref.vertices[tri[2]];
-			total_area += glm::length(glm::cross(v1 - v0, v2 - v0))/2.0f;
-		}
-
-		float avg_area = total_area / opt.ref.triangles.size();
-
-		// Compute triangle area anti-distortion gradients
-		{
-			std::vector <glm::vec3> tri_gradients;
-			tri_gradients.resize(opt.ref.vertices.size(), glm::vec3(0.0f));
-
-			for (uint32_t i = 0; i < opt.ref.triangles.size(); i++) {
-				const Triangle &tri = opt.ref.triangles[i];
-			
-				const glm::vec3 &v0 = opt.ref.vertices[tri[0]];
-				const glm::vec3 &v1 = opt.ref.vertices[tri[1]];
-				const glm::vec3 &v2 = opt.ref.vertices[tri[2]];
-
-				float area = glm::length(glm::cross(v1 - v0, v2 - v0))/2.0f;
-
-				glm::vec3 vs[3] = {v0, v1, v2};
-				glm::vec3 gs[3] = {};
-
-				triangle_area_gradient(vs, gs);
-
-				float k = (avg_area - area);
-				tri_gradients[tri[0]] += gs[0] * k;
-				tri_gradients[tri[1]] += gs[1] * k;
-				tri_gradients[tri[2]] += gs[2] * k;
-			}
-
-			// Project gradients onto the tangent plane
-			for (uint32_t i = 0; i < opt.ref.vertices.size(); i++) {
-				const glm::vec3 &v = opt.ref.vertices[i];
-				const glm::vec3 &n = surface_normals[i];
-				tri_gradients[i] -= glm::dot(tri_gradients[i], n) * n;
-			}
-
-			// Transfer gradients targetting an even distribution of triangle areas
-			for (uint32_t i = 0; i < opt.ref.vertices.size(); i++)
-				gradients[i] += tri_gradients[i];
-		}
-
-		// Edge anti-collapse/anti-foldover gradients
-		{
-			std::vector <glm::vec3> edge_gradients;
-			edge_gradients.resize(opt.ref.vertices.size(), glm::vec3(0.0f));
-
-			constexpr float ANGLE_THRESHOLD = glm::radians(25.0f);
-			for (uint32_t i = 0; i < opt.ref.triangles.size(); i++) {
-				const Triangle &tri = opt.ref.triangles[i];
-
-				const glm::vec3 &v0 = opt.ref.vertices[tri[0]];
-				const glm::vec3 &v1 = opt.ref.vertices[tri[1]];
-				const glm::vec3 &v2 = opt.ref.vertices[tri[2]];
-				glm::vec3 normal = glm::normalize(glm::cross(v1 - v0, v2 - v0));
-
-				// Consider all pairs of edges
-				for (uint32_t j = 0; j < 3; j++) {
-					uint32_t m = (j + 1) % 3;
-					uint32_t n = (j + 2) % 3;
-
-					const glm::vec3 &v0 = opt.ref.vertices[tri[j]];
-					const glm::vec3 &v1 = opt.ref.vertices[tri[m]];
-					const glm::vec3 &v2 = opt.ref.vertices[tri[n]];
-
-					glm::vec3 e0 = v1 - v0;
-					glm::vec3 e1 = v2 - v0;
-
-					float angle = glm::acos(glm::dot(e0, e1) / (glm::length(e0) * glm::length(e1)));
-
-					glm::vec3 ex = v2 - v1;
-
-					if (angle < ANGLE_THRESHOLD) {
-						// Push apart
-						float k = (ANGLE_THRESHOLD - angle);
-
-						glm::vec3 g0 = glm::normalize(glm::cross(normal, e0));
-						if (glm::dot(g0, ex) > 0.0f)
-							g0 = -g0;
-
-						glm::vec3 g1 = glm::normalize(glm::cross(normal, e1));
-						if (glm::dot(g1, ex) > 0.0f)
-							g1 = -g1;
-
-						g0 *= k;
-						g1 *= k;
-
-						edge_gradients[tri[j]] += g0;
-						edge_gradients[tri[m]] += g1;
-					}
-				}
-			}
-
-			// Transfer gradients targetting an even distribution of triangle areas
-			// for (uint32_t i = 0; i < opt.ref.vertices.size(); i++)
-			// 	gradients[i] += edge_gradients[i];
-		}
+		// float total_area = 0.0f;
+		// for (uint32_t i = 0; i < opt.ref.triangles.size(); i++) {
+		// 	const Triangle &tri = opt.ref.triangles[i];
+		// 	const glm::vec3 &v0 = opt.ref.vertices[tri[0]];
+		// 	const glm::vec3 &v1 = opt.ref.vertices[tri[1]];
+		// 	const glm::vec3 &v2 = opt.ref.vertices[tri[2]];
+		// 	total_area += glm::length(glm::cross(v1 - v0, v2 - v0))/2.0f;
+		// }
+		//
+		// float avg_area = total_area / opt.ref.triangles.size();
+		//
+		// // Compute triangle area anti-distortion gradients
+		// {
+		// 	std::vector <glm::vec3> tri_gradients;
+		// 	tri_gradients.resize(opt.ref.vertices.size(), glm::vec3(0.0f));
+		//
+		// 	for (uint32_t i = 0; i < opt.ref.triangles.size(); i++) {
+		// 		const Triangle &tri = opt.ref.triangles[i];
+		// 	
+		// 		const glm::vec3 &v0 = opt.ref.vertices[tri[0]];
+		// 		const glm::vec3 &v1 = opt.ref.vertices[tri[1]];
+		// 		const glm::vec3 &v2 = opt.ref.vertices[tri[2]];
+		//
+		// 		float area = glm::length(glm::cross(v1 - v0, v2 - v0))/2.0f;
+		//
+		// 		glm::vec3 vs[3] = {v0, v1, v2};
+		// 		glm::vec3 gs[3] = {};
+		//
+		// 		triangle_area_gradient(vs, gs);
+		//
+		// 		float k = (avg_area - area);
+		// 		tri_gradients[tri[0]] += gs[0] * k;
+		// 		tri_gradients[tri[1]] += gs[1] * k;
+		// 		tri_gradients[tri[2]] += gs[2] * k;
+		// 	}
+		//
+		// 	// Project gradients onto the tangent plane
+		// 	for (uint32_t i = 0; i < opt.ref.vertices.size(); i++) {
+		// 		const glm::vec3 &v = opt.ref.vertices[i];
+		// 		const glm::vec3 &n = surface_normals[i];
+		// 		tri_gradients[i] -= glm::dot(tri_gradients[i], n) * n;
+		// 	}
+		//
+		// 	// Transfer gradients targetting an even distribution of triangle areas
+		// 	for (uint32_t i = 0; i < opt.ref.vertices.size(); i++)
+		// 		gradients[i] += tri_gradients[i];
+		// }
+		//
+		// // Edge anti-collapse/anti-foldover gradients
+		// {
+		// 	std::vector <glm::vec3> edge_gradients;
+		// 	edge_gradients.resize(opt.ref.vertices.size(), glm::vec3(0.0f));
+		//
+		// 	constexpr float ANGLE_THRESHOLD = glm::radians(25.0f);
+		// 	for (uint32_t i = 0; i < opt.ref.triangles.size(); i++) {
+		// 		const Triangle &tri = opt.ref.triangles[i];
+		//
+		// 		const glm::vec3 &v0 = opt.ref.vertices[tri[0]];
+		// 		const glm::vec3 &v1 = opt.ref.vertices[tri[1]];
+		// 		const glm::vec3 &v2 = opt.ref.vertices[tri[2]];
+		// 		glm::vec3 normal = glm::normalize(glm::cross(v1 - v0, v2 - v0));
+		//
+		// 		// Consider all pairs of edges
+		// 		for (uint32_t j = 0; j < 3; j++) {
+		// 			uint32_t m = (j + 1) % 3;
+		// 			uint32_t n = (j + 2) % 3;
+		//
+		// 			const glm::vec3 &v0 = opt.ref.vertices[tri[j]];
+		// 			const glm::vec3 &v1 = opt.ref.vertices[tri[m]];
+		// 			const glm::vec3 &v2 = opt.ref.vertices[tri[n]];
+		//
+		// 			glm::vec3 e0 = v1 - v0;
+		// 			glm::vec3 e1 = v2 - v0;
+		//
+		// 			float angle = glm::acos(glm::dot(e0, e1) / (glm::length(e0) * glm::length(e1)));
+		//
+		// 			glm::vec3 ex = v2 - v1;
+		//
+		// 			if (angle < ANGLE_THRESHOLD) {
+		// 				// Push apart
+		// 				float k = (ANGLE_THRESHOLD - angle);
+		//
+		// 				glm::vec3 g0 = glm::normalize(glm::cross(normal, e0));
+		// 				if (glm::dot(g0, ex) > 0.0f)
+		// 					g0 = -g0;
+		//
+		// 				glm::vec3 g1 = glm::normalize(glm::cross(normal, e1));
+		// 				if (glm::dot(g1, ex) > 0.0f)
+		// 					g1 = -g1;
+		//
+		// 				g0 *= k;
+		// 				g1 *= k;
+		//
+		// 				edge_gradients[tri[j]] += g0;
+		// 				edge_gradients[tri[m]] += g1;
+		// 			}
+		// 		}
+		// 	}
+		//
+		// 	// Transfer gradients targetting an even distribution of triangle areas
+		// 	// for (uint32_t i = 0; i < opt.ref.vertices.size(); i++)
+		// 	// 	gradients[i] += edge_gradients[i];
+		// }
 
 		// TODO: adam optimizer...
 		// TODO: apply gradients in cuda, using the imported vulkan buffer
@@ -1386,6 +1457,8 @@ int main(int argc, char *argv[])
 		viewer.refresh("ref", opt.ref);
 		viewer.render();
 	}
+
+	// TODO: save recording of animation??
 
 	viewer.destroy();
 

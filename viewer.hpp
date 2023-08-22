@@ -22,12 +22,27 @@ struct Camera {
 	void rotate(const glm::vec2 &);
 };
 
+struct Allocator {
+	vk::Device device;
+	littlevk::Deallocator *dal;
+	vk::PhysicalDeviceMemoryProperties mem_props;
+};
+
+struct VectorQuantity {
+	// starting point, endpoint
+	littlevk::Buffer buffer;
+};
+
+// TODO: color maps...
+
 struct Viewer : littlevk::Skeleton {
 	// Different viewing modes
 	enum class Mode : uint32_t {
 		Shaded,
+		Normal,
 		Transparent,
 		Wireframe,
+		FaceColor,
 		Count
 	};
 
@@ -59,12 +74,32 @@ struct Viewer : littlevk::Skeleton {
 
 	// Local resources
 	struct MeshResource {
+		vk::Device device;
+
 		littlevk::Buffer vertex_buffer;
 		littlevk::Buffer index_buffer;
+		littlevk::Buffer unindexed_vertex_buffer;
 		size_t index_count;
+
 		Mode mode;
 		bool enabled = true;
 		glm::vec3 color = { 0.3, 0.7, 0.3 };
+
+		// Additional visualization quantities
+		VectorQuantity vecs;
+
+		void set_face_colors(const std::vector <glm::vec3> &colors) {
+			assert(colors.size() == index_count / 3);
+
+			std::vector <glm::vec3> unindexed_vertices;
+			unindexed_vertices.resize(index_count);
+
+			littlevk::download(device, unindexed_vertex_buffer, unindexed_vertices);
+			for (size_t i = 0; i < index_count/3; i++)
+				unindexed_vertices[i * 3 + 2] = colors[i];
+
+			littlevk::upload(device, unindexed_vertex_buffer, unindexed_vertices);
+		}
 	};
 
 	std::map <std::string, MeshResource> meshes;

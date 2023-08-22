@@ -299,6 +299,37 @@ glm::vec3 cas_grid::query(const glm::vec3 &p) const
 	return closest;
 }
 
+uint32_t cas_grid::query_primitive(const glm::vec3 &p) const
+{
+	// Assuming the point is precached already
+	uint32_t bin_index = to_index(p);
+	assert(bin_index < overlapping_triangles.size());
+
+	const std::vector <uint32_t> &bin = query_triangles[bin_index];
+	assert(bin.size() > 0);
+
+	float min_distance = FLT_MAX;
+
+	uint32_t closest = 0;
+	for (uint32_t index : bin) {
+		const Triangle &tri = ref.triangles[index];
+		glm::vec3 a = ref.vertices[tri[0]];
+		glm::vec3 b = ref.vertices[tri[1]];
+		glm::vec3 c = ref.vertices[tri[2]];
+
+		glm::vec3 point;
+		glm::vec3 bary;
+		float distance;
+		triangle_closest_point(a, b, c, p, &point, &bary, &distance);
+		if (distance < min_distance) {
+			min_distance = distance;
+			closest = index;
+		}
+	}
+
+	return closest;
+}
+
 // Host-side query
 void cas_grid::query(const std::vector <glm::vec3> &sources, std::vector <glm::vec3> &dst) const
 {

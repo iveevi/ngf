@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-POINT_ENCODING_SIZE = 100
+POINT_ENCODING_SIZE = 10
 
 # SRNM subdivision complex indices
 # TODO: refactor the project to SRCM?
@@ -37,18 +37,18 @@ class NSC(nn.Module):
         self.encoding_linears = [
             nn.Linear(POINT_ENCODING_SIZE + 3, 128),
             nn.Linear(128, 128),
-            nn.Linear(128, 128),
-            nn.Linear(128, 128),
+            # nn.Linear(128, 128),
+            # nn.Linear(128, 128),
             nn.Linear(128, 3)
         ]
 
         # Regularizers only for the encoding layers
-        c0 = torch.pow(torch.tensor(1e3), 1.0/len(self.encoding_linears))
+        c0 = torch.pow(torch.tensor(1), 1.0/len(self.encoding_linears))
         c0 = torch.log(torch.exp(c0) - LipschitzNormalization.one)
         self.regularizers = [
             LipschitzNormalization(c0),
-            LipschitzNormalization(c0),
-            LipschitzNormalization(c0),
+            # LipschitzNormalization(c0),
+            # LipschitzNormalization(c0),
             LipschitzNormalization(c0),
             LipschitzNormalization(c0),
         ]

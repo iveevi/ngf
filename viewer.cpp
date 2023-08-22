@@ -45,6 +45,20 @@ void main()
 }
 )";
 
+
+static const char *normal_fragment_shader = R"(
+#version 450
+
+layout (location = 0) in vec3 in_normal;
+
+layout (location = 0) out vec4 fragment;
+
+void main()
+{
+	fragment = vec4(in_normal * 0.5 + 0.5, 1.0);
+}
+)";
+
 static const char *transparent_fragment_shader = R"(
 #version 450
 
@@ -78,6 +92,44 @@ void main()
 }
 )";
 
+static const char *face_vertex_shader = R"(
+#version 450
+
+layout (location = 0) in vec3 position;
+layout (location = 1) in vec3 normal;
+layout (location = 2) in vec3 color;
+
+layout (push_constant) uniform VertexPushConstants {
+	mat4 model;
+	mat4 view;
+	mat4 proj;
+};
+
+layout (location = 0) out vec3 out_color;
+
+void main()
+{
+	gl_Position = proj * view * model * vec4(position, 1.0);
+	gl_Position.y = -gl_Position.y;
+	gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
+
+	out_color = color;
+}
+)";
+
+static const char *point_color_fragment_shader = R"(
+#version 450
+
+layout (location = 0) in vec3 color;
+
+layout (location = 0) out vec4 fragment;
+
+void main()
+{
+	fragment = vec4(color, 1.0);
+}
+)";
+
 // Vertex properties
 static constexpr vk::VertexInputBindingDescription vertex_binding {
 	0, 2 * sizeof(glm::vec3), vk::VertexInputRate::eVertex
@@ -89,6 +141,22 @@ static constexpr std::array <vk::VertexInputAttributeDescription, 2> vertex_attr
 	},
 	vk::VertexInputAttributeDescription {
 		1, 0, vk::Format::eR32G32B32Sfloat, sizeof(glm::vec3)
+	},
+};
+
+static constexpr vk::VertexInputBindingDescription perface_vertex_binding {
+	0, 3 * sizeof(glm::vec3), vk::VertexInputRate::eVertex
+};
+
+static constexpr std::array <vk::VertexInputAttributeDescription, 3> perface_vertex_attributes {
+	vk::VertexInputAttributeDescription {
+		0, 0, vk::Format::eR32G32B32Sfloat, 0
+	},
+	vk::VertexInputAttributeDescription {
+		1, 0, vk::Format::eR32G32B32Sfloat, sizeof(glm::vec3)
+	},
+	vk::VertexInputAttributeDescription {
+		2, 0, vk::Format::eR32G32B32Sfloat, 2 * sizeof(glm::vec3)
 	},
 };
 
@@ -283,8 +351,18 @@ void Viewer::from(const vk::PhysicalDevice &phdev_)
 		vk::ShaderStageFlagBits::eVertex
 	).unwrap(dal);
 
+	vk::ShaderModule face_vertex_module = littlevk::shader::compile(
+		device, std::string(face_vertex_shader),
+		vk::ShaderStageFlagBits::eVertex
+	).unwrap(dal);
+
 	vk::ShaderModule shaded_fragment_module = littlevk::shader::compile(
 		device, std::string(shaded_fragment_shader),
+		vk::ShaderStageFlagBits::eFragment
+	).unwrap(dal);
+
+	vk::ShaderModule normal_fragment_module = littlevk::shader::compile(
+		device, std::string(normal_fragment_shader),
 		vk::ShaderStageFlagBits::eFragment
 	).unwrap(dal);
 
@@ -295,6 +373,11 @@ void Viewer::from(const vk::PhysicalDevice &phdev_)
 
 	vk::ShaderModule wireframe_fragment_module = littlevk::shader::compile(
 		device, std::string(wireframe_fragment_shader),
+		vk::ShaderStageFlagBits::eFragment
+	).unwrap(dal);
+
+	vk::ShaderModule point_color_fragment_module = littlevk::shader::compile(
+		device, std::string(point_color_fragment_shader),
 		vk::ShaderStageFlagBits::eFragment
 	).unwrap(dal);
 
@@ -337,12 +420,28 @@ void Viewer::from(const vk::PhysicalDevice &phdev_)
 			}
 		).unwrap(dal);
 
+		pipeline_info.fragment_shader = normal_fragment_module;
+		pipeline_info.pipeline_layout = pipeline_layout;
+		pipeline_info.alpha_blend = false;
+
+		pipelines[1].first = pipeline_layout;
+		pipelines[1].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
+	}
+
+	{
+		vk::PipelineLayout pipeline_layout = littlevk::pipeline_layout(
+			device,
+			vk::PipelineLayoutCreateInfo {
+				{}, nullptr, push_constant_range
+			}
+		).unwrap(dal);
+
 		pipeline_info.fragment_shader = transparent_fragment_module;
 		pipeline_info.pipeline_layout = pipeline_layout;
 		pipeline_info.alpha_blend = true;
 
-		pipelines[1].first = pipeline_layout;
-		pipelines[1].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
+		pipelines[2].first = pipeline_layout;
+		pipelines[2].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
 	}
 
 	{
@@ -369,8 +468,39 @@ void Viewer::from(const vk::PhysicalDevice &phdev_)
 		pipeline_info.fill_mode = vk::PolygonMode::eLine;
 		pipeline_info.alpha_blend = false;
 
-		pipelines[2].first = pipeline_layout;
-		pipelines[2].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
+		pipelines[3].first = pipeline_layout;
+		pipelines[3].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
+	}
+
+	{
+
+		std::array <vk::PushConstantRange, 2> push_constant_ranges {
+			vk::PushConstantRange {
+				vk::ShaderStageFlagBits::eVertex,
+				0, 3 * sizeof(glm::mat4)
+			},
+			vk::PushConstantRange {
+				vk::ShaderStageFlagBits::eFragment,
+				offsetof(wireframe_push_constants, color), sizeof(glm::vec3)
+			},
+		};
+
+		vk::PipelineLayout pipeline_layout = littlevk::pipeline_layout(
+			device,
+			vk::PipelineLayoutCreateInfo {
+				{}, nullptr, push_constant_ranges
+			}
+		).unwrap(dal);
+
+		pipeline_info.vertex_shader = face_vertex_module;
+		pipeline_info.fragment_shader = point_color_fragment_module;
+		pipeline_info.pipeline_layout = pipeline_layout;
+		pipeline_info.vertex_binding = perface_vertex_binding;
+		pipeline_info.vertex_attributes = perface_vertex_attributes;
+		pipeline_info.fill_mode = vk::PolygonMode::eFill;
+
+		pipelines[4].first = pipeline_layout;
+		pipelines[4].second = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
 	}
 
 	// Create the syncronization objects
@@ -436,38 +566,58 @@ void Viewer::from(const vk::PhysicalDevice &phdev_)
 
 void Viewer::add(const std::string &name, const Mesh &mesh, Mode mode)
 {
-	MeshResource res;
+	MeshResource resource;
 
-	Mesh local = mesh;
-	recompute_normals(local);
+	// Mesh local = mesh;
+	// recompute_normals(local);
 
 	// Interleave the vertex data
-	assert(local.vertices.size() == local.normals.size());
+	// assert(local.vertices.size() == local.normals.size());
 
 	std::vector <glm::vec3> vertices;
-	vertices.reserve(2 * local.vertices.size());
+	vertices.reserve(2 * mesh.vertices.size());
 
-	for (size_t i = 0; i < local.vertices.size(); i++) {
-		vertices.push_back(local.vertices[i]);
-		vertices.push_back(local.normals[i]);
+	for (size_t i = 0; i < mesh.vertices.size(); i++) {
+		vertices.push_back(mesh.vertices[i]);
+		vertices.push_back(mesh.normals[i]);
 	}
 
-	res.vertex_buffer = littlevk::buffer(device,
+	std::vector <glm::vec3> unindexed_vertices;
+	unindexed_vertices.reserve(3 * mesh.triangles.size());
+
+	for (const auto &triangle : mesh.triangles) {
+		for (uint32_t i = 0; i < 3; i++) {
+			unindexed_vertices.push_back(mesh.vertices[triangle[i]]);
+			unindexed_vertices.push_back(mesh.normals[triangle[i]]);
+			unindexed_vertices.push_back({ 1.0f, 0.5f, 0.5f });
+		}
+	}
+
+	resource.vertex_buffer = littlevk::buffer(device,
 		vertices,
 		vk::BufferUsageFlagBits::eVertexBuffer,
 		mem_props
 	).unwrap(dal);
 
-	res.index_buffer = littlevk::buffer(device,
+	resource.index_buffer = littlevk::buffer(device,
 		mesh.triangles,
 		vk::BufferUsageFlagBits::eIndexBuffer,
 		mem_props
 	).unwrap(dal);
 
-	res.index_count = mesh.triangles.size() * 3;
-	res.mode = mode;
+	// TODO: defer this to a facecolors object
+	resource.unindexed_vertex_buffer = littlevk::buffer(device,
+		unindexed_vertices,
+		vk::BufferUsageFlagBits::eVertexBuffer,
+		mem_props
+	).unwrap(dal);
 
-	meshes[name] = res;
+	resource.index_count = mesh.triangles.size() * 3;
+	resource.mode = mode;
+	
+	resource.device = device;
+
+	meshes[name] = resource;
 }
 
 void Viewer::refresh(const std::string &name, const Mesh &mesh)
@@ -476,14 +626,16 @@ void Viewer::refresh(const std::string &name, const Mesh &mesh)
 	if (it == meshes.end())
 		return;
 
-	Mesh local = mesh;
-	recompute_normals(local);
+	// Mesh local = mesh;
+	// recompute_normals(local);
 
 	// Interleave the vertex data
 	std::vector <glm::vec3> vertices;
-	for (size_t i = 0; i < local.vertices.size(); i++) {
-		vertices.push_back(local.vertices[i]);
-		vertices.push_back(local.normals[i]);
+	vertices.reserve(2 * mesh.vertices.size());
+
+	for (size_t i = 0; i < mesh.vertices.size(); i++) {
+		vertices.push_back(mesh.vertices[i]);
+		vertices.push_back(mesh.normals[i]);
 	}
 
 	littlevk::upload(device, it->second.vertex_buffer, vertices);
@@ -613,9 +765,14 @@ void Viewer::render()
 		}
 
 		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipelines[mode].second);
-		cmd.bindVertexBuffers(0, *res.vertex_buffer, { 0 });
-		cmd.bindIndexBuffer(*res.index_buffer, 0, vk::IndexType::eUint32);
-		cmd.drawIndexed(res.index_count, 1, 0, 0, 0);
+		if (res.mode == Mode::FaceColor) {
+			cmd.bindVertexBuffers(0, *res.unindexed_vertex_buffer, { 0 });
+			cmd.draw(res.index_count, 1, 0, 0);
+		} else {
+			cmd.bindVertexBuffers(0, *res.vertex_buffer, { 0 });
+			cmd.bindIndexBuffer(*res.index_buffer, 0, vk::IndexType::eUint32);
+			cmd.drawIndexed(res.index_count, 1, 0, 0, 0);
+		}
 	}
 
 	// Draw ImGui
@@ -625,7 +782,7 @@ void Viewer::render()
 
 	static constexpr const char *mode_names[] = {
 		// TODO: triangles with false positive coloring
-		"Shaded", "Transparent", "Wireframe",
+		"Shaded", "Normal", "Transparent", "Wireframe", "FaceColor"
 	};
 
 	ImGui::Begin("Meshes");
@@ -633,7 +790,7 @@ void Viewer::render()
 		ImGui::Checkbox(name.c_str(), &res.enabled);
 
 		// Select mode button for now
-		for (size_t i = 0; i < 3; i++) {
+		for (uint32_t i = 0; i < (uint32_t) Mode::Count; i++) {
 			ImGui::SameLine();
 
 			std::string bstr = mode_names[i] + ("##" + name);

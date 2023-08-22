@@ -74,6 +74,8 @@ struct cas_grid {
 	bool precache_query(const std::vector <glm::vec3> &points);
 
 	glm::vec3 query(const glm::vec3 &p) const;
+	uint32_t query_primitive(const glm::vec3 &p) const;
+
 	void query(const std::vector <glm::vec3> &sources, std::vector <glm::vec3> &dst) const;
 
 	void precache_device();

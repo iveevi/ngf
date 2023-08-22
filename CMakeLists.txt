@@ -8,6 +8,9 @@ set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR})
 find_package(OpenMP REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(glslang REQUIRED)
+find_package(Eigen3 REQUIRED)
+
+add_subdirectory(polyscope)
 
 add_executable(nsc
 	nsc.cu
@@ -22,8 +25,13 @@ add_executable(nsc
 	imgui/backends/imgui_impl_vulkan.cpp
 )
 
+add_executable(decimate
+	decimate.cpp
+)
+
 target_link_libraries(nsc
 	glfw
+	cusparse
 	assimp
 	OpenMP::OpenMP_CXX
 	SPIRV
@@ -32,7 +40,15 @@ target_link_libraries(nsc
 	glslang::glslang-default-resource-limits
 )
 
+target_link_libraries(decimate
+	polyscope
+	assimp
+	OpenMP::OpenMP_CXX
+)
+
 include_directories(.
 	glm
 	imgui
+	libigl/include
+	${EIGEN3_INCLUDE_DIR}
 )
