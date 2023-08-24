@@ -4,6 +4,7 @@ project(nsc CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR})
+set(CMAKE_CXX_FLAGS "-fpermissive")
 
 find_package(OpenMP REQUIRED)
 find_package(Vulkan REQUIRED)
@@ -25,8 +26,18 @@ add_executable(nsc
 	imgui/backends/imgui_impl_vulkan.cpp
 )
 
-add_executable(decimate
-	decimate.cpp
+add_executable(decimate decimate.cpp)
+add_executable(opt opt.cu casdf/casdf.cu)
+
+add_executable(cut cut.cu casdf/casdf.cu
+	viewer.cpp
+	
+	imgui/imgui.cpp
+	imgui/imgui_draw.cpp
+	imgui/imgui_widgets.cpp
+	imgui/imgui_tables.cpp
+	imgui/backends/imgui_impl_glfw.cpp
+	imgui/backends/imgui_impl_vulkan.cpp
 )
 
 target_link_libraries(nsc
@@ -46,9 +57,30 @@ target_link_libraries(decimate
 	OpenMP::OpenMP_CXX
 )
 
+target_link_libraries(opt
+	polyscope
+	assimp
+	OpenMP::OpenMP_CXX
+	SPIRV
+	Vulkan::Vulkan
+	glslang::glslang
+	glslang::glslang-default-resource-limits
+)
+
+target_link_libraries(cut
+	polyscope
+	assimp
+	OpenMP::OpenMP_CXX
+	SPIRV
+	Vulkan::Vulkan
+	glslang::glslang
+	glslang::glslang-default-resource-limits
+)
+
 include_directories(.
 	glm
 	imgui
 	libigl/include
+	indicators/include
 	${EIGEN3_INCLUDE_DIR}
 )

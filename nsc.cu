@@ -1231,17 +1231,17 @@ int main(int argc, char *argv[])
 
 		recompute_normals(opt.ref);
 
-		uint32_t interior_points = 0;
-		for (uint32_t i = 0; i < opt.ref.vertices.size(); i++) {
-			glm::vec3 p = opt.ref.vertices[i];
-			glm::vec3 n = opt.ref.normals[i];
-			p += n * 0.01f;
-
-			if (iquery_as.query(p))
-				interior_points++;
-		}
-
-		printf("Interior points: %u/%u\n", interior_points, opt.ref.vertices.size());
+		// uint32_t interior_points = 0;
+		// for (uint32_t i = 0; i < opt.ref.vertices.size(); i++) {
+		// 	glm::vec3 p = opt.ref.vertices[i];
+		// 	glm::vec3 n = opt.ref.normals[i];
+		// 	p += n * 0.01f;
+		//
+		// 	if (iquery_as.query(p))
+		// 		interior_points++;
+		// }
+		//
+		// printf("Interior points: %u/%u\n", interior_points, opt.ref.vertices.size());
 
 		// Optimize the skin mesh around the target (original) mesh
 		std::vector <glm::vec3> host_closest(opt.ref.vertices.size());
@@ -1325,9 +1325,13 @@ int main(int argc, char *argv[])
 				const uint32_t &t = host_triangles[i];
 				const Triangle &tri = opt.ref.triangles[t];
 
-				glm::vec3 v0 = mesh.vertices[tri[0]];
-				glm::vec3 v1 = mesh.vertices[tri[1]];
-				glm::vec3 v2 = mesh.vertices[tri[2]];
+				// glm::vec3 v0 = mesh.vertices[tri[0]];
+				// glm::vec3 v1 = mesh.vertices[tri[1]];
+				// glm::vec3 v2 = mesh.vertices[tri[2]];
+				
+				glm::vec3 v0 = opt.ref.vertices[tri[0]];
+				glm::vec3 v1 = opt.ref.vertices[tri[1]];
+				glm::vec3 v2 = opt.ref.vertices[tri[2]];
 
 				glm::vec3 delta = (w - v);
 

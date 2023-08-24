@@ -943,208 +943,23 @@ int main(int argc, char *argv[])
 
 		printf("Triangular polygons removed: %u\n", removed_triangle_count);
 	}
-	
-	// Remove final anomalies and abnormalities
-	
-	// Regenerate the connectivity information
-	std::tie(vgraph, egraph, dual) = build_graphs(decimated_mesh);
 
-	polygon_map.clear();
-	for (uint32_t i = 0; i < polygons.size(); i++) {
-		const polygon &p = polygons[i];
-		polygon_map[p.t0] = i;
-		if (p.type == polygon_type::quad)
-			polygon_map[p.t1] = i;
+	// Check that every triangle is now covered exactly by one QUAD
+	std::vector <uint32_t> covered;
+	covered.resize(decimated_mesh.triangles.size(), 0);
+
+	for (const auto &p : polygons) {
+		iassert(p.type == polygon_type::quad, "Polygon is not a quad\n");
+		covered[p.t0]++;
+		covered[p.t1]++;
 	}
 
-	std::unordered_map <ordered_pair, std::vector <Edge>, ordered_pair::hash> edge_map;
+	for (uint32_t c : covered)
+		iassert(c == 1, "Triangle is not covered exactly once\n");
 
-	for (auto &[e, fs] : egraph) {
-		iassert(fs.size() == 2, "Edge graph should only contain edges with two adjacent faces");
-		uint32_t f0 = *fs.begin();
-		uint32_t f1 = *std::next(fs.begin());
+	printf("%zu triangles covered exactly once by %zu quads\n", covered.size(), polygons.size());
 
-		uint32_t p0 = polygon_map[f0];
-		uint32_t p1 = polygon_map[f1];
-
-		if (p0 == p1)
-			continue;
-
-		// polygon_adjacency[p0].insert(p1);
-		// polygon_adjacency[p1].insert(p0);
-
-		edge_map[{ p0, p1 }].push_back(e);
-	}
-
-	// for (const auto &[ps, es] : edge_map) {
-	// 	if (es.size() < 2)
-	// 		continue;
-	//
-	// 	glm::vec3 c = glm::vec3(1.0f, 0.0f, 0.0f);
-	// 	face_colors[polygons[ps.a].t0] = c;
-	// 	face_colors[polygons[ps.a].t1] = c;
-	// 	face_colors[polygons[ps.b].t0] = c;
-	// 	face_colors[polygons[ps.b].t1] = c;
-	//
-	// 	printf("Anomaly detected: %u %u has %u shared edges\n", ps.a, ps.b, es.size());
-	// }
-	
-	// polygons_to_remove.clear();
-	// triangles_to_remove.clear();
-	//
-	// std::unordered_map <ordered_pair, std::vector <Edge>, ordered_pair::hash> unresolved;
-	// do {
-	// 	taken.clear();
-	// 	unresolved.clear();
-	// 	std::unordered_map <uint32_t, uint32_t> new_polygon_map;
-	//
-	// 	// for (const auto &[ps, es] : edge_map) {
-	// 	for (auto it = edge_map.begin(); it != edge_map.end(); ) {
-	// 		const auto &[ps, es] = *it;
-	//
-	// 		if (es.size() < 2) {{}
-	// 			it++;
-	// 			continue;
-	// 		}
-	//
-	// 		iassert(es.size() == 2, "Anomaly detected with more than two shared edges");
-	// 		if (taken.count(ps.a) || taken.count(ps.b)) {
-	// 			unresolved[ps] = es;
-	// 			printf("Missed opportunity: %u %u\n", ps.a, ps.b);
-	// 			it++;
-	// 			continue;
-	// 		}
-	//
-	// 		printf("Opportunity: %u %u\n", ps.a, ps.b);
-	//
-	// 		taken.insert(ps.a);
-	// 		taken.insert(ps.b);
-	//
-	// 		const Edge &e0 = es[0];
-	// 		const Edge &e1 = es[1];
-	//
-	// 		uint32_t common = (e0.a == e1.a || e0.a == e1.b) ? e0.a : e0.b;
-	// 		uint32_t u0 = (e0.a == common) ? e0.b : e0.a;
-	// 		uint32_t u1 = (e1.a == common) ? e1.b : e1.a;
-	//
-	// 		const polygon &p0 = polygons[ps.a];
-	// 		const polygon &p1 = polygons[ps.b];
-	//
-	// 		uint32_t v0 = p0.vertices[0];
-	// 		uint32_t v1 = p1.vertices[0];
-	//
-	// 		for (uint32_t i = 0; i < 4; i++) {
-	// 			uint32_t pv0 = p0.vertices[i];
-	// 			uint32_t pv1 = p1.vertices[i];
-	//
-	// 			if (pv0 != common && pv0 != u0 && pv0 != u1)
-	// 				v0 = pv0;
-	//
-	// 			if (pv1 != common && pv1 != u0 && pv1 != u1)
-	// 				v1 = pv1;
-	// 		}
-	//
-	// 		polygons_to_remove.insert(ps.a);
-	// 		polygons_to_remove.insert(ps.b);
-	//
-	// 		triangles_to_remove.insert(p0.t0);
-	// 		triangles_to_remove.insert(p0.t1);
-	// 		triangles_to_remove.insert(p1.t0);
-	// 		triangles_to_remove.insert(p1.t1);
-	//
-	// 		// New polygon cycle is v0 -> u0 -> v1 -> u1
-	// 		Triangle t0 = { v0, u0, v1 };
-	// 		Triangle t1 = { v1, v0, u1 };
-	//
-	// 		uint32_t new_triangle_index = decimated_mesh.triangles.size();
-	// 		decimated_mesh.triangles.push_back(t0);
-	// 		decimated_mesh.triangles.push_back(t1);
-	//
-	// 		polygon new_polygon;
-	// 		new_polygon.type = polygon_type::quad;
-	// 		new_polygon.vertices = { v0, u0, v1, u1 };
-	// 		new_polygon.t0 = new_triangle_index;
-	// 		new_polygon.t1 = new_triangle_index + 1;
-	//
-	// 		uint32_t new_polygon_index = polygons.size();
-	// 		polygons.push_back(new_polygon);
-	//
-	// 		new_polygon_map[ps.a] = new_polygon_index;
-	// 		new_polygon_map[ps.b] = new_polygon_index;
-	// 		it = edge_map.erase(it);
-	// 	}
-	//
-	// 	// Refactor remaining edges
-	// 	decltype(edge_map) new_edge_map;
-	// 	for (const auto &[ps, es] : edge_map) {
-	// 		uint32_t a = ps.a;
-	// 		uint32_t b = ps.b;
-	//
-	// 		if (new_polygon_map.count(a))
-	// 			a = new_polygon_map[a];
-	//
-	// 		if (new_polygon_map.count(b))
-	// 			b = new_polygon_map[b];
-	//
-	// 		ordered_pair new_ps = { a, b };
-	// 		new_edge_map[new_ps] = es;
-	// 	}
-	//
-	// 	printf("# of unresolved: %zu\n", unresolved.size());
-	// 	edge_map = std::move(new_edge_map);
-	// } while (!unresolved.empty());
-	//
-	// // Erase polygons used by the transpose operations
-	// {
-	// 	std::vector <uint32_t> sorted_polygons_to_remove(
-	// 		polygons_to_remove.begin(),
-	// 		polygons_to_remove.end());
-	//
-	// 	std::sort(sorted_polygons_to_remove.begin(), sorted_polygons_to_remove.end(), std::greater <uint32_t> ());
-	//
-	// 	uint32_t removed_triangle_count = 0;
-	// 	for (uint32_t p : sorted_polygons_to_remove) {
-	// 		removed_triangle_count += (polygons[p].type == polygon_type::triangle);
-	// 		polygons.erase(polygons.begin() + p);
-	// 	}
-	//
-	// 	printf("Triangular polygons removed: %u\n", removed_triangle_count);
-	// }
-	//
-	// // Delete triangles from the decimated mesh
-	// {
-	// 	std::vector <Triangle> new_triangles;
-	// 	std::unordered_map <uint32_t, uint32_t> remap;
-	//
-	// 	for (uint32_t i = 0; i < decimated_mesh.triangles.size(); i++) {
-	// 		if (triangles_to_remove.count(i) == 0) {
-	// 			remap[i] = new_triangles.size();
-	// 			new_triangles.push_back(decimated_mesh.triangles[i]);
-	// 		}
-	// 	}
-	//
-	// 	// Fix the polygon references
-	// 	for (polygon &poly : polygons) {
-	// 		poly.t0 = remap[poly.t0];
-	//
-	// 		if (poly.type == polygon_type::quad)
-	// 			poly.t1 = remap[poly.t1];
-	// 	}
-	//
-	// 	// Fix quad pairs
-	// 	std::unordered_set <ordered_pair, ordered_pair::hash> new_quad_pairs;
-	// 	for (const auto &[a, b] : quad_pairs)
-	// 		new_quad_pairs.insert({ remap[a], remap[b] });
-	//
-	// 	quad_pairs = new_quad_pairs;
-	//
-	// 	// Replace the decimated mesh triangles
-	// 	decimated_mesh.triangles = new_triangles;
-	// }
-
-	// recompute_normals(mesh);
-	// recompute_normals(decimated_mesh);
-
+	// Visualize
 	std::vector <std::array <uint32_t, 2>> curve_points;
 	for (const auto &p : polygons) {
 		for (uint32_t i = 0; i < p.vertices.size(); i++) {
@@ -1155,7 +970,6 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	// Visualize
 	std::vector <glm::vec3> face_colors;
 	face_colors.resize(decimated_mesh.triangles.size(), glm::vec3(0.0));
 
@@ -1182,43 +996,6 @@ int main(int argc, char *argv[])
 		face_colors[t1] = c;
 	}
 
-	// for (uint32_t q : visited) {
-	// 	const glm::vec3 &c = glm::vec3(1.0f);
-	// 	const polygon &p = polygons[q];
-	// 	face_colors[p.t0] = c;
-	// 	if (p.type == polygon_type::quad)
-	// 		face_colors[p.t1] = c;
-	// }
-
-	// for (const auto &[s, e, quads] : paths) {
-	// 	const polygon &ps = polygons[s];
-	// 	const polygon &pe = polygons[e];
-	//
-	// 	face_colors[ps.t0] = glm::vec3(1.0f, 0.0f, 0.0f);
-	// 	face_colors[pe.t0] = glm::vec3(1.0f, 0.0f, 0.0f);
-	//
-	// 	for (uint32_t q : quads) {
-	// 		const polygon &p = polygons[q];
-	// 		face_colors[p.t0] = glm::vec3(1.0f);
-	// 		face_colors[p.t1] = glm::vec3(1.0f);
-	// 	}
-	// }
-
-	// Check that every triangle is now covered exactly by one QUAD
-	std::vector <uint32_t> covered;
-	covered.resize(decimated_mesh.triangles.size(), 0);
-	
-	for (const auto &p : polygons) {
-		iassert(p.type == polygon_type::quad, "Polygon is not a quad\n");
-		covered[p.t0]++;
-		covered[p.t1]++;
-	}
-
-	for (uint32_t c : covered)
-		iassert(c == 1, "Triangle is not covered exactly once\n");
-
-	printf("%zu triangles covered exactly once by %zu quads\n", covered.size(), polygons.size());
-
 	// Send to polyscope to visualize
 	ps::init();
 
@@ -1236,6 +1013,13 @@ int main(int argc, char *argv[])
 	std::filesystem::path opath = path.stem().string() + ".quads";
 	std::ofstream ofile(opath, std::ios::binary);
 
+	// Write the original mesh path
+	std::string original_path = path.string();
+	uint32_t length = original_path.size();
+
+	ofile.write((char *) &length, sizeof(uint32_t));
+	ofile.write(original_path.c_str(), length);
+
 	// Write the mesh, then the quad indices
 	uint32_t nv = decimated_mesh.vertices.size();
 	uint32_t nt = decimated_mesh.triangles.size();
@@ -1250,7 +1034,6 @@ int main(int argc, char *argv[])
 	ofile.write((char *) &np, sizeof(uint32_t));
 
 	for (const auto &p : polygons) {
-		ofile.write((char *) &p.type, sizeof(polygon_type));
 		ofile.write((char *) &p.t0, sizeof(uint32_t));
 		ofile.write((char *) &p.t1, sizeof(uint32_t));
 	}
