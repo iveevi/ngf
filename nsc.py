@@ -13,7 +13,7 @@ import tqdm
 from models import *
 
 if len(sys.argv) < 3:
-    print('Usage: python3 srnm.py <sdv_complexes_file> <output_dir>')
+    print('Usage: python3 nsc.py <sdv_complexes_file> <output_dir>')
     sys.exit(1)
 
 sdv_complexes_file = sys.argv[1]
@@ -109,6 +109,14 @@ vertices, _ = srnm(args)
 print(vertices.shape)
 
 ps.init()
+
+# for i, tg in enumerate(targets):
+#     tg = tg.reshape(-1, 3)
+#     tg = tg.cpu().detach().numpy()
+#     ps.register_surface_mesh("target-{}".format(i), tg, indices(resolution))
+
+# ps.show()
+# ps.remove_all_structures()
 
 for i, vs in enumerate(vertices):
     vs = vs.reshape(-1, 3)

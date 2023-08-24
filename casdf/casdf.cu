@@ -243,6 +243,7 @@ void sample_kernel(sample_result result, cumesh mesh, float time)
 		result.points[i] = bary.x * v0 + bary.y * v1 + bary.z * v2;
 		result.barys[i] = bary;
 		result.triangles[i] = tri;
+		result.indices[i] = tindex;
 	}
 }
 
@@ -295,6 +296,7 @@ sample_result sample_result_alloc(uint32_t point_count)
 	cudaMalloc(&result.points, sizeof(glm::vec3) * point_count);
 	cudaMalloc(&result.barys, sizeof(glm::vec3) * point_count);
 	cudaMalloc(&result.triangles, sizeof(glm::uvec3) * point_count);
+	cudaMalloc(&result.indices, sizeof(uint32_t) * point_count);
 
 	return result;
 }

@@ -1,5 +1,6 @@
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <unordered_set>
 
 #include <polyscope/polyscope.h>
@@ -121,6 +122,95 @@ struct quad {
 	std::vector <uint32_t> triangles;
 	std::vector <uint32_t> vertices;
 };
+
+void save(const Mesh &opt, const std::vector <quad> &quads, const std::string target_file, const std::filesystem::path &path)
+{
+	std::ofstream fout(path, std::ios::binary);
+
+	uint32_t target_file_size = target_file.size();
+	fout.write((char *) &target_file_size, sizeof(uint32_t));
+	fout.write((char *) target_file.data(), target_file_size);
+
+	std::vector <std::array <uint32_t, 4>> quad_corners;
+	for (const quad &q : quads) {
+		quad_corners.push_back({
+			q.vertices[0],
+			q.vertices[q.size - 1],
+			q.vertices[q.size * (q.size - 1)],
+			q.vertices[q.size * q.size - 1],
+		});
+
+		glm::vec3 c0 = opt.vertices[q.vertices[0]];
+		glm::vec3 c1 = opt.vertices[q.vertices[q.size - 1]];
+		glm::vec3 c2 = opt.vertices[q.vertices[q.size * (q.size - 1)]];
+		glm::vec3 c3 = opt.vertices[q.vertices[q.size * q.size - 1]];
+
+		printf("quad: (%f, %f, %f) (%f, %f, %f) (%f, %f, %f) (%f, %f, %f)\n",
+			c0.x, c0.y, c0.z,
+			c1.x, c1.y, c1.z,
+			c2.x, c2.y, c2.z,
+			c3.x, c3.y, c3.z);
+	}
+
+	std::unordered_map <uint32_t, uint32_t> corner_map;
+
+	auto add_unique_corners = [&](uint32_t c) -> uint32_t {
+		if (corner_map.count(c))
+			return corner_map[c];
+
+		uint32_t csize = corner_map.size();
+		corner_map[c] = csize;
+		return csize;
+	};
+		
+	std::vector <uint32_t> normalized_complexes;
+
+	for (const std::array <uint32_t, 4> &c : quad_corners) {
+		normalized_complexes.push_back(add_unique_corners(c[0]));
+		normalized_complexes.push_back(add_unique_corners(c[1]));
+		normalized_complexes.push_back(add_unique_corners(c[2]));
+		normalized_complexes.push_back(add_unique_corners(c[3]));
+	}
+
+	printf("Normalized complexes: %lu\n", normalized_complexes.size()/12);
+	for (uint32_t i = 0; i < normalized_complexes.size(); i += 4)
+		printf("%u %u %u %u\n", normalized_complexes[i], normalized_complexes[i + 1], normalized_complexes[i + 2], normalized_complexes[i + 3]);
+
+	std::vector <glm::vec3> corners;
+	corners.resize(corner_map.size());
+
+	// std::vector <uint32_t> corner_indices;
+	for (const auto &p : corner_map) {
+		// corners.push_back(opt.vertices[p.first]);
+		corners[p.second] = opt.vertices[p.first];
+		// printf("%u: (%f, %f, %f)\n", p.second, corners.back().x, corners.back().y, corners.back().z);
+	}
+	
+	printf("Corner count: %u\n", corner_map.size());
+	for (uint32_t i = 0; i < corners.size(); i++)
+		printf("%u: (%f, %f, %f)\n", i, corners[i].x, corners[i].y, corners[i].z);
+
+	uint32_t corner_count = corner_map.size();
+	fout.write((char *) &corner_count, sizeof(uint32_t));
+	fout.write((char *) corners.data(), corners.size() * sizeof(glm::vec3));
+
+	uint32_t quad_count = quads.size();
+	fout.write((char *) &quad_count, sizeof(uint32_t));
+	fout.write((char *) normalized_complexes.data(), normalized_complexes.size() * sizeof(uint32_t));
+
+	for (const auto &q : quads) {
+		uint32_t size = q.size;
+		fout.write((char *) &size, sizeof(uint32_t));
+
+		std::vector <glm::vec3> vertices;
+		for (uint32_t v : q.vertices)
+			vertices.push_back(opt.vertices[v]);
+
+		uint32_t vertex_count = vertices.size();
+		fout.write((char *) &vertex_count, sizeof(uint32_t));
+		fout.write((char *) vertices.data(), vertices.size() * sizeof(glm::vec3));
+	}
+}
 
 std::vector <glm::vec3> upscale(const Mesh &ref, const quad &q)
 {
@@ -288,6 +378,31 @@ void repair(const Mesh &ref, Mesh &opt, const std::vector <quad> &quads, cas_gri
 		if (glm::dot(nexp, nact) < 0.0f)
 			std::swap(t[1], t[2]);
 	}
+}
+
+void sdf_gradients(cas_grid &cas, const std::vector <glm::vec3> &points, std::vector <glm::vec3> &gradients)
+{
+	uint32_t n = points.size();
+	ULOG_ASSERT(n == gradients.size());
+
+	std::vector <glm::vec3> epsiloned(6 * n);
+	for (uint32_t i = 0; i < n; i++) {
+		epsiloned[6 * i + 0] = points[i] + glm::vec3(1e-3f, 0.0f, 0.0f);
+		epsiloned[6 * i + 1] = points[i] + glm::vec3(-1e-3f, 0.0f, 0.0f);
+		epsiloned[6 * i + 2] = points[i] + glm::vec3(0.0f, 1e-3f, 0.0f);
+		epsiloned[6 * i + 3] = points[i] + glm::vec3(0.0f, -1e-3f, 0.0f);
+		epsiloned[6 * i + 4] = points[i] + glm::vec3(0.0f, 0.0f, 1e-3f);
+		epsiloned[6 * i + 5] = points[i] + glm::vec3(0.0f, 0.0f, -1e-3f);
+	}
+
+	cas.precache_query(epsiloned);
+
+	std::vector <glm::vec3> closest(6 * n);
+	std::vector <glm::vec3> bary(6 * n);
+	std::vector <float> dist(6 * n);
+	std::vector <uint32_t> tid(6 * n);
+
+	cas.query(epsiloned, closest, bary, dist, tid);
 }
 
 int main(int argc, char *argv[])
@@ -463,6 +578,11 @@ int main(int argc, char *argv[])
 	auto new_opt = opt;
 	auto new_quads = quads;
 
+	std::vector <std::vector <float>> densities;
+
+	// Epoch time
+	auto start = std::chrono::high_resolution_clock::now();
+
 	for (size_t it = 0; it < 3; it++) {
 		// TODO: plot this...
 		// TODO: preview this in real-time...
@@ -512,6 +632,11 @@ int main(int argc, char *argv[])
 		// Get connectivity information
 		auto [vgraph, egraph, dual] = build_graphs(new_opt);
 
+		std::vector <float> sampling_density(target.triangles.size(), 0.0f);
+		std::vector <uint32_t> sampled_triangles(TARGET_SAMPLES);
+		float total_samples = 0.0f;
+
+		bool enable_target_sampling = true;
 		for (int i = 0; i < 1000; i++) {
 			t1 = clock.now();
 			lstart = clock.now();
@@ -536,65 +661,80 @@ int main(int argc, char *argv[])
 
 			for (uint32_t j = 0; j < new_opt.vertices.size(); j++) {
 				gradients[j] = closest[j] - new_opt.vertices[j];
-				if (glm::length(gradients[j]) > 0.0f)
-					gradients[j] = glm::normalize(gradients[j]);
-				gradients[j] *= 0.0f;
+				// if (glm::length(gradients[j]) > 0.0f)
+				// 	gradients[j] = glm::normalize(gradients[j]);
 			}
 
 			// Now query from the target to the optimized mesh
-			float epoch = std::time(0);
-			cumesh_reload(cumesh_opt, new_opt);
-			sample(target_samples, cumesh_target, epoch);
+			if (enable_target_sampling) {
+				auto qnow = std::chrono::high_resolution_clock::now();
+				float epoch = std::chrono::duration_cast <std::chrono::duration <float>> (qnow - start).count();
+				cumesh_reload(cumesh_opt, new_opt);
+				sample(target_samples, cumesh_target, epoch);
 
-			cudaMemcpy(kinfo_from_target.points, target_samples.points, sizeof(glm::vec3) * TARGET_SAMPLES, cudaMemcpyDeviceToDevice);
-			cudaMemcpy(host_target_samples.data(), target_samples.points, sizeof(glm::vec3) * TARGET_SAMPLES, cudaMemcpyDeviceToHost);
+				cudaMemcpy(kinfo_from_target.points, target_samples.points, sizeof(glm::vec3) * TARGET_SAMPLES, cudaMemcpyDeviceToDevice);
 
-			brute_closest_point(cumesh_opt, kinfo_from_target);
+				cudaMemcpy(sampled_triangles.data(), target_samples.indices, sizeof(uint32_t) * TARGET_SAMPLES, cudaMemcpyDeviceToHost);
+				cudaMemcpy(host_target_samples.data(), target_samples.points, sizeof(glm::vec3) * TARGET_SAMPLES, cudaMemcpyDeviceToHost);
 
-			cudaMemcpy(from_target_closest.data(), kinfo_from_target.closest, sizeof(glm::vec3) * TARGET_SAMPLES, cudaMemcpyDeviceToHost);
-			cudaMemcpy(from_target_bary.data(), kinfo_from_target.bary, sizeof(glm::vec3) * TARGET_SAMPLES, cudaMemcpyDeviceToHost);
-			// cudaMemcpy(from_target_sdfs.data(), kinfo_from_target.distnace, sizeof(float) * TARGET_SAMPLES, cudaMemcpyDeviceToHost);
-			cudaMemcpy(from_target_indices.data(), kinfo_from_target.triangles, sizeof(uint32_t) * TARGET_SAMPLES, cudaMemcpyDeviceToHost);
+				brute_closest_point(cumesh_opt, kinfo_from_target);
 
-			for (uint32_t j = 0; j < TARGET_SAMPLES; j++) {
-				const glm::vec3 &w = host_target_samples[j];
-				const glm::vec3 &v = from_target_closest[j];
-				const glm::vec3 &b = from_target_bary[j];
-				const uint32_t &t = from_target_indices[j];
+				cudaMemcpy(from_target_closest.data(), kinfo_from_target.closest, sizeof(glm::vec3) * TARGET_SAMPLES, cudaMemcpyDeviceToHost);
+				cudaMemcpy(from_target_bary.data(), kinfo_from_target.bary, sizeof(glm::vec3) * TARGET_SAMPLES, cudaMemcpyDeviceToHost);
+				// cudaMemcpy(from_target_sdfs.data(), kinfo_from_target.distnace, sizeof(float) * TARGET_SAMPLES, cudaMemcpyDeviceToHost);
+				cudaMemcpy(from_target_indices.data(), kinfo_from_target.triangles, sizeof(uint32_t) * TARGET_SAMPLES, cudaMemcpyDeviceToHost);
 
-				const Triangle &tri = new_opt.triangles[t];
+				for (uint32_t j = 0; j < TARGET_SAMPLES; j++) {
+					glm::vec3 w = host_target_samples[j];
+					glm::vec3 v = from_target_closest[j];
+					glm::vec3 b = from_target_bary[j];
+					uint32_t t = from_target_indices[j];
 
-				glm::vec3 v0 = new_opt.vertices[tri[0]];
-				glm::vec3 v1 = new_opt.vertices[tri[1]];
-				glm::vec3 v2 = new_opt.vertices[tri[2]];
+					const Triangle &tri = new_opt.triangles[t];
 
-				glm::vec3 delta = w - v;
-				if (glm::length(delta) > 0.0f)
-					delta = glm::normalize(delta);
+					glm::vec3 v0 = new_opt.vertices[tri[0]];
+					glm::vec3 v1 = new_opt.vertices[tri[1]];
+					glm::vec3 v2 = new_opt.vertices[tri[2]];
 
-				glm::vec3 gv0 = b.x * delta;
-				glm::vec3 gv1 = b.y * delta;
-				glm::vec3 gv2 = b.z * delta;
+					glm::vec3 delta = w - v;
+					// if (glm::length(delta) > 0.0f)
+					// 	delta = glm::normalize(delta);
 
-				// ulog_assert(b.x >= 0.0f && b.x <= 1.0f, "loop", "b.x = %f", b.x);
-				// ulog_assert(b.y >= 0.0f && b.y <= 1.0f, "loop", "b.y = %f", b.y);
-				// ulog_assert(b.z >= 0.0f && b.z <= 1.0f, "loop", "b.z = %f", b.z);
+					b = glm::clamp(b, 0.0f, 1.0f);
+					glm::vec3 gv0 = b.x * delta;
+					glm::vec3 gv1 = b.y * delta;
+					glm::vec3 gv2 = b.z * delta;
 
-				// ULOG_ASSERT(b.x >= 0.0f && b.x <= 1.0f);
-				// ULOG_ASSERT(b.y >= 0.0f && b.y <= 1.0f);
-				// ULOG_ASSERT(b.z >= 0.0f && b.z <= 1.0f);
+					// ulog_assert(b.x >= 0.0f && b.x <= 1.0f, "loop", "b.x = %f", b.x);
+					// ulog_assert(b.y >= 0.0f && b.y <= 1.0f, "loop", "b.y = %f", b.y);
+					// ulog_assert(b.z >= 0.0f && b.z <= 1.0f, "loop", "b.z = %f", b.z);
 
-				ULOG_ASSERT(!isnan(gv0.x));
-				ULOG_ASSERT(!isnan(gv0.y));
-				ULOG_ASSERT(!isnan(gv0.z));
+					// ULOG_ASSERT(b.x >= 0.0f && b.x <= 1.0f);
+					// ULOG_ASSERT(b.y >= 0.0f && b.y <= 1.0f);
+					// ULOG_ASSERT(b.z >= 0.0f && b.z <= 1.0f);
 
-				ULOG_ASSERT(tri[0] < gradients.size());
-				ULOG_ASSERT(tri[1] < gradients.size());
-				ULOG_ASSERT(tri[2] < gradients.size());
+					ULOG_ASSERT(!isnan(gv0.x));
+					ULOG_ASSERT(!isnan(gv0.y));
+					ULOG_ASSERT(!isnan(gv0.z));
 
-				gradients[tri[0]] += gv0;
-				gradients[tri[1]] += gv1;
-				gradients[tri[2]] += gv2;
+					ULOG_ASSERT(tri[0] < gradients.size());
+					ULOG_ASSERT(tri[1] < gradients.size());
+					ULOG_ASSERT(tri[2] < gradients.size());
+
+					gradients[tri[0]] += gv0;
+					gradients[tri[1]] += gv1;
+					gradients[tri[2]] += gv2;
+				}
+
+				total_samples += TARGET_SAMPLES;
+
+				// printf(" > ");
+				for (uint32_t j = 0; j < TARGET_SAMPLES; j++) {
+					// printf("%d ", sampled_triangles[j]);
+					ULOG_ASSERT(sampled_triangles[j] < target.triangles.size());
+					sampling_density[sampled_triangles[j]]++;
+				}
+				// printf("\n");
 			}
 
 			t2 = clock.now();
@@ -610,7 +750,7 @@ int main(int argc, char *argv[])
 				glm::vec3 g = gradients[j];
 				if (glm::any(glm::isnan(g)))
 					continue;
-				new_opt.vertices[j] += g * 0.001f;
+				new_opt.vertices[j] += g * 0.1f;
 			}
 
 			t2 = clock.now();
@@ -620,7 +760,10 @@ int main(int argc, char *argv[])
 			t1 = clock.now();
 
 			if (i > 0 && i % 10 == 0) {
-				new_opt = smooth(new_opt, 0.1f);
+				if (i > 700)
+					enable_target_sampling = false;
+				else
+					new_opt = smooth(new_opt, 0.1f);
 			}
 
 			if (i % 100 == 0) {
@@ -630,10 +773,6 @@ int main(int argc, char *argv[])
 
 			t2 = clock.now();
 			remesh_time += std::chrono::duration_cast <std::chrono::microseconds> (t2 - t1).count() / 1000.0;
-
-			if (i % 500 == 0) {
-				stages.push_back({ new_opt, new_quads });
-			}
 
 			// Calculate total time
 			lend = clock.now();
@@ -656,6 +795,7 @@ int main(int argc, char *argv[])
 		printf("Total time  %3.2f ms\n", total_time);
 
 		stages.push_back({ new_opt, new_quads });
+		densities.push_back(sampling_density);
 	}
 
 	// Visualize
@@ -676,9 +816,12 @@ int main(int argc, char *argv[])
 
 	namespace ps = polyscope;
 	ps::init();
-	
-	// ps::registerSurfaceMesh("source", source.vertices, source.triangles);
-	ps::registerSurfaceMesh("target", target.vertices, target.triangles);
+
+	ps::registerSurfaceMesh("source", source.vertices, source.triangles);
+
+	auto tm = ps::registerSurfaceMesh("target", target.vertices, target.triangles);
+	for (uint32_t i = 0; i < densities.size(); i++)
+		tm->addFaceScalarQuantity("sampling_density_" + std::to_string(i), densities[i]);
 
 	for (uint32_t i = 0; i < stages.size(); i++) {
 		auto [opt, quads] = stages[i];
@@ -699,4 +842,8 @@ int main(int argc, char *argv[])
 	}
 
 	ps::show();
+
+	// Save results
+	std::filesystem::path sdv_quads = path.stem().string() + ".sdv";
+	save(new_opt, new_quads, target_file, sdv_quads);
 }

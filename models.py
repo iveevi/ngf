@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-POINT_ENCODING_SIZE = 10
+POINT_ENCODING_SIZE = 25
 
 # SRNM subdivision complex indices
 # TODO: refactor the project to SRCM?
@@ -47,9 +47,9 @@ class NSC(nn.Module):
         c0 = torch.log(torch.exp(c0) - LipschitzNormalization.one)
         self.regularizers = [
             LipschitzNormalization(c0),
-            # LipschitzNormalization(c0),
-            # LipschitzNormalization(c0),
             LipschitzNormalization(c0),
+            # LipschitzNormalization(c0),
+            # LipschitzNormalization(c0),
             LipschitzNormalization(c0),
         ]
 

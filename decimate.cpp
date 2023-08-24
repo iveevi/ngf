@@ -69,12 +69,13 @@ Mesh translate_mesh(const Eigen::MatrixXd &V, const Eigen::MatrixXi &F)
 int main(int argc, char *argv[])
 {
 	// Load arguments
-	if (argc != 2) {
-		printf("Usage: %s <filename>\n", argv[0]);
+	if (argc != 3) {
+		printf("Usage: %s <filename> <proportion>\n", argv[0]);
 		return 1;
 	}
 
 	std::filesystem::path path = std::filesystem::weakly_canonical(argv[1]);
+	float proportion = std::stof(argv[2]);
 
 	// Load mesh
 	Mesh mesh = deduplicate(load_mesh(path)).first;
@@ -87,7 +88,7 @@ int main(int argc, char *argv[])
 	Eigen::VectorXi a0;
 	Eigen::VectorXi a1;
 
-	size_t count = 0.01 * mesh.triangles.size();
+	size_t count = proportion * mesh.triangles.size();
 	if (!igl::decimate(Vertices, Faces, count, V, F, a0, a1)) {
 		printf("Decimation failed\n");
 		return 1;

@@ -24,6 +24,8 @@ struct sample_result {
 	glm::vec3 *points;
 	glm::vec3 *barys;
 	glm::uvec3 *triangles;
+	uint32_t *indices;
+	uint32_t *dup;
 	uint32_t point_count;
 };
 

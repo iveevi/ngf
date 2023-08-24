@@ -1,3 +1,4 @@
+import os
 import polyscope as ps
 import polyscope.imgui as imgui
 import sys
@@ -14,28 +15,31 @@ if len(sys.argv) < 2:
 data_dir = sys.argv[1]
 print('Loading from directory:', data_dir)
 
+total_size = 0
 model = data_dir + '/model.bin'
+total_size += os.path.getsize(model)
 model = torch.load(model)
 
 complexes = data_dir + '/complexes.bin'
+total_size += os.path.getsize(complexes)
 complexes = torch.load(complexes)
 
 corner_points = data_dir + '/points.bin'
+total_size += os.path.getsize(corner_points)
 corner_points = torch.load(corner_points)
 
 corner_encodings = data_dir + '/encodings.bin'
+total_size += os.path.getsize(corner_encodings)
 corner_encodings = torch.load(corner_encodings)
 
 ref = data_dir + '/ref.obj'
-print('Loading reference model:', ref)
+ref_size = os.path.getsize(ref)
 ref = trimesh.load(ref)
-print('Reference model loaded:', ref.vertices.shape, ref.faces.shape)
+print('Reference model loaded:', ref, ref.vertices.shape, ref.faces.shape)
 
 print('complexes:', complexes.shape)
 print('corner_points:', corner_points.shape)
 print('corner_encodings:', corner_encodings.shape)
-
-ps.init()
 
 resolution = 16
 args = {
@@ -46,6 +50,49 @@ args = {
 }
 
 eval_vertices = model(args)[0].cpu().detach().numpy()
+
+def chamfer_distance(ref, X):
+    extent = np.linalg.norm(np.max(ref, axis=0) - np.min(ref, axis=0))
+
+    sum = 0
+    for x in X:
+        sum += np.min(np.linalg.norm(ref - x, axis=1)/extent)/X.shape[0]
+
+    for r in ref:
+        sum += np.min(np.linalg.norm(X - r, axis=1)/extent)/ref.shape[0]
+
+    return sum
+
+chamfers = {}
+for i in [ 2, 4, 8, 16, 32 ]:
+    largs = {
+            'points': corner_points,
+            'encodings': corner_encodings,
+            'complexes': complexes,
+            'resolution': i,
+    }
+
+    lv = model(largs)[0].cpu().detach().numpy()
+    chamfers[i] = chamfer_distance(ref.vertices, lv.reshape(-1, 3))
+
+print('-' * 40)
+print('Analytics:')
+print('-' * 40)
+
+# TODO: python table
+total_size /= 1024 * 1024
+ref_size /= 1024 * 1024
+reduction = (ref_size - total_size) / total_size * 100
+
+print('Total size      {:.3f} MB'.format(total_size))
+print('Original size   {:.3f} MB'.format(ref_size))
+print('Reduction       {:.3f}%'.format(reduction))
+# print('Chamfer (16):  {:.3f}'.format(chamfer))
+
+for k, v in chamfers.items():
+    print('Chamfer ({:2d})    {:.3f}'.format(k, v))
+
+ps.init()
 
 def redraw():
     global eval_vertices, downsample_it, upsample_it
