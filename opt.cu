@@ -511,68 +511,86 @@ int main(int argc, char *argv[])
 
 	std::vector <stage_result> stages;
 
-	cas_grid cas(target, 128);
+	auto convert_tris = [](const std::vector <Triangle> &tris) -> std::vector <glm::uvec3> {
+		std::vector <glm::uvec3> result;
+		result.resize(tris.size());
 
-	{
-		std::vector <glm::vec3> gradients(nv);
+		for (uint32_t i = 0; i < tris.size(); i++)
+			result[i] = glm::uvec3(tris[i][0], tris[i][1], tris[i][2]);
 
-		std::vector <glm::vec3> closest(nv);
-		std::vector <glm::vec3> bary(nv);
-		std::vector <float> sdfs(nv);
-		std::vector <uint32_t> indices(nv);
-		
-		closest_point_kinfo kinfo = closest_point_kinfo_alloc(opt.vertices.size());
+		return result;
+	};
 
-		printf("Starting chamfer metric: %f\n", chamfer(opt, target));
+	cas_grid cas({
+		target.vertices,
+		convert_tris(target.triangles)
+	}, 128);
 
-		for (int i = 0; i < 1000; i++) {
-			// printf("Iteration %d\n", i);
-			const auto &queries = opt.vertices;
-
-			// TODO: make a distinction between sdf and interior point...
-			// cas.precache_query(queries);
-			// cas.query(queries, closest, bary, sdfs, indices);
-			
-			if (cas.precache_query(opt.vertices))
-				cas.precache_device();
-
-			cudaMemcpy(kinfo.points, opt.vertices.data(), sizeof(glm::vec3) * kinfo.point_count, cudaMemcpyHostToDevice);
-
-			cas.query_device(kinfo);
-			cudaDeviceSynchronize();
-
-			// cas.query(queries, closest, bary, sdfs, indices);
-			cudaMemcpy(closest.data(), kinfo.closest, sizeof(glm::vec3) * kinfo.point_count, cudaMemcpyDeviceToHost);
-			cudaMemcpy(bary.data(), kinfo.bary, sizeof(glm::vec3) * kinfo.point_count, cudaMemcpyDeviceToHost);
-			// cudaMemcpy(sdfs.data(), kinfo.distnace, sizeof(float) * kinfo.point_count, cudaMemcpyDeviceToHost);
-			cudaMemcpy(indices.data(), kinfo.triangles, sizeof(uint32_t) * kinfo.point_count, cudaMemcpyDeviceToHost);
-
-			for (uint32_t j = 0; j < opt.vertices.size(); j++)
-				gradients[j] = closest[j] - opt.vertices[j];
-
-			// Push apart nearby points
-			for (uint32_t j = 0; j < opt.vertices.size(); j++) {
-				for (uint32_t k = j + 1; k < opt.vertices.size(); k++) {
-					float dist = glm::distance(opt.vertices[j], opt.vertices[k]);
-					if (dist < 0.01f) {
-						gradients[j] += glm::normalize(opt.vertices[j] - opt.vertices[k]) * 0.1f;
-						gradients[k] += glm::normalize(opt.vertices[k] - opt.vertices[j]) * 0.1f;
-					}
-				}
-			}
-			
-			// Apply the gradients
-			for (uint32_t j = 0; j < opt.vertices.size(); j++)
-				opt.vertices[j] += gradients[j] * 0.1f;
-	
-			// repair(target, opt, quads, cas);
-			// printf("Iteration %d\n", i);
-		}
-
-		printf("Final chamfer metric: %f\n", chamfer(opt, target));
-
-		stages.push_back({ opt, quads });
-	}
+	// {
+	// 	std::vector <glm::vec3> gradients(nv);
+	//
+	// 	std::vector <glm::vec3> closest(nv);
+	// 	std::vector <glm::vec3> bary(nv);
+	// 	std::vector <float> sdfs(nv);
+	// 	std::vector <uint32_t> indices(nv);
+	// 	
+	// 	closest_point_kinfo kinfo = closest_point_kinfo_alloc(opt.vertices.size());
+	//
+	// 	printf("Starting chamfer metric: %f\n", chamfer(opt, target));
+	//
+	// 	for (int i = 0; i < 1000; i++) {
+	// 		// printf("Iteration %d\n", i);
+	// 		const auto &queries = opt.vertices;
+	//
+	// 		// TODO: make a distinction between sdf and interior point...
+	// 		// cas.precache_query(queries);
+	// 		// cas.query(queries, closest, bary, sdfs, indices);
+	// 		
+	// 		if (cas.precache_query(opt.vertices))
+	// 			cas.precache_device();
+	//
+	// 		cudaMemcpy(kinfo.points, opt.vertices.data(), sizeof(glm::vec3) * kinfo.point_count, cudaMemcpyHostToDevice);
+	//
+	// 		cas.query_device(kinfo);
+	// 		cudaDeviceSynchronize();
+	//
+	// 		// cas.query(queries, closest, bary, sdfs, indices);
+	// 		cudaMemcpy(closest.data(), kinfo.closest, sizeof(glm::vec3) * kinfo.point_count, cudaMemcpyDeviceToHost);
+	// 		cudaMemcpy(bary.data(), kinfo.bary, sizeof(glm::vec3) * kinfo.point_count, cudaMemcpyDeviceToHost);
+	// 		// cudaMemcpy(sdfs.data(), kinfo.distnace, sizeof(float) * kinfo.point_count, cudaMemcpyDeviceToHost);
+	// 		cudaMemcpy(indices.data(), kinfo.triangles, sizeof(uint32_t) * kinfo.point_count, cudaMemcpyDeviceToHost);
+	//
+	// 		for (uint32_t j = 0; j < opt.vertices.size(); j++)
+	// 			gradients[j] = closest[j] - opt.vertices[j];
+	//
+	// 		// Push apart nearby points
+	// 		for (uint32_t j = 0; j < opt.vertices.size(); j++) {
+	// 			for (uint32_t k = j + 1; k < opt.vertices.size(); k++) {
+	// 				float dist = glm::distance(opt.vertices[j], opt.vertices[k]);
+	// 				if (dist < 0.01f) {
+	// 					gradients[j] += glm::normalize(opt.vertices[j] - opt.vertices[k]) * 0.1f;
+	// 					gradients[k] += glm::normalize(opt.vertices[k] - opt.vertices[j]) * 0.1f;
+	// 				}
+	// 			}
+	// 		}
+	// 		
+	// 		// Apply the gradients
+	// 		for (uint32_t j = 0; j < opt.vertices.size(); j++)
+	// 			opt.vertices[j] += gradients[j] * 0.1f;
+	// 
+	// 		if (i > 0 && i % 10 == 0) {
+	// 			if (i < 700)
+	// 				opt = smooth(opt, 0.1f);
+	// 		}
+	// 		
+	// 		if (i % 100 == 0)
+	// 			repair(target, opt, quads, cas);
+	// 	}
+	//
+	// 	printf("Final chamfer metric: %f\n", chamfer(opt, target));
+	//
+	// 	stages.push_back({ opt, quads });
+	// }
 
 	// Upscale for the next stage
 	auto new_opt = opt;
@@ -596,7 +614,7 @@ int main(int argc, char *argv[])
 		std::vector <glm::vec3> gradients(new_opt.vertices.size());
 		std::vector <glm::vec3> diffused(new_opt.vertices.size());
 
-		closest_point_kinfo kinfo = closest_point_kinfo_alloc(new_opt.vertices.size());
+		closest_point_kinfo kinfo = closest_point_kinfo_alloc(new_opt.vertices.size(), eCUDA);
 
 		using namespace indicators;
 
@@ -617,11 +635,11 @@ int main(int argc, char *argv[])
 
 		constexpr uint32_t TARGET_SAMPLES = 1000;
 
-		cumesh cumesh_opt = cumesh_alloc(new_opt);
-		cumesh cumesh_target = cumesh_alloc(target);
+		cumesh cumesh_opt = cumesh_alloc({ new_opt.vertices, convert_tris(new_opt.triangles) });
+		cumesh cumesh_target = cumesh_alloc({ target.vertices, convert_tris(target.triangles) });
 
-		sample_result target_samples = sample_result_alloc(TARGET_SAMPLES);
-		closest_point_kinfo kinfo_from_target = closest_point_kinfo_alloc(TARGET_SAMPLES);
+		sample_result target_samples = sample_result_alloc(TARGET_SAMPLES, eCUDA);
+		closest_point_kinfo kinfo_from_target = closest_point_kinfo_alloc(TARGET_SAMPLES, eCUDA);
 
 		std::vector <glm::vec3> host_target_samples (TARGET_SAMPLES);
 		std::vector <glm::vec3> from_target_closest (TARGET_SAMPLES);
@@ -669,7 +687,7 @@ int main(int argc, char *argv[])
 			if (enable_target_sampling) {
 				auto qnow = std::chrono::high_resolution_clock::now();
 				float epoch = std::chrono::duration_cast <std::chrono::duration <float>> (qnow - start).count();
-				cumesh_reload(cumesh_opt, new_opt);
+				cumesh_reload(cumesh_opt, { new_opt.vertices, convert_tris(new_opt.triangles) });
 				sample(target_samples, cumesh_target, epoch);
 
 				cudaMemcpy(kinfo_from_target.points, target_samples.points, sizeof(glm::vec3) * TARGET_SAMPLES, cudaMemcpyDeviceToDevice);

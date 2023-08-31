@@ -5,8 +5,7 @@ import torch.nn.functional as F
 
 POINT_ENCODING_SIZE = 25
 
-# SRNM subdivision complex indices
-# TODO: refactor the project to SRCM?
+# NSC subdivision complex indices
 def indices(N):
     gim_indices = []
     for i in range(N - 1):
@@ -14,6 +13,13 @@ def indices(N):
             gim_indices.append([i * N + j, (i + 1) * N + j, i * N + j + 1])
             gim_indices.append([(i + 1) * N + j, (i + 1) * N + j + 1, i * N + j + 1])
     return np.array(gim_indices).reshape(-1, 3).astype(np.int32)
+
+def quad_indices(N):
+    gim_indices = []
+    for i in range(N - 1):
+        for j in range(N - 1):
+            gim_indices.append([i * N + j, i * N + j + 1, (i + 1) * N + j + 1, (i + 1) * N + j])
+    return np.array(gim_indices).reshape(-1, 4).astype(np.int32)
 
 # Lipschitz normalization
 class LipschitzNormalization(nn.Module):
@@ -37,9 +43,7 @@ class NSC(nn.Module):
         self.encoding_linears = [
             nn.Linear(POINT_ENCODING_SIZE + 3, 128),
             nn.Linear(128, 128),
-            # nn.Linear(128, 128),
-            # nn.Linear(128, 128),
-            nn.Linear(128, 3)
+            nn.Linear(128, 3),
         ]
 
         # Regularizers only for the encoding layers
@@ -48,8 +52,7 @@ class NSC(nn.Module):
         self.regularizers = [
             LipschitzNormalization(c0),
             LipschitzNormalization(c0),
-            # LipschitzNormalization(c0),
-            # LipschitzNormalization(c0),
+            LipschitzNormalization(c0),
             LipschitzNormalization(c0),
         ]
 
@@ -77,14 +80,14 @@ class NSC(nn.Module):
         X = torch.concat((p, e), dim=-1)
         for i, (linear, regularizer) in enumerate(zip(self.encoding_linears, self.regularizers)):
             W, b = linear.weight, linear.bias
-            W = regularizer(W)
+            # W = regularizer(W)
 
             X = torch.matmul(X, W.t()) + b
             if i < len(self.encoding_linears) - 1:
-                X = F.elu(X)
+                X = torch.tanh(X)
         
         lipschitz = LipschitzNormalization.one.clone()
         for reg in self.regularizers:
             lipschitz *= torch.nn.functional.softplus(reg.c)
 
-        return p + X, lipschitz
+        return p + X, X, lipschitz

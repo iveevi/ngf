@@ -29,16 +29,7 @@ add_executable(nsc
 add_executable(decimate decimate.cpp)
 add_executable(opt opt.cu casdf/casdf.cu)
 
-add_executable(cut cut.cu casdf/casdf.cu
-	viewer.cpp
-	
-	imgui/imgui.cpp
-	imgui/imgui_draw.cpp
-	imgui/imgui_widgets.cpp
-	imgui/imgui_tables.cpp
-	imgui/backends/imgui_impl_glfw.cpp
-	imgui/backends/imgui_impl_vulkan.cpp
-)
+add_executable(reshape reshape.cu casdf/casdf.cu)
 
 target_link_libraries(nsc
 	glfw
@@ -67,7 +58,7 @@ target_link_libraries(opt
 	glslang::glslang-default-resource-limits
 )
 
-target_link_libraries(cut
+target_link_libraries(reshape
 	polyscope
 	assimp
 	OpenMP::OpenMP_CXX

@@ -38,6 +38,8 @@ complexes = complexes.reshape((complexes_count, 4))
 print('Complexes:', complexes.shape)
 
 targets = []
+target_normals = []
+
 for _ in range(complexes_count):
     size = int.from_bytes(sdv_complexes_file.read(4), byteorder='little')
 
@@ -45,18 +47,38 @@ for _ in range(complexes_count):
     assert vertex_count == size * size
 
     vertices = sdv_complexes_file.read(12 * vertex_count)
-    vertices = np.frombuffer(vertices, dtype=np.float32)
-    vertices = vertices.reshape((size, size, 3))
+    vflat = np.frombuffer(vertices, dtype=np.float32)
+    vertices = vflat.reshape((size, size, 3))
+    
+    tris = indices(size)
+    vflat = vflat.reshape((size * size, 3))
+    v0 = vflat[tris[:, 0]]
+    v1 = vflat[tris[:, 1]]
+    v2 = vflat[tris[:, 2]]
+
+    e0 = v1 - v0
+    e1 = v2 - v0
+    n = np.cross(e0, e1)
 
     targets.append(vertices)
+    target_normals.append(n)
 
 targets = np.array(targets)
+target_normals = np.array(target_normals)
+
 resolution = targets.shape[1]
 
 ps.init()
 
-for i, tg in enumerate(targets):
+for i, (tg, tn) in enumerate(zip(targets, target_normals)):
     tg = tg.reshape(-1, 3)
-    ps.register_surface_mesh("target-{}".format(i), tg, indices(resolution))
+    tn = tn.reshape(-1, 3)
+    tn_length = np.linalg.norm(tn, axis=1)
+    tn /= tn_length[:, None]
+    m = ps.register_surface_mesh("target-{}".format(i), tg, indices(resolution))
+    # m.add_vector_quantity("normals", tn, defined_on='faces', enabled=True)
+    m.add_scalar_quantity("normals-length", tn_length, defined_on='faces', enabled=True)
+    m.set_edge_width(1)
+    m.set_edge_color([0.0, 0.0, 0.0])
 
 ps.show()

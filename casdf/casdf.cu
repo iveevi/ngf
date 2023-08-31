@@ -1,15 +1,20 @@
+#include <algorithm>
 #include <queue>
+#include <random>
+#include <chrono>
+
+#include <glm/gtx/hash.hpp>
 
 #include "casdf.hpp"
 #include "microlog.h"
 
 // Bounding box of mesh
 // TODO: rearrange into cpp and cuda files
-static std::pair <glm::vec3, glm::vec3> bound(const Mesh &mesh)
+static std::pair <glm::vec3, glm::vec3> bound(const geometry &g)
 {
-	glm::vec3 max = mesh.vertices[0];
-	glm::vec3 min = mesh.vertices[0];
-	for (const glm::vec3 &v : mesh.vertices) {
+	glm::vec3 max = g.vertices[0];
+	glm::vec3 min = g.vertices[0];
+	for (const glm::vec3 &v : g.vertices) {
 		max = glm::max(max, v);
 		min = glm::min(min, v);
 	}
@@ -95,7 +100,7 @@ void triangle_closest_point(const glm::vec3 &v0, const glm::vec3 &v1, const glm:
 	*distance = glm::length(*closest - p);
 }
 
-__forceinline__ __device__
+__forceinline__ __host__ __device__
 glm::uvec3 pcg(glm::uvec3 v)
 {
 	v = v * 1664525u + 1013904223u;
@@ -109,7 +114,7 @@ glm::uvec3 pcg(glm::uvec3 v)
 	return v;
 }
 
-__forceinline__ __device__
+__forceinline__ __host__ __device__
 glm::vec3 pcg(glm::vec3 v)
 {
 	glm::uvec3 u = *(glm::uvec3 *) &v;
@@ -117,6 +122,21 @@ glm::vec3 pcg(glm::vec3 v)
 	u &= glm::uvec3(0x007fffffu);
 	u |= glm::uvec3(0x3f800000u);
 	return *(glm::vec3 *) &u;
+}
+
+__forceinline__ __host__ __device__
+float bbox_distance(glm::vec3 p, glm::vec3 min, glm::vec3 max)
+{
+	glm::vec3 dmin = glm::abs(p - min);
+	glm::vec3 dmax = glm::abs(p - max);
+	glm::vec3 d = glm::min(dmin, dmax);
+	float mind = glm::min(d.x, glm::min(d.y, d.z));
+
+	bool inside = (p.x >= min.x && p.x <= max.x)
+		&& (p.y >= min.y && p.y <= max.y)
+		&& (p.z >= min.z && p.z <= max.z);
+
+	return inside ? 0.0f : mind;
 }
 
 // GPU kernels
@@ -139,6 +159,13 @@ static void brute_closest_point_kernel(cumesh cu_mesh, closest_point_kinfo kinfo
 			glm::vec3 v0 = cu_mesh.vertices[tri.x];
 			glm::vec3 v1 = cu_mesh.vertices[tri.y];
 			glm::vec3 v2 = cu_mesh.vertices[tri.z];
+
+			// Rough culling
+			// glm::vec3 min = glm::min(v0, glm::min(v1, v2));
+			// glm::vec3 max = glm::max(v0, glm::max(v1, v2));
+			//
+			// if (bbox_distance(point, min, max) > min_distance)
+			// 	continue;
 
 			glm::vec3 candidate;
 			glm::vec3 bary;
@@ -242,13 +269,12 @@ void sample_kernel(sample_result result, cumesh mesh, float time)
 
 		result.points[i] = bary.x * v0 + bary.y * v1 + bary.z * v2;
 		result.barys[i] = bary;
-		result.triangles[i] = tri;
 		result.indices[i] = tindex;
 	}
 }
 
 // Allocate cumeshes
-cumesh cumesh_alloc(const Mesh &mesh)
+cumesh cumesh_alloc(const geometry &mesh)
 {
 	cumesh cu_mesh;
 	cu_mesh.vertex_count = mesh.vertices.size();
@@ -266,7 +292,7 @@ cumesh cumesh_alloc(const Mesh &mesh)
 	return cu_mesh;
 }
 
-void cumesh_reload(cumesh cu_mesh, const Mesh &mesh)
+void cumesh_reload(cumesh cu_mesh, const geometry &mesh)
 {
 	if (cu_mesh.vertex_count != mesh.vertices.size()) {
 		cudaFree(cu_mesh.vertices);
@@ -288,51 +314,195 @@ void cumesh_reload(cumesh cu_mesh, const Mesh &mesh)
 }
 
 // Allocating sample information
-sample_result sample_result_alloc(uint32_t point_count)
+sample_result sample_result_alloc(uint32_t point_count, compute_api mode)
 {
 	sample_result result;
 	result.point_count = point_count;
+	result.api = mode;
 
-	cudaMalloc(&result.points, sizeof(glm::vec3) * point_count);
-	cudaMalloc(&result.barys, sizeof(glm::vec3) * point_count);
-	cudaMalloc(&result.triangles, sizeof(glm::uvec3) * point_count);
-	cudaMalloc(&result.indices, sizeof(uint32_t) * point_count);
+	if (mode == eCPU) {
+		result.points = new glm::vec3[point_count];
+		result.barys = new glm::vec3[point_count];
+		result.indices = new uint32_t[point_count];
+	} else if (mode == eCUDA) {
+		cudaMalloc(&result.points, sizeof(glm::vec3) * point_count);
+		cudaMalloc(&result.barys, sizeof(glm::vec3) * point_count);
+		cudaMalloc(&result.indices, sizeof(uint32_t) * point_count);
+	}
 
 	return result;
 }
 
-void sample(sample_result result, cumesh mesh, float time)
+void sample(sample_result result, const geometry &g, float time)
 {
-	dim3 block(128);
+	ULOG_ASSERT(result.api == eCPU);
+	for (uint32_t i = 0; i < result.point_count; i++) {
+		glm::uvec3 seed0 = g.triangles[i % g.triangles.size()];
+		glm::vec3 seed1 = g.vertices[i % g.vertices.size()];
+
+		uint32_t tint = *(uint32_t *) &time;
+		seed0.x ^= tint;
+		seed0.y ^= tint;
+		seed0.z ^= tint;
+
+		seed1.x *= sinf(time);
+		seed1.y *= sinf(time);
+		seed1.z *= sinf(time);
+
+		glm::uvec3 tri = pcg(seed0);
+		glm::vec3 bary = pcg(seed1);
+
+		uint32_t tindex = tri.x % g.triangles.size();
+		tri = g.triangles[tindex];
+
+		glm::vec3 v0 = g.vertices[tri.x];
+		glm::vec3 v1 = g.vertices[tri.y];
+		glm::vec3 v2 = g.vertices[tri.z];
+
+		bary = glm::normalize(bary);
+		bary.x = 1.0f - bary.y - bary.z;
+
+		result.points[i] = bary.x * v0 + bary.y * v1 + bary.z * v2;
+		result.barys[i] = bary;
+		result.indices[i] = tindex;
+	}
+}
+
+void sample(sample_result result, const cumesh &mesh, float time)
+{
+	ULOG_ASSERT(result.api == eCUDA);
+
+	dim3 block(256);
 	dim3 grid((result.point_count + block.x - 1) / block.x);
 	sample_kernel <<< grid, block >>> (result, mesh, time);
 }
 
+void memcpy(sample_result dst, const sample_result &src)
+{
+	if (dst.api == eCPU && src.api == eCPU) {
+		memcpy(dst.points, src.points, sizeof(glm::vec3) * dst.point_count);
+		memcpy(dst.barys, src.barys, sizeof(glm::vec3) * dst.point_count);
+		memcpy(dst.indices, src.indices, sizeof(uint32_t) * dst.point_count);
+	} else if (dst.api == eCUDA && src.api == eCUDA) {
+		cudaMemcpy(dst.points, src.points, sizeof(glm::vec3) * dst.point_count, cudaMemcpyDeviceToDevice);
+		cudaMemcpy(dst.barys, src.barys, sizeof(glm::vec3) * dst.point_count, cudaMemcpyDeviceToDevice);
+		cudaMemcpy(dst.indices, src.indices, sizeof(uint32_t) * dst.point_count, cudaMemcpyDeviceToDevice);
+	} else if (dst.api == eCPU && src.api == eCUDA) {
+		cudaMemcpy(dst.points, src.points, sizeof(glm::vec3) * dst.point_count, cudaMemcpyDeviceToHost);
+		cudaMemcpy(dst.barys, src.barys, sizeof(glm::vec3) * dst.point_count, cudaMemcpyDeviceToHost);
+		cudaMemcpy(dst.indices, src.indices, sizeof(uint32_t) * dst.point_count, cudaMemcpyDeviceToHost);
+	} else if (dst.api == eCUDA && src.api == eCPU) {
+		cudaMemcpy(dst.points, src.points, sizeof(glm::vec3) * dst.point_count, cudaMemcpyHostToDevice);
+		cudaMemcpy(dst.barys, src.barys, sizeof(glm::vec3) * dst.point_count, cudaMemcpyHostToDevice);
+		cudaMemcpy(dst.indices, src.indices, sizeof(uint32_t) * dst.point_count, cudaMemcpyHostToDevice);
+	}
+}
+
 // Allocate kinfo
-closest_point_kinfo closest_point_kinfo_alloc(uint32_t point_count)
+closest_point_kinfo closest_point_kinfo_alloc(uint32_t point_count, compute_api mode)
 {
 	closest_point_kinfo kinfo;
-
-	cudaMalloc(&kinfo.points, point_count * sizeof(glm::vec3));
-	cudaMalloc(&kinfo.closest, point_count * sizeof(glm::vec3));
-	cudaMalloc(&kinfo.bary, point_count * sizeof(glm::vec3));
-	cudaMalloc(&kinfo.triangles, point_count * sizeof(uint32_t));
-
 	kinfo.point_count = point_count;
+	kinfo.api = mode;
+
+	if (mode == eCPU) {
+		kinfo.points = new glm::vec3[point_count];
+		kinfo.closest = new glm::vec3[point_count];
+		kinfo.bary = new glm::vec3[point_count];
+		kinfo.distances = new float[point_count];
+		kinfo.triangles = new uint32_t[point_count];
+	} else if (mode == eCUDA) {
+		cudaMalloc(&kinfo.points, point_count * sizeof(glm::vec3));
+		cudaMalloc(&kinfo.closest, point_count * sizeof(glm::vec3));
+		cudaMalloc(&kinfo.bary, point_count * sizeof(glm::vec3));
+		cudaMalloc(&kinfo.distances, point_count * sizeof(float));
+		cudaMalloc(&kinfo.triangles, point_count * sizeof(uint32_t));
+	}
 
 	return kinfo;
 }
 
-// Brute force closest point
-void brute_closest_point(cumesh cu_mesh, closest_point_kinfo kinfo)
+void memcpy(closest_point_kinfo dst, const closest_point_kinfo &src)
 {
-	dim3 block(128);
+	if (dst.api == eCPU && src.api == eCPU) {
+		memcpy(dst.points, src.points, sizeof(glm::vec3) * dst.point_count);
+		memcpy(dst.closest, src.closest, sizeof(glm::vec3) * dst.point_count);
+		memcpy(dst.bary, src.bary, sizeof(glm::vec3) * dst.point_count);
+		memcpy(dst.distances, src.distances, sizeof(float) * dst.point_count);
+		memcpy(dst.triangles, src.triangles, sizeof(uint32_t) * dst.point_count);
+	} else if (dst.api == eCUDA && src.api == eCUDA) {
+		cudaMemcpy(dst.points, src.points, sizeof(glm::vec3) * dst.point_count, cudaMemcpyDeviceToDevice);
+		cudaMemcpy(dst.closest, src.closest, sizeof(glm::vec3) * dst.point_count, cudaMemcpyDeviceToDevice);
+		cudaMemcpy(dst.bary, src.bary, sizeof(glm::vec3) * dst.point_count, cudaMemcpyDeviceToDevice);
+		cudaMemcpy(dst.distances, src.distances, sizeof(float) * dst.point_count, cudaMemcpyDeviceToDevice);
+		cudaMemcpy(dst.triangles, src.triangles, sizeof(uint32_t) * dst.point_count, cudaMemcpyDeviceToDevice);
+	} else if (dst.api == eCPU && src.api == eCUDA) {
+		cudaMemcpy(dst.points, src.points, sizeof(glm::vec3) * dst.point_count, cudaMemcpyDeviceToHost);
+		cudaMemcpy(dst.closest, src.closest, sizeof(glm::vec3) * dst.point_count, cudaMemcpyDeviceToHost);
+		cudaMemcpy(dst.bary, src.bary, sizeof(glm::vec3) * dst.point_count, cudaMemcpyDeviceToHost);
+		cudaMemcpy(dst.distances, src.distances, sizeof(float) * dst.point_count, cudaMemcpyDeviceToHost);
+		cudaMemcpy(dst.triangles, src.triangles, sizeof(uint32_t) * dst.point_count, cudaMemcpyDeviceToHost);
+	} else if (dst.api == eCUDA && src.api == eCPU) {
+		cudaMemcpy(dst.points, src.points, sizeof(glm::vec3) * dst.point_count, cudaMemcpyHostToDevice);
+		cudaMemcpy(dst.closest, src.closest, sizeof(glm::vec3) * dst.point_count, cudaMemcpyHostToDevice);
+		cudaMemcpy(dst.bary, src.bary, sizeof(glm::vec3) * dst.point_count, cudaMemcpyHostToDevice);
+		cudaMemcpy(dst.distances, src.distances, sizeof(float) * dst.point_count, cudaMemcpyHostToDevice);
+		cudaMemcpy(dst.triangles, src.triangles, sizeof(uint32_t) * dst.point_count, cudaMemcpyHostToDevice);
+	}
+}
+
+// Brute force closest point
+void brute_closest_point(const geometry &g, const closest_point_kinfo &kinfo)
+{
+	ULOG_ASSERT(kinfo.api == eCPU);
+
+	#pragma omp parallel for
+	for (uint32_t i = 0; i < kinfo.point_count; i++) {
+		glm::vec3 point = kinfo.points[i];
+		glm::vec3 closest;
+		glm::vec3 barycentrics;
+		uint32_t triangle;
+
+		float min_distance = FLT_MAX;
+		for (uint32_t j = 0; j < g.triangles.size(); j++) {
+			glm::uvec3 tri = g.triangles[j];
+
+			glm::vec3 v0 = g.vertices[tri.x];
+			glm::vec3 v1 = g.vertices[tri.y];
+			glm::vec3 v2 = g.vertices[tri.z];
+
+			glm::vec3 candidate;
+			glm::vec3 bary;
+			float distance;
+
+			triangle_closest_point(v0, v1, v2, point, &candidate, &bary, &distance);
+
+			if (distance < min_distance) {
+				min_distance = distance;
+				closest = candidate;
+				barycentrics = bary;
+				triangle = j;
+			}
+		}
+
+		kinfo.closest[i] = closest;
+		kinfo.bary[i] = barycentrics;
+		kinfo.distances[i] = min_distance;
+		kinfo.triangles[i] = triangle;
+	}
+}
+
+void brute_closest_point(const cumesh &cu_mesh, const closest_point_kinfo &kinfo)
+{
+	ULOG_ASSERT(kinfo.api == eCUDA);
+
+	dim3 block(256);
 	dim3 grid((kinfo.point_count + block.x - 1) / block.x);
 	brute_closest_point_kernel <<< grid, block >>> (cu_mesh, kinfo);
 }
 
-// Construct from mesh
-cas_grid::cas_grid(const Mesh &ref_, uint32_t resolution_)
+// Cached acceleration structure
+cas_grid::cas_grid(const geometry &ref_, uint32_t resolution_)
 		: ref(ref_), resolution(resolution_)
 {
 	printf("Constructing cas grid\n");
@@ -352,12 +522,12 @@ cas_grid::cas_grid(const Mesh &ref_, uint32_t resolution_)
 	printf("expected extent: %f %f %f\n", (max.x - min.x) / resolution, (max.y - min.y) / resolution, (max.z - min.z) / resolution);
 
 	for (size_t i = 0; i < ref.triangles.size(); i++) {
-		const Triangle &triangle = ref.triangles[i];
+		const glm::uvec3 &triangle = ref.triangles[i];
 
 		// Triangle belongs to all bins it intersects
-		glm::vec3 v0 = ref.vertices[triangle[0]];
-		glm::vec3 v1 = ref.vertices[triangle[1]];
-		glm::vec3 v2 = ref.vertices[triangle[2]];
+		glm::vec3 v0 = ref.vertices[triangle.x];
+		glm::vec3 v1 = ref.vertices[triangle.y];
+		glm::vec3 v2 = ref.vertices[triangle.z];
 
 		glm::vec3 tri_min = glm::min(glm::min(v0, v1), v2);
 		glm::vec3 tri_max = glm::max(glm::max(v0, v1), v2);
@@ -526,14 +696,13 @@ bool cas_grid::precache_query(const glm::vec3 &p)
 }
 
 // Precache a collection of query points
-bool cas_grid::precache_query(const std::vector <glm::vec3> &points)
+float cas_grid::precache_query(const std::vector <glm::vec3> &points)
 {
 	uint32_t any_count = 0;
 	for (const glm::vec3 &p : points)
 		any_count += precache_query(p);
 
-	// printf("Cache hit rate: %.2f\n", 1.0f - (float) any_count / points.size());
-	return any_count > 0;
+	return (float) any_count / (float) points.size();
 }
 
 // Single point query
@@ -552,7 +721,7 @@ std::tuple <glm::vec3, glm::vec3, float, uint32_t> cas_grid::query(const glm::ve
 	uint32_t triangle_index = 0;
 
 	for (uint32_t index : bin) {
-		const Triangle &tri = ref.triangles[index];
+		const glm::uvec3 &tri = ref.triangles[index];
 		glm::vec3 a = ref.vertices[tri[0]];
 		glm::vec3 b = ref.vertices[tri[1]];
 		glm::vec3 c = ref.vertices[tri[2]];
@@ -665,4 +834,163 @@ void cas_grid::query_device(closest_point_kinfo kinfo)
 	dim3 grid((kinfo.point_count + block.x - 1) / block.x);
 
 	closest_point_kernel <<< grid, block >>> (dev_cas, kinfo);
+}
+
+// Interior point query acceleration structure
+__forceinline__ __host__ __device__
+bool ray_x_triangle(glm::vec3 v0, glm::vec3 v1, glm::vec3 v2, glm::vec3 x, glm::vec3 d)
+{
+	glm::vec3 e1 = v1 - v0;
+	glm::vec3 e2 = v2 - v0;
+	glm::vec3 p = cross(d, e2);
+
+	float a = dot(e1, p);
+	if (std::abs(a) < 1e-6)
+		return false;
+
+	float f = 1.0 / a;
+	glm::vec3 s = x - v0;
+	float u = f * dot(s, p);
+
+	if (u < 0.0 || u > 1.0)
+		return false;
+
+	glm::vec3 q = cross(s, e1);
+	float v = f * dot(d, q);
+
+	if (v < 0.0 || u + v > 1.0)
+		return false;
+
+	float t = f * dot(e2, q);
+	return t > 1e-6;
+}
+
+float ipqas::query(const glm::vec3 &v) const
+{
+	static constexpr glm::vec3 dx { 1, 0, 0 };
+	static constexpr glm::vec3 dy { 0, 1, 0 };
+	static constexpr glm::vec3 dz { 0, 0, 1 };
+
+	glm::vec3 normed = (v - ext_min) / (ext_max - ext_min);
+	glm::vec3 voxel = normed * glm::vec3(resolution);
+	voxel = glm::clamp(voxel, glm::vec3(0), glm::vec3(resolution - 1));
+
+	uint32_t x = voxel.x;
+	uint32_t y = voxel.y;
+	uint32_t z = voxel.z;
+
+	uint32_t xy_count = 0;
+	uint32_t xy_count_neg = 0;
+
+	for (uint32_t tindex : bins_xy[x + y * resolution]) {
+		const glm::uvec3 &t = ref.triangles[tindex];
+		const glm::vec3 &v0 = ref.vertices[t.x];
+		const glm::vec3 &v1 = ref.vertices[t.y];
+		const glm::vec3 &v2 = ref.vertices[t.z];
+
+		if (ray_x_triangle(v0, v1, v2, v, dz))
+			xy_count++;
+	}
+
+	if (xy_count % 2 == 0)
+		return 1.0f;
+
+	for (uint32_t tindex : bins_xy[x + y * resolution]) {
+		const glm::uvec3 &t = ref.triangles[tindex];
+		const glm::vec3 &v0 = ref.vertices[t.x];
+		const glm::vec3 &v1 = ref.vertices[t.y];
+		const glm::vec3 &v2 = ref.vertices[t.z];
+
+		if (ray_x_triangle(v0, v1, v2, v, -dz))
+			xy_count_neg++;
+	}
+
+	if (xy_count_neg % 2 == 0)
+		return 1.0f;
+
+	uint32_t xz_count = 0;
+	uint32_t xz_count_neg = 0;
+
+	for (uint32_t tindex : bins_xz[x + z * resolution]) {
+		const glm::uvec3 &t = ref.triangles[tindex];
+		const glm::vec3 &v0 = ref.vertices[t.x];
+		const glm::vec3 &v1 = ref.vertices[t.y];
+		const glm::vec3 &v2 = ref.vertices[t.z];
+
+		if (ray_x_triangle(v0, v1, v2, v, dy))
+			xz_count++;
+	}
+
+	if (xz_count % 2 == 0)
+		return 1.0f;
+
+	for (uint32_t tindex : bins_xz[x + z * resolution]) {
+		const glm::uvec3 &t = ref.triangles[tindex];
+		const glm::vec3 &v0 = ref.vertices[t.x];
+		const glm::vec3 &v1 = ref.vertices[t.y];
+		const glm::vec3 &v2 = ref.vertices[t.z];
+
+		if (ray_x_triangle(v0, v1, v2, v, -dy))
+			xz_count_neg++;
+	}
+
+	if (xz_count_neg % 2 == 0)
+		return 1.0f;
+
+	uint32_t yz_count = 0;
+	uint32_t yz_count_neg = 0;
+
+	for (uint32_t tindex : bins_yz[y + z * resolution]) {
+		const glm::uvec3 &t = ref.triangles[tindex];
+		const glm::vec3 &v0 = ref.vertices[t.x];
+		const glm::vec3 &v1 = ref.vertices[t.y];
+		const glm::vec3 &v2 = ref.vertices[t.z];
+
+		if (ray_x_triangle(v0, v1, v2, v, dx))
+			yz_count++;
+	}
+
+	if (yz_count % 2 == 0)
+		return 1.0f;
+
+	for (uint32_t tindex : bins_yz[y + z * resolution]) {
+		const glm::uvec3 &t = ref.triangles[tindex];
+		const glm::vec3 &v0 = ref.vertices[t.x];
+		const glm::vec3 &v1 = ref.vertices[t.y];
+		const glm::vec3 &v2 = ref.vertices[t.z];
+
+		if (ray_x_triangle(v0, v1, v2, v, -dx))
+			yz_count_neg++;
+	}
+
+	if (yz_count_neg % 2 == 0)
+		return 1.0f;
+
+	return -1.0f;
+}
+
+// Wholistic SDF routine
+void sdf(const geometry &geometry, ipqas &interior_qas, closest_point_kinfo &kinfo, std::vector <float> &sdfs)
+{
+	ULOG_ASSERT(sdfs.size() == kinfo.point_count);
+	brute_closest_point(geometry, kinfo);
+
+	memcpy(sdfs.data(), kinfo.distances, kinfo.point_count * sizeof(float));
+
+	std::vector <glm::vec3> points(kinfo.point_count);
+	memcpy(points.data(), kinfo.points, kinfo.point_count * sizeof(glm::vec3));
+
+	interior_qas.query(points, sdfs);
+}
+
+void sdf(cas_grid &cas, ipqas &interior_qas, const std::vector <glm::vec3> &points,
+		std::vector <glm::vec3> &closest,
+		std::vector <glm::vec3> &bary,
+		std::vector <float> &sdfs,
+		std::vector <uint32_t> &triangles)
+{
+	// TODO: size check
+	cas.precache_query(points);
+	cas.query(points, closest, bary, sdfs, triangles);
+	interior_qas.query(points, sdfs);
 }
