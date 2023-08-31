@@ -30,6 +30,7 @@ add_executable(decimate decimate.cpp)
 add_executable(opt opt.cu casdf/casdf.cu)
 
 add_executable(reshape reshape.cu casdf/casdf.cu)
+add_executable(measure measure.cu casdf/casdf.cu)
 
 target_link_libraries(nsc
 	glfw
@@ -66,6 +67,12 @@ target_link_libraries(reshape
 	Vulkan::Vulkan
 	glslang::glslang
 	glslang::glslang-default-resource-limits
+)
+
+
+target_link_libraries(measure
+	assimp
+	OpenMP::OpenMP_CXX
 )
 
 include_directories(.

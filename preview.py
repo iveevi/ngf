@@ -44,6 +44,12 @@ ref_size = os.path.getsize(ref)
 ref = trimesh.load(ref)
 print('Reference model loaded:', ref, ref.vertices.shape, ref.faces.shape)
 
+min = np.min(ref.vertices, axis=0)
+max = np.max(ref.vertices, axis=0)
+extent = max - min
+
+ref.vertices[:, 0] -= extent[0]
+
 print('complexes:', complexes.shape)
 print('corner_points:', corner_points.shape)
 print('corner_encodings:', corner_encodings.shape)
@@ -56,34 +62,41 @@ args = {
         'resolution': resolution,
 }
 
-# eval_vertices = model(args)[0].cpu().detach().numpy()
+# Generate and save the meshes
+import copy
 
-def chamfer_distance(ref, X):
-    extent = np.linalg.norm(np.max(ref, axis=0) - np.min(ref, axis=0))
-    sum = 0
-    for x in X:
-        sum += np.min(np.linalg.norm(ref - x, axis=1)/extent)/X.shape[0]
-    for r in ref:
-        sum += np.min(np.linalg.norm(X - r, axis=1)/extent)/ref.shape[0]
-    return sum
+for res in [ 2, 4, 8, 16 ]:
+    a = copy.deepcopy(args)
+    a['resolution'] = res
+    eval = model(a)
+    print('eval:', eval[0].shape, eval[1].shape)
 
-# chamfers = {}
-# for i in [ 2 ]:
-#     largs = {
-#             'points': corner_points,
-#             'encodings': corner_encodings,
-#             'complexes': complexes,
-#             'resolution': i,
-#     }
-#
-#     lv = model(largs)[0].cpu().detach().numpy()
-#     chamfers[i] = chamfer_distance(ref.vertices, lv.reshape(-1, 3))
+    eval_vertices = eval[0].cpu().detach().numpy()
+    eval_vertices = eval_vertices.reshape(-1, 3)
+
+    eval_tris = []
+
+    offset = 0
+    for i in range(complexes.shape[0]):
+        tris = indices(res)
+        tris += offset
+        eval_tris.append(tris)
+        offset += res * res
+
+    eval_tris = np.concatenate(eval_tris, axis=0)
+
+    m = trimesh.Trimesh(vertices=eval_vertices, faces=eval_tris)
+    print('m:', m, m.vertices.shape, m.faces.shape)
+
+    # Save the mesh
+    mesh_file = data_dir + '/mesh{}x{}.obj'.format(res, res)
+    print('Saving mesh to:', mesh_file)
+    m.export(mesh_file)
 
 print('-' * 40)
 print('Analytics:')
 print('-' * 40)
 
-# TODO: python table
 total_size /= 1024 * 1024
 ref_size /= 1024 * 1024
 reduction = (ref_size - total_size) / total_size * 100
@@ -91,10 +104,6 @@ reduction = (ref_size - total_size) / total_size * 100
 print('Total size      {:.3f} MB'.format(total_size))
 print('Original size   {:.3f} MB'.format(ref_size))
 print('Reduction       {:.3f}%'.format(reduction))
-# print('Chamfer (16):  {:.3f}'.format(chamfer))
-
-# for k, v in chamfers.items():
-#     print('Chamfer ({:2d})    {:.3f}'.format(k, v))
 
 ps.init()
 

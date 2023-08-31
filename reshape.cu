@@ -799,10 +799,22 @@ void optimization_phase(const geometry &source, cas_grid &cas, quad_mesh &opt)
 	closest_point_kinfo host_source_to_opt_kinfo = closest_point_kinfo_alloc(sample_count, eCPU);
 
 	auto start = std::chrono::steady_clock::now();
+
+	float total_time0 = 0.0f;
+	float total_time1 = 0.0f;
+	float total_time2 = 0.0f;
+
 	for (uint32_t i = 0; i < 1000; i++) {
+		std::chrono::time_point <std::chrono::steady_clock> t0;
+		std::chrono::time_point <std::chrono::steady_clock> t1;
+
 		// Using iterative closest point
+		t0 = std::chrono::steady_clock::now();
 		float rate = cas.precache_query(opt.vertices);
 		cas.query(opt.vertices, closest, bary, distances, indices);
+		t1 = std::chrono::steady_clock::now();
+
+		float time0 = std::chrono::duration_cast <std::chrono::duration <float>> (t1 - t0).count();
 
 		float mse = 0.0f;
 		for (uint32_t j = 0; j < opt.vertices.size(); j++) {
@@ -812,19 +824,24 @@ void optimization_phase(const geometry &source, cas_grid &cas, quad_mesh &opt)
 		}
 
 		// And random sampling
+		t0 = std::chrono::steady_clock::now();
 		auto now = std::chrono::steady_clock::now();
 		float time = std::chrono::duration_cast <std::chrono::duration <float>> (now - start).count();
-
 		sample(source_samples, source_cumesh, time);
 		memcpy(host_source_samples, source_samples);
-
 		cudaMemcpy(source_to_opt_kinfo.points, source_samples.points, sizeof(glm::vec3) * sample_count, cudaMemcpyDeviceToDevice);
+		t1 = std::chrono::steady_clock::now();
 
+		float time1 = std::chrono::duration_cast <std::chrono::duration <float>> (t1 - t0).count();
+
+		t0 = std::chrono::steady_clock::now();
 		gopt = geometry_from_quad_mesh(opt);
 		cumesh_reload(opt_cumesh, gopt);
-
 		brute_closest_point(opt_cumesh, source_to_opt_kinfo);
 		memcpy(host_source_to_opt_kinfo, source_to_opt_kinfo);
+		t1 = std::chrono::steady_clock::now();
+
+		float time2 = std::chrono::duration_cast <std::chrono::duration <float>> (t1 - t0).count();
 
 		for (uint32_t j = 0; j < sample_count; j++) {
 			glm::vec3 w = host_source_samples.points[j];
@@ -897,13 +914,28 @@ void optimization_phase(const geometry &source, cas_grid &cas, quad_mesh &opt)
 		}
 
 		// Apply edge gradients
-		// for (uint32_t j = 0; j < opt.vertices.size(); j++)
-		// 	opt.vertices[j] += 0.1f * edge_gradients[j];
+		for (uint32_t j = 0; j < opt.vertices.size(); j++)
+			opt.vertices[j] += 0.1f * edge_gradients[j];
 
 		// Clear line
+		total_time0 += time0;
+		total_time1 += time1;
+		total_time2 += time2;
+
+		float sum = total_time0 + total_time1 + total_time2;
+		float frac0 = total_time0 / sum;
+		float frac1 = total_time1 / sum;
+		float frac2 = total_time2 / sum;
+
+		float avg_time0 = total_time0 / (i + 1);
+		float avg_time1 = total_time1 / (i + 1);
+		float avg_time2 = total_time2 / (i + 1);
+
 		// TODO: tiny progress indicator as part of micro log
 		printf("\033[2K");
-		printf("Iteration %d, error %.5f, cache hit rate %.2f%%, edge length = %.5f\r", i, mse, (1 - rate) * 100.0f, edge_length);
+		printf("Iteration %d, error %.5f, cache hit rate %.2f%%, t0 (CPU query) = %.2f, t1 (Sampling) = %.2f, t2 (GPU query) = %.2f\r",
+			i, mse, (1 - rate) * 100.0f,
+			frac0 * 100.0f, frac1 * 100.0f, frac2 * 100.0f);
 		fflush(stdout);
 	}
 

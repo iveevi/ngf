@@ -67,9 +67,12 @@ for _ in range(complexes_count):
     length = np.linalg.norm(n, axis=1, keepdims=True)
     n = n/length
 
+    # Replace NaNs with zeros
+    n[np.isnan(n)] = 0.0
+
     # Abort on NaNs
-    if np.sum(np.isnan(n)) > 0:
-        raise Exception('NaN normal')
+    # if np.sum(np.isnan(n)) > 0:
+    #     raise Exception('NaN normal')
 
     # Accumulate the average edge length
     average_edge_length += np.mean(np.linalg.norm(e0, axis=1))

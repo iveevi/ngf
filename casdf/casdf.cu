@@ -505,7 +505,6 @@ void brute_closest_point(const cumesh &cu_mesh, const closest_point_kinfo &kinfo
 cas_grid::cas_grid(const geometry &ref_, uint32_t resolution_)
 		: ref(ref_), resolution(resolution_)
 {
-	printf("Constructing cas grid\n");
 	uint32_t size = resolution * resolution * resolution;
 	overlapping_triangles.resize(size);
 	query_triangles.resize(size);
@@ -513,13 +512,7 @@ cas_grid::cas_grid(const geometry &ref_, uint32_t resolution_)
 	// Put triangles into bins
 	std::tie(max, min) = bound(ref);
 	glm::vec3 extent = { max.x - min.x, max.y - min.y, max.z - min.z };
-	printf("extent: %f %f %f\n", extent.x, extent.y, extent.z);
 	bin_size = extent / (float) resolution;
-	printf("min: %f %f %f\n", min.x, min.y, min.z);
-	printf("max: %f %f %f\n", max.x, max.y, max.z);
-	printf("extent: %f %f %f\n", extent.x, extent.y, extent.z);
-	printf("resolution: %d\n", resolution);
-	printf("expected extent: %f %f %f\n", (max.x - min.x) / resolution, (max.y - min.y) / resolution, (max.z - min.z) / resolution);
 
 	for (size_t i = 0; i < ref.triangles.size(); i++) {
 		const glm::uvec3 &triangle = ref.triangles[i];
@@ -716,7 +709,7 @@ std::tuple <glm::vec3, glm::vec3, float, uint32_t> cas_grid::query(const glm::ve
 	assert(bin.size() > 0);
 
 	glm::vec3 closest = p;
-	glm::vec3 bary;
+	glm::vec3 barycentric;
 	float distance = FLT_MAX;
 	uint32_t triangle_index = 0;
 
@@ -733,13 +726,13 @@ std::tuple <glm::vec3, glm::vec3, float, uint32_t> cas_grid::query(const glm::ve
 
 		if (dist < distance) {
 			closest = point;
-			bary = bary;
+			barycentric = bary;
 			distance = dist;
 			triangle_index = index;
 		}
 	}
 
-	return std::make_tuple(closest, bary, distance, triangle_index);
+	return std::make_tuple(closest, barycentric, distance, triangle_index);
 }
 
 // Host-side query
