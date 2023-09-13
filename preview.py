@@ -44,11 +44,10 @@ ref_size = os.path.getsize(ref)
 ref = trimesh.load(ref)
 print('Reference model loaded:', ref, ref.vertices.shape, ref.faces.shape)
 
-min = np.min(ref.vertices, axis=0)
-max = np.max(ref.vertices, axis=0)
-extent = max - min
-
-ref.vertices[:, 0] -= extent[0]
+vmin = np.min(ref.vertices, axis=0)
+vmax = np.max(ref.vertices, axis=0)
+extent = vmax - vmin
+ref.vertices[:, 0] -= 1.5 * extent[0]
 
 print('complexes:', complexes.shape)
 print('corner_points:', corner_points.shape)
@@ -63,6 +62,7 @@ args = {
 }
 
 # Generate and save the meshes
+# TODO: flag
 import copy
 
 for res in [ 2, 4, 8, 16 ]:
@@ -107,14 +107,24 @@ print('Reduction       {:.3f}%'.format(reduction))
 
 ps.init()
 
+enable_ref = True
+enable_nsc = True
+enable_normals = False
+enable_boundary = False
 enable_patch_coloring = False
 enable_edge_coloring = False
 enable_displacement_coloring = False
 
 def redraw():
     global eval_vertices, downsample_it, upsample_it, resolution, \
-        enable_patch_coloring, enable_edge_coloring, enable_displacement_coloring
-		
+            enable_ref, \
+            enable_nsc, \
+            enable_normals, \
+            enable_boundary, \
+            enable_patch_coloring, \
+            enable_edge_coloring, \
+            enable_displacement_coloring
+
     color_wheel = [
         (0.750, 0.250, 0.250),
 		(0.750, 0.500, 0.250),
@@ -129,20 +139,66 @@ def redraw():
 		(0.750, 0.250, 0.750),
 		(0.750, 0.250, 0.500)
     ]
-        
+
     args['resolution'] = resolution
+    args['points'] = corner_points
+    args['encodings'] = corner_encodings
+
     eval = model(args)
     eval_vertices = eval[0].cpu().detach().numpy()
     eval_displacements = eval[1].cpu().detach().numpy()
 
-    ps.register_surface_mesh("ref", ref.vertices, ref.faces)
+    if enable_ref:
+        r = ps.register_surface_mesh("ref", ref.vertices, ref.faces)
+        r.set_color((0.5, 1.0, 0.5))
+
+        if enable_normals:
+            v0 = ref.vertices[ref.faces[:, 0], :]
+            v1 = ref.vertices[ref.faces[:, 1], :]
+            v2 = ref.vertices[ref.faces[:, 2], :]
+            normals = np.cross(v1 - v0, v2 - v0)
+            normals /= np.linalg.norm(normals, axis=1)[:, None]
+            normals = (normals + 1.0) / 2.0
+            r.add_color_quantity("normals", normals, defined_on="faces", enabled=True)
+
+    if not enable_nsc:
+        return
+
+    # ps.register_point_cloud("points", corner_points.cpu().detach().numpy())
+
     for i, (vertices, displacements) in enumerate(zip(eval_vertices, eval_displacements)):
         N = vertices.shape[0]
         triangles = quad_indices(N)
-        g = ps.register_surface_mesh("gim{}".format(i), vertices.reshape(-1, 3), triangles)
+        vs = vertices.reshape(-1, 3)
+        g = ps.register_surface_mesh("gim{}".format(i), vs, triangles)
 
         displacements = displacements.reshape(-1, 3)
         displacements = np.linalg.norm(displacements, axis=1)
+
+        if enable_normals:
+            v0 = vs[triangles[:, 0], :]
+            v1 = vs[triangles[:, 1], :]
+            v2 = vs[triangles[:, 2], :]
+            normals = np.cross(v1 - v0, v2 - v0)
+            normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+            normals = (normals + 1.0) / 2.0
+
+            g.add_color_quantity("normals", normals, defined_on="faces", enabled=True)
+
+        if enable_boundary:
+            bdy = []
+            for j in range(N):
+                bdy.append(vertices[j, 0])
+            for j in range(N):
+                bdy.append(vertices[N - 1, j])
+            for j in range(N):
+                bdy.append(vertices[N - 1 - j, N - 1])
+            for j in range(N):
+                bdy.append(vertices[0, N - 1 - j])
+            bdy = np.array(bdy)
+            bdy = ps.register_curve_network("bdy{}".format(i), bdy, edges='loop')
+            bdy.set_color((0.0, 0.0, 0.0))
+            bdy.set_radius(0.002)
 
         if enable_displacement_coloring:
             g.add_scalar_quantity("displacements", displacements, enabled=True, cmap="coolwarm")
@@ -162,7 +218,13 @@ def redraw():
 def callback():
     # Buttons to increase and decrease the number of iterations
     global eval_vertices, downsample_it, upsample_it, resolution, \
-            enable_patch_coloring, enable_edge_coloring, enable_displacement_coloring
+            enable_ref, \
+            enable_nsc, \
+            enable_normals, \
+            enable_boundary, \
+            enable_patch_coloring, \
+            enable_edge_coloring, \
+            enable_displacement_coloring
 
     changed = False
     if imgui.Button("Increase Resolution"):
@@ -173,6 +235,26 @@ def callback():
     if imgui.Button("Decrease Resolution"):
         resolution //= 2
         resolution = max(1, resolution)
+        changed = True
+
+    if imgui.Button("Toggle Reference"):
+        enable_ref = not enable_ref
+        print('enable_ref:', enable_ref)
+        changed = True
+
+    if imgui.Button("Toggle NSC"):
+        enable_nsc = not enable_nsc
+        print('enable_nsc:', enable_nsc)
+        changed = True
+
+    if imgui.Button("Toggle Normals"):
+        enable_normals = not enable_normals
+        print('enable_normals:', enable_normals)
+        changed = True
+
+    if imgui.Button("Toggle Boundary"):
+        enable_boundary = not enable_boundary
+        print('enable_boundary:', enable_boundary)
         changed = True
 
     if imgui.Button("Toggle Patch Coloring"):

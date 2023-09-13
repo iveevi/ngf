@@ -795,6 +795,9 @@ void optimization_phase(const geometry &source, cas_grid &cas, quad_mesh &opt)
 	sample_result source_samples = sample_result_alloc(sample_count, eCUDA);
 	sample_result host_source_samples = sample_result_alloc(sample_count, eCPU);
 
+	closest_point_kinfo opt_to_source_kinfo = closest_point_kinfo_alloc(opt.vertices.size(), eCUDA);
+	closest_point_kinfo host_opt_to_source_kinfo = closest_point_kinfo_alloc(opt.vertices.size(), eCPU);
+
 	closest_point_kinfo source_to_opt_kinfo = closest_point_kinfo_alloc(sample_count, eCUDA);
 	closest_point_kinfo host_source_to_opt_kinfo = closest_point_kinfo_alloc(sample_count, eCPU);
 
@@ -811,14 +814,19 @@ void optimization_phase(const geometry &source, cas_grid &cas, quad_mesh &opt)
 		// Using iterative closest point
 		t0 = std::chrono::steady_clock::now();
 		float rate = cas.precache_query(opt.vertices);
-		cas.query(opt.vertices, closest, bary, distances, indices);
+		cas.precache_device();
+		cudaMemcpy(opt_to_source_kinfo.points, opt.vertices.data(), sizeof(glm::vec3) * opt.vertices.size(), cudaMemcpyHostToDevice);
+		cas.query_device(opt_to_source_kinfo);
+		memcpy(host_opt_to_source_kinfo, opt_to_source_kinfo);
+		// cas.query(opt.vertices, closest, bary, distances, indices);
 		t1 = std::chrono::steady_clock::now();
 
 		float time0 = std::chrono::duration_cast <std::chrono::duration <float>> (t1 - t0).count();
 
 		float mse = 0.0f;
 		for (uint32_t j = 0; j < opt.vertices.size(); j++) {
-			glm::vec3 dv = closest[j] - opt.vertices[j];
+			// glm::vec3 dv = closest[j] - opt.vertices[j];
+			glm::vec3 dv = host_opt_to_source_kinfo.closest[j] - opt.vertices[j];
 			opt.vertices[j] += dv * 0.1f;
 			mse += glm::dot(dv, dv);
 		}
@@ -933,34 +941,10 @@ void optimization_phase(const geometry &source, cas_grid &cas, quad_mesh &opt)
 
 		// TODO: tiny progress indicator as part of micro log
 		printf("\033[2K");
-		printf("Iteration %d, error %.5f, cache hit rate %.2f%%, t0 (CPU query) = %.2f, t1 (Sampling) = %.2f, t2 (GPU query) = %.2f\r",
+		printf("[%4d] error %.5f, cache hit rate %.2f%%, t0 (Query) = %.2f, t1 (Sampling) = %.2f, t2 (Query) = %.2f\r",
 			i, mse, (1 - rate) * 100.0f,
 			frac0 * 100.0f, frac1 * 100.0f, frac2 * 100.0f);
 		fflush(stdout);
-	}
-
-	// Compute smallest edge length
-	float min_edge_length = std::numeric_limits <float> ::max();
-
-	for (const auto &q : opt.quads) {
-		const glm::vec3 &v0 = opt.vertices[q[0]];
-		const glm::vec3 &v1 = opt.vertices[q[1]];
-		const glm::vec3 &v2 = opt.vertices[q[2]];
-		const glm::vec3 &v3 = opt.vertices[q[3]];
-
-		float d01 = glm::length(v1 - v0);
-		float d02 = glm::length(v2 - v0);
-		float d03 = glm::length(v3 - v0);
-		float d13 = glm::length(v3 - v1);
-		float d12 = glm::length(v2 - v1);
-		float d23 = glm::length(v3 - v2);
-
-		min_edge_length = std::min(min_edge_length, d01);
-		min_edge_length = std::min(min_edge_length, d02);
-		min_edge_length = std::min(min_edge_length, d03);
-		min_edge_length = std::min(min_edge_length, d13);
-		min_edge_length = std::min(min_edge_length, d12);
-		min_edge_length = std::min(min_edge_length, d23);
 	}
 
 	// TODO: stream the mesh data to a file so the progress can be viewed in realtime

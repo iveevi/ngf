@@ -31,6 +31,8 @@ add_executable(opt opt.cu casdf/casdf.cu)
 
 add_executable(reshape reshape.cu casdf/casdf.cu)
 add_executable(measure measure.cu casdf/casdf.cu)
+add_executable(rasterizer rasterizer/rasterizer.cu)
+add_executable(to_quads to_quads.cpp)
 
 target_link_libraries(nsc
 	glfw
@@ -69,11 +71,18 @@ target_link_libraries(reshape
 	glslang::glslang-default-resource-limits
 )
 
-
 target_link_libraries(measure
 	assimp
 	OpenMP::OpenMP_CXX
 )
+
+target_link_libraries(rasterizer
+	assimp
+	polyscope
+	OpenMP::OpenMP_CXX
+)
+
+target_link_libraries(to_quads assimp)
 
 include_directories(.
 	glm

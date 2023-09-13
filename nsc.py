@@ -102,7 +102,7 @@ print('Average edge length:', average_edge_length)
 print(complexes)
 
 corner_points = torch.from_numpy(points).cuda()
-corner_encodings = torch.randn((point_count, POINT_ENCODING_SIZE), requires_grad=True, device='cuda')
+corner_encodings = torch.zeros((point_count, ENCODING_SIZE), requires_grad=True, device='cuda')
 
 # TODO: its also possible to encoding the lipschitz constants within the points to describe the local curvature?
 
@@ -135,7 +135,7 @@ nsc = NSC().cuda()
 #     ps.register_surface_mesh("complex-{}".format(i), vs, indices(resolution))
 #
 # ps.show()
-    
+
 tris = torch.from_numpy(indices(resolution)).cuda()
 optimizer = torch.optim.Adam(list(nsc.parameters()) + [ corner_encodings ], lr=1e-3)
 iterations = 100_000
@@ -158,19 +158,8 @@ for i in tqdm.trange(iterations):
     normals = torch.nn.functional.normalize(normals, dim=2)
     normal_loss = torch.mean(torch.pow(normals - target_normals, 2))
 
-    # Displacement at the corners should be near zero
-    corner_00 = d[:, 0, 0, :]
-    corner_01 = d[:, 0, -1, :]
-    corner_10 = d[:, -1, 0, :]
-    corner_11 = d[:, -1, -1, :]
-
-    displacement_loss = torch.mean(torch.pow(corner_00, 2)) + \
-                        torch.mean(torch.pow(corner_01, 2)) + \
-                        torch.mean(torch.pow(corner_10, 2)) + \
-                        torch.mean(torch.pow(corner_11, 2))
-
     # TODO: lipschitz?
-    loss = vertex_loss + average_edge_length * normal_loss
+    loss = vertex_loss # + average_edge_length * normal_loss
 
     optimizer.zero_grad()
     loss.backward()

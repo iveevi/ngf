@@ -76,9 +76,11 @@ for i, (tg, tn) in enumerate(zip(targets, target_normals)):
     tn_length = np.linalg.norm(tn, axis=1)
     tn /= tn_length[:, None]
     m = ps.register_surface_mesh("target-{}".format(i), tg, indices(resolution))
+    m.set_color((0.5, 0.5, 1))
     # m.add_vector_quantity("normals", tn, defined_on='faces', enabled=True)
-    m.add_scalar_quantity("normals-length", tn_length, defined_on='faces', enabled=True)
-    m.set_edge_width(1)
-    m.set_edge_color([0.0, 0.0, 0.0])
+
+    # m.add_scalar_quantity("normals-length", tn_length, defined_on='faces', enabled=True)
+    # m.set_edge_width(1)
+    # m.set_edge_color([0.0, 0.0, 0.0])
 
 ps.show()

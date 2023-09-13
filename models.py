@@ -3,7 +3,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-POINT_ENCODING_SIZE = 25
+POINT_ENCODING_SIZE = 15
+MATRIX_SIZE = 0
+ENCODING_SIZE = POINT_ENCODING_SIZE + MATRIX_SIZE * 3
 
 # NSC subdivision complex indices
 def indices(N):
@@ -36,18 +38,19 @@ class LipschitzNormalization(nn.Module):
         scale = torch.min(LipschitzNormalization.one, softplus_c/absrowsum)
         return W * scale.unsqueeze(1)
 
+L = 0
 class NSC(nn.Module):
     def __init__(self) -> None:
         super(NSC, self).__init__()
 
         self.encoding_linears = [
-            nn.Linear(POINT_ENCODING_SIZE + 3, 128),
+            nn.Linear(POINT_ENCODING_SIZE + (L + 1) * 3, 128),
             nn.Linear(128, 128),
             nn.Linear(128, 3),
+            # nn.Linear(128, MATRIX_SIZE)
         ]
 
-        # Regularizers only for the encoding layers
-        c0 = torch.pow(torch.tensor(1), 1.0/len(self.encoding_linears))
+        c0 = torch.pow(torch.tensor(0.001), 1.0/len(self.encoding_linears))
         c0 = torch.log(torch.exp(c0) - LipschitzNormalization.one)
         self.regularizers = [
             LipschitzNormalization(c0),
@@ -72,22 +75,75 @@ class NSC(nn.Module):
         p = F.interpolate(local_points, size=(resolution, resolution), mode='bilinear', align_corners=True)
         p = p.permute(0, 2, 3, 1)
 
-        local_encodings = local_encodings.reshape(-1, 2, 2, POINT_ENCODING_SIZE).permute(0, 3, 1, 2)
+        local_encodings = local_encodings.reshape(-1, 2, 2, ENCODING_SIZE).permute(0, 3, 1, 2)
         e = F.interpolate(local_encodings, size=(resolution, resolution), mode='bilinear', align_corners=True)
         e = e.permute(0, 2, 3, 1)
 
         # Now we can evaluate using the network
-        X = torch.concat((p, e), dim=-1)
+        X = []
+        if POINT_ENCODING_SIZE > 0:
+            enc = e[:, :, :, :POINT_ENCODING_SIZE]
+            X = [ enc ]
+
+        for i in range(L + 1):
+            X.append(torch.sin(2 ** i * p))
+
+        # X = torch.concat((p, torch.sin(p), enc), dim=-1)
+        X = torch.concat(X, dim=-1)
+
+        for i, linear in enumerate(self.encoding_linears):
+            W, b = linear.weight, linear.bias
+
+            X = torch.matmul(X, W.t()) + b
+            if i < len(self.encoding_linears) - 1:
+                X = torch.sin(X)
+
+        if MATRIX_SIZE > 0:
+            X = torch.sin(X)
+            m = e[:, :, :, POINT_ENCODING_SIZE:]
+            m = m.reshape(-1, resolution, resolution, 3, MATRIX_SIZE)
+            X = torch.matmul(m, X.unsqueeze(-1)).squeeze(-1)
+
+        lipschitz = LipschitzNormalization.one.clone()
+        return p + X, X, lipschitz
+
+class NSubComplex(nn.Module):
+    def __init__(self) -> None:
+        super(NSubComplex , self).__init__()
+
+        self.encoding_linears = [
+            nn.Linear(POINT_ENCODING_SIZE + (L + 1) * 3, 128),
+            nn.Linear(128, 128),
+            nn.Linear(128, 3)
+        ]
+
+        c0 = torch.pow(torch.tensor(0.1), 1.0/len(self.encoding_linears))
+        c0 = torch.log(torch.exp(c0) - LipschitzNormalization.one)
+        self.regularizers = [
+            LipschitzNormalization(c0),
+            LipschitzNormalization(c0),
+            LipschitzNormalization(c0),
+            LipschitzNormalization(c0),
+        ]
+
+        self.encoding_linears = nn.ModuleList(self.encoding_linears)
+        self.regularizers = nn.ModuleList(self.regularizers)
+
+    def forward(self, bases, encodings):
+        enc = encodings
+
+        X = [ enc ]
+        for i in range(L + 1):
+            X.append(torch.sin(2 ** i * bases))
+        X = torch.concat(X, dim=-1)
+
         for i, (linear, regularizer) in enumerate(zip(self.encoding_linears, self.regularizers)):
             W, b = linear.weight, linear.bias
             # W = regularizer(W)
 
             X = torch.matmul(X, W.t()) + b
             if i < len(self.encoding_linears) - 1:
-                X = torch.tanh(X)
-        
-        lipschitz = LipschitzNormalization.one.clone()
-        for reg in self.regularizers:
-            lipschitz *= torch.nn.functional.softplus(reg.c)
+                X = F.elu(X)
 
-        return p + X, X, lipschitz
+        return bases + X
+
