@@ -112,9 +112,9 @@ class NSubComplex(nn.Module):
         super(NSubComplex , self).__init__()
 
         self.encoding_linears = [
-            nn.Linear(POINT_ENCODING_SIZE + (L + 1) * 3, 128),
-            nn.Linear(128, 128),
-            nn.Linear(128, 3)
+            nn.Linear(POINT_ENCODING_SIZE + (L + 1) * 3, 64),
+            nn.Linear(64, 64),
+            nn.Linear(64, 3)
         ]
 
         c0 = torch.pow(torch.tensor(0.1), 1.0/len(self.encoding_linears))

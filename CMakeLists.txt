@@ -13,53 +13,10 @@ find_package(Eigen3 REQUIRED)
 
 add_subdirectory(polyscope)
 
-add_executable(nsc
-	nsc.cu
-	closest_point.cu
-	viewer.cpp
-	
-	imgui/imgui.cpp
-	imgui/imgui_draw.cpp
-	imgui/imgui_widgets.cpp
-	imgui/imgui_tables.cpp
-	imgui/backends/imgui_impl_glfw.cpp
-	imgui/backends/imgui_impl_vulkan.cpp
-)
-
-add_executable(decimate decimate.cpp)
-add_executable(opt opt.cu casdf/casdf.cu)
-
 add_executable(reshape reshape.cu casdf/casdf.cu)
 add_executable(measure measure.cu casdf/casdf.cu)
 add_executable(rasterizer rasterizer/rasterizer.cu)
 add_executable(to_quads to_quads.cpp)
-
-target_link_libraries(nsc
-	glfw
-	cusparse
-	assimp
-	OpenMP::OpenMP_CXX
-	SPIRV
-	Vulkan::Vulkan
-	glslang::glslang
-	glslang::glslang-default-resource-limits
-)
-
-target_link_libraries(decimate
-	polyscope
-	assimp
-	OpenMP::OpenMP_CXX
-)
-
-target_link_libraries(opt
-	polyscope
-	assimp
-	OpenMP::OpenMP_CXX
-	SPIRV
-	Vulkan::Vulkan
-	glslang::glslang
-	glslang::glslang-default-resource-limits
-)
 
 target_link_libraries(reshape
 	polyscope

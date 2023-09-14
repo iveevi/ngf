@@ -24,13 +24,13 @@ complexes = data_dir + '/complexes.bin'
 total_size += os.path.getsize(complexes)
 complexes = torch.load(complexes)
 
-corner_points = data_dir + '/points.bin'
-total_size += os.path.getsize(corner_points)
-corner_points = torch.load(corner_points)
+points = data_dir + '/points.bin'
+total_size += os.path.getsize(points)
+points = torch.load(points)
 
-corner_encodings = data_dir + '/encodings.bin'
-total_size += os.path.getsize(corner_encodings)
-corner_encodings = torch.load(corner_encodings)
+encodings = data_dir + '/encodings.bin'
+total_size += os.path.getsize(encodings)
+encodings = torch.load(encodings)
 
 # Find the ref.* file
 ref = None
@@ -50,48 +50,16 @@ extent = vmax - vmin
 ref.vertices[:, 0] -= 1.5 * extent[0]
 
 print('complexes:', complexes.shape)
-print('corner_points:', corner_points.shape)
-print('corner_encodings:', corner_encodings.shape)
+print('corner_points:', points.shape)
+print('corner_encodings:', encodings.shape)
 
 resolution = 16
-args = {
-        'points': corner_points,
-        'encodings': corner_encodings,
-        'complexes': complexes,
-        'resolution': resolution,
-}
-
-# Generate and save the meshes
-# TODO: flag
-import copy
-
-for res in [ 2, 4, 8, 16 ]:
-    a = copy.deepcopy(args)
-    a['resolution'] = res
-    eval = model(a)
-    print('eval:', eval[0].shape, eval[1].shape)
-
-    eval_vertices = eval[0].cpu().detach().numpy()
-    eval_vertices = eval_vertices.reshape(-1, 3)
-
-    eval_tris = []
-
-    offset = 0
-    for i in range(complexes.shape[0]):
-        tris = indices(res)
-        tris += offset
-        eval_tris.append(tris)
-        offset += res * res
-
-    eval_tris = np.concatenate(eval_tris, axis=0)
-
-    m = trimesh.Trimesh(vertices=eval_vertices, faces=eval_tris)
-    print('m:', m, m.vertices.shape, m.faces.shape)
-
-    # Save the mesh
-    mesh_file = data_dir + '/mesh{}x{}.obj'.format(res, res)
-    print('Saving mesh to:', mesh_file)
-    m.export(mesh_file)
+# args = {
+#         'points': corner_points,
+#         'encodings': corner_encodings,
+#         'complexes': complexes,
+#         'resolution': resolution,
+# }
 
 print('-' * 40)
 print('Analytics:')
@@ -114,6 +82,29 @@ enable_boundary = False
 enable_patch_coloring = False
 enable_edge_coloring = False
 enable_displacement_coloring = False
+
+def lerp(X, U, V):
+    lp00 = X[:, 0, :].unsqueeze(1) * U.unsqueeze(-1) * V.unsqueeze(-1)
+    lp01 = X[:, 1, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * V.unsqueeze(-1)
+    lp10 = X[:, 3, :].unsqueeze(1) * U.unsqueeze(-1) * (1.0 - V.unsqueeze(-1))
+    lp11 = X[:, 2, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * (1.0 - V.unsqueeze(-1))
+    return lp00 + lp01 + lp10 + lp11
+
+def sample(sample_rate):
+    U = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
+    V = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
+    U, V = torch.meshgrid(U, V)
+
+    corner_points = points[complexes, :]
+    corner_encodings = encodings[complexes, :]
+
+    U, V = U.reshape(-1), V.reshape(-1)
+    U = U.repeat((complexes.shape[0], 1))
+    V = V.repeat((complexes.shape[0], 1))
+
+    lerped_points = lerp(corner_points, U, V).reshape(-1, 3)
+    lerped_encodings = lerp(corner_encodings, U, V).reshape(-1, ENCODING_SIZE)
+    return lerped_points, lerped_encodings
 
 def redraw():
     global eval_vertices, downsample_it, upsample_it, resolution, \
@@ -140,13 +131,16 @@ def redraw():
 		(0.750, 0.250, 0.500)
     ]
 
-    args['resolution'] = resolution
-    args['points'] = corner_points
-    args['encodings'] = corner_encodings
+    LP, LE = sample(resolution)
+    print('LP:', LP.shape)
+    print('LE:', LE.shape)
 
-    eval = model(args)
-    eval_vertices = eval[0].cpu().detach().numpy()
-    eval_displacements = eval[1].cpu().detach().numpy()
+    eval_vertices = model(LP, LE)
+    print('eval_vertices:', eval_vertices.shape)
+    eval_vertices = eval_vertices.reshape(-1, resolution, resolution, 3)
+    print('eval_vertices:', eval_vertices.shape)
+    assert complexes.shape[0] == eval_vertices.shape[0]
+    eval_vertices = eval_vertices.detach().cpu().numpy()
 
     if enable_ref:
         r = ps.register_surface_mesh("ref", ref.vertices, ref.faces)
@@ -164,16 +158,11 @@ def redraw():
     if not enable_nsc:
         return
 
-    # ps.register_point_cloud("points", corner_points.cpu().detach().numpy())
-
-    for i, (vertices, displacements) in enumerate(zip(eval_vertices, eval_displacements)):
+    for i, vertices in enumerate(eval_vertices):
         N = vertices.shape[0]
         triangles = quad_indices(N)
         vs = vertices.reshape(-1, 3)
         g = ps.register_surface_mesh("gim{}".format(i), vs, triangles)
-
-        displacements = displacements.reshape(-1, 3)
-        displacements = np.linalg.norm(displacements, axis=1)
 
         if enable_normals:
             v0 = vs[triangles[:, 0], :]
@@ -199,9 +188,6 @@ def redraw():
             bdy = ps.register_curve_network("bdy{}".format(i), bdy, edges='loop')
             bdy.set_color((0.0, 0.0, 0.0))
             bdy.set_radius(0.002)
-
-        if enable_displacement_coloring:
-            g.add_scalar_quantity("displacements", displacements, enabled=True, cmap="coolwarm")
 
         if enable_patch_coloring:
             g.set_color(color_wheel[i % len(color_wheel)])

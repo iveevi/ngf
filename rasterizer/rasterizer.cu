@@ -93,6 +93,15 @@ void dnn_read(FILE *file)
 	g_dnn.W2 = W2;
 	g_dnn.H2 = H2;
 
+	g_dnn.Wm0 = Wm0;
+	g_dnn.Bs0 = Bs0;
+
+	g_dnn.Wm1 = Wm1;
+	g_dnn.Bs1 = Bs1;
+
+	g_dnn.Wm2 = Wm2;
+	g_dnn.Bs2 = Bs2;
+
 	// Transfer to device
 	cudaMalloc(&g_dnn.d_Wm0, W0 * H0 * sizeof(float));
 	cudaMalloc(&g_dnn.d_Bs0, W0 * sizeof(float));
@@ -196,7 +205,7 @@ void sdc_read(FILE *file)
 // 			glm::vec3 v10 = g_sdc.vertices[g_sdc.complexes[c].y];
 // 			glm::vec3 v01 = g_sdc.vertices[g_sdc.complexes[c].w];
 // 			glm::vec3 v11 = g_sdc.vertices[g_sdc.complexes[c].z];
-// 			
+//
 // 			std::vector <float> f00(g_sdc.feature_count);
 //
 // 			// Interpolation
@@ -224,8 +233,13 @@ int main(int argc, char *argv[])
 
 	constexpr uint32_t rate = 5;
 
-	std::vector <glm::vec3> interpolated_base(rate * rate * g_sdc.complex_count, glm::vec3(0.0f));
-	std::vector <std::array <uint32_t, 4>> interpolated_indices((rate - 1) * (rate - 1) * g_sdc.complex_count);
+	uint32_t vertex_count = rate * rate * g_sdc.complex_count;
+	uint32_t quad_count = (rate - 1) * (rate - 1) * g_sdc.complex_count;
+
+	std::vector <glm::vec3> interpolated_base(vertex_count, { 0.0f, 0.0f, 0.0f });
+	std::vector <std::array <uint32_t, 4>> interpolated_indices(quad_count, { 0, 0, 0, 0 });
+
+	std::vector <float> interpolated_features(vertex_count * g_sdc.feature_count, 0.0f);
 
 	uint32_t i = 0;
 	uint32_t j = 0;
@@ -233,8 +247,32 @@ int main(int argc, char *argv[])
 	for (uint32_t c = 0; c < g_sdc.complex_count; c++) {
 		glm::vec3 v00 = g_sdc.vertices[g_sdc.complexes[c].x];
 		glm::vec3 v10 = g_sdc.vertices[g_sdc.complexes[c].y];
-		glm::vec3 v01 = g_sdc.vertices[g_sdc.complexes[c].z];
-		glm::vec3 v11 = g_sdc.vertices[g_sdc.complexes[c].w];
+		glm::vec3 v01 = g_sdc.vertices[g_sdc.complexes[c].w];
+		glm::vec3 v11 = g_sdc.vertices[g_sdc.complexes[c].z];
+
+		auto get_feature = [&](uint32_t v) {
+			std::vector <float> f(g_sdc.feature_count);
+			for (uint32_t i = 0; i < g_sdc.feature_count; i++)
+				f[i] = g_sdc.features[v * g_sdc.feature_count + i];
+			return f;
+		};
+
+		auto set_feature = [&](uint32_t v, std::vector <float> &f) {
+			for (uint32_t i = 0; i < g_sdc.feature_count; i++)
+				interpolated_features[v * g_sdc.feature_count + i] = f[i];
+		};
+
+		std::vector <float> f00 = get_feature(g_sdc.complexes[c].x);
+		std::vector <float> f10 = get_feature(g_sdc.complexes[c].y);
+		std::vector <float> f01 = get_feature(g_sdc.complexes[c].w);
+		std::vector <float> f11 = get_feature(g_sdc.complexes[c].z);
+
+		auto feature_lerp = [&](std::vector <float> &f0, std::vector <float> &f1, float k) {
+			std::vector <float> f(g_sdc.feature_count);
+			for (uint32_t i = 0; i < g_sdc.feature_count; i++)
+				f[i] = glm::mix(f0[i], f1[i], k);
+			return f;
+		};
 
 		for (uint32_t ix = 0; ix < rate; ix++) {
 			for (uint32_t iy = 0; iy < rate; iy++) {
@@ -245,7 +283,12 @@ int main(int argc, char *argv[])
 				glm::vec3 v1 = glm::mix(v01, v11, x);
 				glm::vec3 v = glm::mix(v0, v1, y);
 
-				interpolated_base[i++] = v;
+				std::vector <float> f0 = feature_lerp(f00, f10, x);
+				std::vector <float> f1 = feature_lerp(f01, f11, x);
+				std::vector <float> f = feature_lerp(f0, f1, y);
+
+				interpolated_base[i] = v;
+				set_feature(i++, f);
 			}
 		}
 
@@ -262,9 +305,137 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	// Activation function
+	auto elu = [](float x) {
+		return x >= 0.0f ? x : glm::exp(x) - 1.0f;
+	};
+
+	// Evaluate the deep neural network on the interpolated features
+	std::vector <float> intermediate_hidden1(vertex_count * g_dnn.W0);
+
+	for (uint32_t i = 0; i < vertex_count; i++) {
+		auto get_input = [&](uint32_t v) {
+			std::vector <float> f(g_sdc.feature_count);
+			for (uint32_t i = 0; i < g_sdc.feature_count; i++)
+				f[i] = g_sdc.features[v * g_sdc.feature_count + i];
+			return f;
+		};
+
+		std::vector <float> input = get_input(i);
+
+		// Evaluate the first layer (matrix multiplication)
+		std::vector <float> hidden(g_dnn.W0);
+
+		const std::vector <float> &Wm = g_dnn.Wm0;
+		for (uint32_t j = 0; j < g_dnn.W0; j++) {
+			float sum = 0.0f;
+			for (uint32_t k = 0; k < g_sdc.feature_count; k++)
+				sum += input[k] * Wm[k * g_dnn.W0 + j];
+			hidden[j] = sum;
+		}
+
+		// Add the bias
+		const std::vector <float> &b = g_dnn.Bs0;
+		// TODO: shared memory
+
+		for (uint32_t j = 0; j < g_dnn.W0; j++)
+			hidden[j] += b[j];
+
+		// // Apply the activation function
+		for (uint32_t j = 0; j < g_dnn.W0; j++)
+			hidden[j] = elu(hidden[j]);
+
+		// Store the result
+		for (uint32_t j = 0; j < g_dnn.W0; j++)
+			intermediate_hidden1[i * g_dnn.W0 + j] = hidden[j];
+	}
+
+	std::vector <float> intermediate_hidden2(vertex_count * g_dnn.W1);
+
+	for (uint32_t i = 0; i < vertex_count; i++) {
+		auto get_input = [&](uint32_t v) {
+			std::vector <float> f(g_dnn.W0);
+			for (uint32_t i = 0; i < g_dnn.W0; i++)
+				f[i] = intermediate_hidden1[v * g_dnn.W0 + i];
+			return f;
+		};
+
+		std::vector <float> input = get_input(i);
+
+		// Evaluate the first layer (matrix multiplication)
+		std::vector <float> hidden(g_dnn.W1);
+
+		const std::vector <float> &Wm = g_dnn.Wm1;
+		for (uint32_t j = 0; j < g_dnn.W1; j++) {
+			float sum = 0.0f;
+			for (uint32_t k = 0; k < g_dnn.W0; k++)
+				sum += input[k] * Wm[k * g_dnn.W1 + j];
+			hidden[j] = sum;
+		}
+
+		// Add the bias
+		const std::vector <float> &b = g_dnn.Bs1;
+		// TODO: shared memory
+
+		for (uint32_t j = 0; j < g_dnn.W1; j++)
+			hidden[j] += b[j];
+
+		// // Apply the activation function
+		for (uint32_t j = 0; j < g_dnn.W1; j++)
+			hidden[j] = elu(hidden[j]);
+
+		// Store the result
+		for (uint32_t j = 0; j < g_dnn.W1; j++)
+			intermediate_hidden2[i * g_dnn.W1 + j] = hidden[j];
+	}
+
+	std::vector <float> final_vertices(vertex_count * 3);
+
+	for (uint32_t i = 0; i < vertex_count; i++) {
+		auto get_input = [&](uint32_t v) {
+			std::vector <float> f(g_dnn.W1);
+			for (uint32_t i = 0; i < g_dnn.W1; i++)
+				f[i] = intermediate_hidden2[v * g_dnn.W1 + i];
+			return f;
+		};
+
+		std::vector <float> input = get_input(i);
+
+		// Evaluate the first layer (matrix multiplication)
+		std::vector <float> hidden(3);
+
+		const std::vector <float> &Wm = g_dnn.Wm2;
+		for (uint32_t j = 0; j < 3; j++) {
+			float sum = 0.0f;
+			for (uint32_t k = 0; k < g_dnn.W1; k++)
+				sum += input[k] * Wm[k * 3 + j];
+			hidden[j] = sum;
+		}
+
+		// Add the bias
+		const std::vector <float> &b = g_dnn.Bs2;
+
+		for (uint32_t j = 0; j < 3; j++)
+			hidden[j] += b[j];
+
+		// Store the result
+		for (uint32_t j = 0; j < 3; j++)
+			final_vertices[i * 3 + j] = hidden[j] + interpolated_base[i][j];
+	}
+
+	std::vector <glm::vec3> vertices(vertex_count);
+	for (uint32_t i = 0; i < vertex_count; i++) {
+		vertices[i] = glm::vec3(final_vertices[i * 3 + 0], final_vertices[i * 3 + 1], final_vertices[i * 3 + 2]);
+		printf("%f %f %f\n", final_vertices[i * 3 + 0], final_vertices[i * 3 + 1], final_vertices[i * 3 + 2]);
+	}
+
 	namespace ps = polyscope;
 
 	ps::init();
-	ps::registerSurfaceMesh("mesh", interpolated_base, interpolated_indices);
+	// ps::registerSurfaceMesh("mesh", interpolated_base, interpolated_indices);
+	ps::registerPointCloud("points", vertices);
+
+	// auto cs = *reinterpret_cast <std::vector <std::array <uint32_t, 4>> *> (&g_sdc.complexes);
+	// ps::registerSurfaceMesh("complexes", g_sdc.vertices, cs);
 	ps::show();
 }

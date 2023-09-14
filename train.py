@@ -11,17 +11,15 @@ import torch.nn.functional as F
 import tqdm
 import trimesh
 import time
-import cupy
 
-from cupy.sparse import coo_matrix
-from cupy.sparse.linalg import spsolve
 from collections import namedtuple
 from torch.utils.cpp_extension import load
 
 from models import *
 
-if len(sys.argv) < 3:
-    print('Usage: python3 train.py <quad mesh> <reference>')
+if len(sys.argv) < 4:
+    print('Usage: python3 train.py <quad mesh> <reference> <directory>')
+    # TODO: one homogenized python script...
     sys.exit(1)
 
 def read_quad_mesh(path):
@@ -40,8 +38,8 @@ complexes = torch.from_numpy(qm.quads).cuda()
 points = torch.from_numpy(qm.vertices).cuda()
 
 #FIXME:
-# encodings = torch.zeros((points.shape[0], ENCODING_SIZE), requires_grad=True, device='cuda')
-encodings = torch.randn((points.shape[0], ENCODING_SIZE), requires_grad=True, device='cuda')
+encodings = torch.zeros((points.shape[0], ENCODING_SIZE), requires_grad=True, device='cuda')
+# encodings = torch.randn((points.shape[0], ENCODING_SIZE), requires_grad=True, device='cuda')
 
 print('Complexes:', complexes.shape)
 print('Points:   ', points.shape)
@@ -153,21 +151,26 @@ print('Infs:', infs.sum().item())
 norms = torch.norm(ref_normals, dim=1)
 print('Norms:', norms.min().item(), norms.max().item())
 
+print('Loading geometry library...')
 geom_cpp = load(name="geom_cpp",
         sources=[ "ext/geometry.cpp" ],
         extra_include_paths=[ "glm" ],
+        build_directory="build",
 )
 
+print('Loading query library...')
 query_cpp = load(name="query_cpp",
         sources=[ "ext/query.cu" ],
         extra_include_paths=[ "glm" ],
+        build_directory="build",
 )
 
+print('Loading sample library...')
 sample_cpp = load(name="sample_cpp",
         sources=[ "ext/sample.cu" ],
         extra_include_paths=[ "glm" ],
+        build_directory="build",
 )
-
 
 def sample(sample_rate):
     U = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
@@ -250,12 +253,12 @@ def diffusion_matrix(T, Nv, factor = 20):
     return I - factor * L
 
 optimizer = torch.optim.Adam(list(nsc.parameters()) + [ encodings ], lr=1e-3)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=250, gamma=0.99)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.9)
 
 history = {}
 saves = []
 
-for sample_rate in [ 4 ]:
+for sample_rate in [ 2, 4 ]:
     qindices = []
     for i in range(complexes.shape[0]):
         qi = quad_indices(sample_rate)
@@ -274,22 +277,25 @@ for sample_rate in [ 4 ]:
     tri_indices = np.concatenate(tri_indices, axis=0)
     tri_indices_tensor = torch.from_numpy(tri_indices).cuda()
 
-    for i in tqdm.tqdm(range(2500)):
+    # Prepare an accelerator
+    LP, LE = sample(sample_rate)
+    X = nsc(LP, LE)
+
+    acc = query_cpp.accelerator(X, ref_vertices, ref_normals, ref_triangles, sample_rate, 1.5)
+    print('acc:', acc)
+
+    for i in tqdm.tqdm(range(1000)):
         LP, LE = sample(sample_rate)
         X = nsc(LP, LE)
 
         optimizer.zero_grad()
 
-        Y, N = query_cpp.closest(X, ref_vertices, ref_normals, ref_triangles)
-        vertex_loss = torch.mean(torch.pow(X - Y, 2))
+        # y, n = acc.closest(X, sample_rate)
+        # print('y:', y.shape, 'n:', n.shape)
 
-        Tn = tri_normals(X, tri_indices_tensor)
-        Tn_target = torch.zeros_like(Tn)
-        Tn_target += N[tri_indices_tensor[:, 0], :]
-        Tn_target += N[tri_indices_tensor[:, 1], :]
-        Tn_target += N[tri_indices_tensor[:, 2], :]
-        Tn_target = F.normalize(Tn_target, dim=1)
-        normal_loss = torch.sum(torch.pow(Tn - Tn_target, 2))
+        # Y, N = query_cpp.closest(X, ref_vertices, ref_normals, ref_triangles)
+        Y, N = acc.closest(X, sample_rate)
+        vertex_loss = torch.mean(torch.pow(X - Y, 2))
 
         t = np.sin(time.perf_counter())
         Xs, Ns = sample_cpp.sample(ref_vertices, ref_normals, ref_triangles, 1000, t)
@@ -297,21 +303,20 @@ for sample_rate in [ 4 ]:
         Tris = tri_indices_tensor[T]
         V0, V1, V2 = X[Tris[:, 0], :], X[Tris[:, 1], :], X[Tris[:, 2], :]
         Vh = V0 * B[:, 0].unsqueeze(1) + V1 * B[:, 1].unsqueeze(1) + V2 * B[:, 2].unsqueeze(1)
-        sampled_vertex_loss = torch.sum(torch.pow(Xs - Vh, 2))
+        sampled_vertex_loss = torch.mean(torch.pow(Xs - Vh, 2))
 
         history.setdefault('opt:vertex loss', []).append(vertex_loss.item())
-        history.setdefault('opt:normal loss', []).append(normal_loss.item())
         history.setdefault('opt:sampled vertex loss', []).append(sampled_vertex_loss.item())
-        history.setdefault('opt:lerning rate', []).append(scheduler.get_last_lr()[0])
+        history.setdefault('opt:lr', []).append(scheduler.get_last_lr()[0])
 
-        loss = vertex_loss + normal_loss + sampled_vertex_loss
+        loss = vertex_loss + sampled_vertex_loss
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         scheduler.step()
 
-    saves.append((X.detach().cpu().numpy(), qindices_tensor.cpu().numpy()))
+    saves.append((X.detach().cpu().numpy(), qindices_tensor.cpu().numpy(), tri_indices_tensor.cpu().numpy(), sample_rate))
 
 structs = []
 
@@ -338,107 +343,82 @@ for sample_rate in [ 8 ]:
     nsc_ids = np.tile(nsc_ids, ((sample_rate - 1) ** 2, 1)).T.reshape(-1)
     nsc_ids_tensor = torch.from_numpy(nsc_ids).cuda()
 
-    LP, LE = sample(sample_rate)
-    X = nsc(LP, LE)
-
-    V = X.detach().clone().requires_grad_(True)
-    vopt = torch.optim.Adam([ V ], lr=1e-3)
-    vopt = torch.optim.SGD([ V ], lr=1e-2)
-
-    cmap = make_cmap(complexes, LP)
-    I, remap = geom_cpp.sdc_weld(complexes.cpu(), X.cpu(), cmap, sample_rate)
-    # D = diffusion_matrix(tri_indices_tensor.cpu().numpy(), V.shape[0], factor)
-    # fD = cupy.sparse.linalg.factorized(D)
-    I = I.cuda()
-
-    for i in tqdm.tqdm(range(1000)):
-        vopt.zero_grad()
-
-        # Compute triangle normals
-        Tn = tri_normals(V, I)
-        # TODO: normalize the normals vectors alawyas...
-
-        # Find closest points on the reference
-        Y, N = query_cpp.closest(V, ref_vertices, ref_normals, ref_triangles)
-        vertex_loss = torch.sum(torch.pow(V - Y, 2))
-
-        Tn_target = torch.zeros_like(Tn)
-        Tn_target += N[I[:, 0], :]
-        Tn_target += N[I[:, 1], :]
-        Tn_target += N[I[:, 2], :]
-        Tn_target = F.normalize(Tn_target, dim=1)
-
-        normal_loss = 1e-3 * torch.mean(torch.pow(Tn - Tn_target, 2))
-
-        # Sampling points on the ref
-        t = np.sin(time.perf_counter())
-        Xs, Ns = sample_cpp.sample(ref_vertices, ref_normals, ref_triangles, 1000, t)
-        T, B = query_cpp.closest_bary(Xs, V, I)
-        Tris = tri_indices_tensor[T]
-        V0, V1, V2 = V[Tris[:, 0], :], V[Tris[:, 1], :], V[Tris[:, 2], :]
-        Vh = V0 * B[:, 0].unsqueeze(1) + V1 * B[:, 1].unsqueeze(1) + V2 * B[:, 2].unsqueeze(1)
-        sampled_vertex_loss = torch.sum(torch.pow(Xs - Vh, 2))
-
-        # Area loss
-        areas = tri_areas(V, I)
-        area_loss = torch.var(areas)
-
-        # loss = vertex_loss + sampled_vertex_loss + normal_loss + area_loss
-        loss = vertex_loss + sampled_vertex_loss # + normal_loss # + area_loss
-
-        history.setdefault('vopt:loss', []).append(loss.item())
-        history.setdefault('vopt:vertex_loss', []).append(vertex_loss.item())
-        history.setdefault('vopt:sampled_vertex_loss', []).append(sampled_vertex_loss.item())
-        history.setdefault('vopt:normal_loss', []).append(normal_loss.item())
-        # history.setdefault('vopt:area_loss', []).append(area_loss.item())
-
-        loss.backward()
-        # dgrad = fD(cupy.array(V.grad))
-        # V.grad.data.copy_(torch.as_tensor(dgrad, device='cuda'))
-        vopt.step()
-
-        # Laplacian smoothing every now and then
-        # if (i > 0 and i < 750) and i % 10 == 0:
-        #     Vnew = geom_cpp.laplacian_smooth(V.detach().cpu(), I.cpu(), 0.5).cuda()
-        #     with torch.no_grad():
-        #         V.data.copy_(Vnew.cuda())
-
-        #     for _ in range(10):
-        #         vopt.zero_grad()
-        #         loss = torch.mean(torch.pow(V - Vnew, 2))
-        #         loss.backward()
-        #         vopt.step()
-
-    V = geom_cpp.sdc_separate(V.detach().cpu(), remap).cuda()
-    Vn = tri_normals(V, tri_indices_tensor)
-    aell = average_edge_length(V, tri_indices_tensor)
-
-    optimizer = torch.optim.Adam(list(nsc.parameters()) + [ encodings ], lr=1e-3)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.9)
-
-    for i in tqdm.tqdm(range(5000)):
+    for i in range(2):
         LP, LE = sample(sample_rate)
         X = nsc(LP, LE)
 
-        vertex_loss = torch.mean(torch.pow(X - V, 2))
+        V = X.detach().clone().requires_grad_(True)
+        vopt = torch.optim.SGD([ V ], lr=1e-2)
 
-        Xn = tri_normals(X, tri_indices_tensor)
-        normal_loss = aell * torch.mean(torch.pow(Xn - Vn, 2))
+        cmap = make_cmap(complexes, LP)
+        I, remap = geom_cpp.sdc_weld(complexes.cpu(), X.cpu(), cmap, sample_rate)
+        I = I.cuda()
 
-        loss = vertex_loss + normal_loss
+        acc = query_cpp.accelerator(X, ref_vertices, ref_normals, ref_triangles, sample_rate, 1.5)
+        for i in tqdm.tqdm(range(1000)):
+            vopt.zero_grad()
 
-        history.setdefault('nsc:loss', []).append(loss.item())
-        history.setdefault('nsc:vertex_loss', []).append(vertex_loss.item())
-        history.setdefault('nsc:normal_loss', []).append(normal_loss.item())
-        history.setdefault('nsc:lr', []).append(scheduler.get_last_lr()[0])
+            # Compute triangle normals
+            Tn = tri_normals(V, I)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+            # Find closest points on the reference
+            # Y, N = query_cpp.closest(V, ref_vertices, ref_normals, ref_triangles)
+            Y, N = acc.closest(X, sample_rate)
+            vertex_loss = torch.sum(torch.pow(V - Y, 2))
 
-    # TODO: match with normals here as well...
+            # Sampling points on the ref
+            t = np.sin(time.perf_counter())
+            Xs, Ns = sample_cpp.sample(ref_vertices, ref_normals, ref_triangles, 1000, t)
+            T, B = query_cpp.closest_bary(Xs, V, I)
+            Tris = tri_indices_tensor[T]
+            V0, V1, V2 = V[Tris[:, 0], :], V[Tris[:, 1], :], V[Tris[:, 2], :]
+            Vh = V0 * B[:, 0].unsqueeze(1) + V1 * B[:, 1].unsqueeze(1) + V2 * B[:, 2].unsqueeze(1)
+            sampled_vertex_loss = torch.sum(torch.pow(Xs - Vh, 2)) # * (V.shape[0] / Xs.shape[0])
+
+            loss = vertex_loss + sampled_vertex_loss
+
+            history.setdefault('vopt:loss', []).append(loss.item())
+            history.setdefault('vopt:vertex_loss', []).append(vertex_loss.item())
+            history.setdefault('vopt:sampled_vertex_loss', []).append(sampled_vertex_loss.item())
+
+            loss.backward()
+            vopt.step()
+
+            # Laplacian smoothing every now and then
+            if (i > 0 and i < 500) and i % 50 == 0:
+                Vnew = geom_cpp.laplacian_smooth(V.detach().cpu(), I.cpu(), 0.9)
+                with torch.no_grad():
+                    V.data.copy_(Vnew.cuda())
+                
+                acc = query_cpp.accelerator(V, ref_vertices, ref_normals, ref_triangles, sample_rate, 1.5)
+
+        V = geom_cpp.sdc_separate(V.detach().cpu(), remap).cuda()
+        Vn = tri_normals(V, tri_indices_tensor)
+        aell = average_edge_length(V, tri_indices_tensor)
+
+        optimizer = torch.optim.Adam(list(nsc.parameters()) + [ encodings ], lr=1e-3)
+
+        for i in tqdm.tqdm(range(10000)):
+            LP, LE = sample(sample_rate)
+            X = nsc(LP, LE)
+
+            vertex_loss = torch.mean(torch.pow(X - V, 2))
+
+            Xn = tri_normals(X, tri_indices_tensor)
+            normal_loss = aell * torch.mean(torch.pow(Xn - Vn, 2))
+
+            loss = vertex_loss + 10 * normal_loss
+
+            history.setdefault('nsc:loss', []).append(loss.item())
+            history.setdefault('nsc:vertex_loss', []).append(vertex_loss.item())
+            history.setdefault('nsc:normal_loss', []).append(normal_loss.item())
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
     structs.append((V.cpu().numpy(), qindices_tensor.cpu().numpy()))
-    saves.append((X.detach().cpu().numpy(), qindices_tensor.cpu().numpy()))
+    saves.append((X.detach().cpu().numpy(), qindices_tensor.cpu().numpy(), tri_indices_tensor.cpu().numpy(), sample_rate))
 
 # Plot the loss
 groups = {}
@@ -464,7 +444,28 @@ for ax, origin, group in zip(axs, groups.keys(), groups.values()):
     ax.set_yscale('log')
 
 fig.tight_layout()
-plt.savefig('loss.png')
+
+# Save results
+output_dir = sys.argv[3]
+model_file = os.path.join(output_dir, 'model.bin')
+complexes_file = os.path.join(output_dir, 'complexes.bin')
+corner_points_file = os.path.join(output_dir, 'points.bin')
+corner_encodings_file = os.path.join(output_dir, 'encodings.bin')
+
+if os.path.exists(output_dir):
+    shutil.rmtree(output_dir)
+
+os.makedirs(output_dir)
+torch.save(nsc, model_file)
+torch.save(complexes, complexes_file)
+torch.save(points, corner_points_file)
+torch.save(encodings, corner_encodings_file)
+plt.savefig(os.path.join(output_dir, 'loss.png'))
+
+filename = sys.argv[2]
+extension = os.path.splitext(filename)[1]
+print('Copying', filename, 'to', os.path.join(output_dir, 'ref' + extension))
+shutil.copyfile(filename, os.path.join(output_dir, 'ref' + extension))
 
 # Display results
 ps.init()
@@ -473,8 +474,13 @@ q = ps.register_surface_mesh("quad", qm.vertices, qm.quads)
 r = ps.register_surface_mesh("ref", ref.vertices, ref.faces)
 r.add_color_quantity("color", (0.5 * ref_normals + 0.5).detach().cpu().numpy(), defined_on='faces')
 
-for i, (X, Q) in enumerate(saves):
+for i, (X, Q, T, S) in enumerate(saves):
     ps.register_surface_mesh("save" + str(i), X, Q)
+
+    # Save to output directory as well
+    m = trimesh.Trimesh(vertices=X, faces=Q)
+    m.export(os.path.join(output_dir, f'mesh{S}x{S}.obj'))
+    print('exported to', os.path.join(output_dir, f'mesh{S}x{S}.obj'))
 
 for i, (V, Q) in enumerate(structs):
     ps.register_surface_mesh("struct" + str(i), V, Q)
