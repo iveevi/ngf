@@ -116,25 +116,19 @@ struct ordered_pair {
 	};
 };
 
-auto torch_sdc_weld(const torch::Tensor &complexes, const torch::Tensor &vertices,
+auto torch_sdc_weld(const torch::Tensor &complexes,
 		std::unordered_map <int32_t, std::set <int32_t>> &cmap,
+		int64_t vertex_count,
 		int64_t sample_rate)
 {
-	assert(complexes.is_cpu() && vertices.is_cpu());
+	assert(complexes.is_cpu());
 	assert(complexes.dtype() == torch::kInt32);
-	assert(vertices.dtype() == torch::kFloat32);
 	assert(complexes.dim() == 2 && complexes.size(1) == 4);
-	assert(vertices.dim() == 2 && vertices.size(1) == 3);
 
 	std::vector <glm::ivec4> cs(complexes.size(0));
 	printf("cs: %lu\n", cs.size());
 	int32_t *ptr = complexes.data_ptr <int32_t> ();
 	std::memcpy(cs.data(), ptr, complexes.size(0) * sizeof(glm::ivec4));
-
-	std::vector <glm::vec3> positions(vertices.size(0));
-	printf("positions: %lu\n", positions.size());
-	float *ptr2 = vertices.data_ptr <float> ();
-	std::memcpy(positions.data(), ptr2, vertices.size(0) * sizeof(glm::vec3));
 
 	// Mappings
 	std::unordered_map <int32_t, int32_t> rcmap;
@@ -144,7 +138,7 @@ auto torch_sdc_weld(const torch::Tensor &complexes, const torch::Tensor &vertice
 	}
 
 	std::unordered_map <int32_t, int32_t> remap;
-	for (size_t i = 0; i < vertices.size(0); i++)
+	for (size_t i = 0; i < vertex_count; i++)
 		remap[i] = i;
 
 	for (const auto &[_, s] : cmap) {

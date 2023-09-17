@@ -142,14 +142,7 @@ def quad_area(V, Q):
 
     return torch.concatenate((A0, A1), dim=0)
 
-ref_normals = unormed_tri_normals(ref_vertices, ref_triangles)
-nans = torch.isnan(ref_normals).any(dim=1)
-print('NaNs:', nans.sum().item())
-infs = torch.isinf(ref_normals).any(dim=1)
-print('Infs:', infs.sum().item())
-
-norms = torch.norm(ref_normals, dim=1)
-print('Norms:', norms.min().item(), norms.max().item())
+ref_normals = tri_normals(ref_vertices, ref_triangles)
 
 print('Loading geometry library...')
 geom_cpp = load(name="geom_cpp",
@@ -215,43 +208,6 @@ def make_cmap(complexes, LP):
 
     return cmap
 
-def diffusion_matrix(T, Nv, factor = 20):
-    # Assume T is a numpy matrix (N, 3) of triangle indices
-    data, rows, columns = [], [], []
-
-    vgraph = {}
-    for i in range(T.shape[0]):
-        v0, v1, v2 = T[i]
-
-        vgraph.setdefault(v0, set()).add(v1)
-        vgraph.setdefault(v0, set()).add(v2)
-        vgraph.setdefault(v1, set()).add(v0)
-        vgraph.setdefault(v1, set()).add(v2)
-        vgraph.setdefault(v2, set()).add(v0)
-        vgraph.setdefault(v2, set()).add(v1)
-
-    for v, adj in vgraph.items():
-        for a in adj:
-            data.append(1)
-            rows.append(v)
-            columns.append(a)
-
-        data.append(-len(adj))
-        rows.append(v)
-        columns.append(v)
-
-    data = cupy.array(data, dtype=cupy.float32)
-    rows = cupy.array(rows, dtype=cupy.int32)
-    columns = cupy.array(columns, dtype=cupy.int32)
-
-    L = coo_matrix((data, (rows, columns)), shape=(Nv, Nv))
-
-    I_ones = cupy.ones(Nv, dtype=cupy.float32)
-    I_rows = cupy.arange(Nv, dtype=cupy.int32)
-    I = coo_matrix((I_ones, (I_rows, I_rows)))
-
-    return I - factor * L
-
 optimizer = torch.optim.Adam(list(nsc.parameters()) + [ encodings ], lr=1e-3)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.9)
 
@@ -281,9 +237,6 @@ for sample_rate in [ 2, 4 ]:
     LP, LE = sample(sample_rate)
     X = nsc(LP, LE)
 
-    acc = query_cpp.accelerator(X, ref_vertices, ref_normals, ref_triangles, sample_rate, 1.5)
-    print('acc:', acc)
-
     for i in tqdm.tqdm(range(1000)):
         LP, LE = sample(sample_rate)
         X = nsc(LP, LE)
@@ -293,12 +246,12 @@ for sample_rate in [ 2, 4 ]:
         # y, n = acc.closest(X, sample_rate)
         # print('y:', y.shape, 'n:', n.shape)
 
-        # Y, N = query_cpp.closest(X, ref_vertices, ref_normals, ref_triangles)
-        Y, N = acc.closest(X, sample_rate)
+        Y, N = query_cpp.closest(X, ref_vertices, ref_normals, ref_triangles)
+        # Y, N = acc.closest(X, sample_rate)
         vertex_loss = torch.mean(torch.pow(X - Y, 2))
 
         t = np.sin(time.perf_counter())
-        Xs, Ns = sample_cpp.sample(ref_vertices, ref_normals, ref_triangles, 1000, t)
+        Xs, Ns, _, _ = sample_cpp.sample(ref_vertices, ref_normals, ref_triangles, 1000, t)
         T, B = query_cpp.closest_bary(Xs, X, tri_indices_tensor)
         Tris = tri_indices_tensor[T]
         V0, V1, V2 = X[Tris[:, 0], :], X[Tris[:, 1], :], X[Tris[:, 2], :]
@@ -343,7 +296,7 @@ for sample_rate in [ 8 ]:
     nsc_ids = np.tile(nsc_ids, ((sample_rate - 1) ** 2, 1)).T.reshape(-1)
     nsc_ids_tensor = torch.from_numpy(nsc_ids).cuda()
 
-    for i in range(2):
+    for i in range(1):
         LP, LE = sample(sample_rate)
         X = nsc(LP, LE)
 
@@ -354,7 +307,6 @@ for sample_rate in [ 8 ]:
         I, remap = geom_cpp.sdc_weld(complexes.cpu(), X.cpu(), cmap, sample_rate)
         I = I.cuda()
 
-        acc = query_cpp.accelerator(X, ref_vertices, ref_normals, ref_triangles, sample_rate, 1.5)
         for i in tqdm.tqdm(range(1000)):
             vopt.zero_grad()
 
@@ -362,13 +314,12 @@ for sample_rate in [ 8 ]:
             Tn = tri_normals(V, I)
 
             # Find closest points on the reference
-            # Y, N = query_cpp.closest(V, ref_vertices, ref_normals, ref_triangles)
-            Y, N = acc.closest(X, sample_rate)
+            Y, N = query_cpp.closest(V, ref_vertices, ref_normals, ref_triangles)
             vertex_loss = torch.sum(torch.pow(V - Y, 2))
 
             # Sampling points on the ref
             t = np.sin(time.perf_counter())
-            Xs, Ns = sample_cpp.sample(ref_vertices, ref_normals, ref_triangles, 1000, t)
+            Xs, Ns, _, _ = sample_cpp.sample(ref_vertices, ref_normals, ref_triangles, 1000, t)
             T, B = query_cpp.closest_bary(Xs, V, I)
             Tris = tri_indices_tensor[T]
             V0, V1, V2 = V[Tris[:, 0], :], V[Tris[:, 1], :], V[Tris[:, 2], :]
@@ -389,8 +340,6 @@ for sample_rate in [ 8 ]:
                 Vnew = geom_cpp.laplacian_smooth(V.detach().cpu(), I.cpu(), 0.9)
                 with torch.no_grad():
                     V.data.copy_(Vnew.cuda())
-                
-                acc = query_cpp.accelerator(V, ref_vertices, ref_normals, ref_triangles, sample_rate, 1.5)
 
         V = geom_cpp.sdc_separate(V.detach().cpu(), remap).cuda()
         Vn = tri_normals(V, tri_indices_tensor)
@@ -405,9 +354,9 @@ for sample_rate in [ 8 ]:
             vertex_loss = torch.mean(torch.pow(X - V, 2))
 
             Xn = tri_normals(X, tri_indices_tensor)
-            normal_loss = aell * torch.mean(torch.pow(Xn - Vn, 2))
+            normal_loss = torch.mean(torch.pow(Xn - Vn, 2))
 
-            loss = vertex_loss + 10 * normal_loss
+            loss = vertex_loss
 
             history.setdefault('nsc:loss', []).append(loss.item())
             history.setdefault('nsc:vertex_loss', []).append(vertex_loss.item())

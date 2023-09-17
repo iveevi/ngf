@@ -3,9 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-POINT_ENCODING_SIZE = 15
-MATRIX_SIZE = 0
-ENCODING_SIZE = POINT_ENCODING_SIZE + MATRIX_SIZE * 3
+POINT_ENCODING_SIZE = 20
+COMPLEX_ENCODING_SIZE = 20
 
 # NSC subdivision complex indices
 def indices(N):
@@ -23,127 +22,72 @@ def quad_indices(N):
             gim_indices.append([i * N + j, i * N + j + 1, (i + 1) * N + j + 1, (i + 1) * N + j])
     return np.array(gim_indices).reshape(-1, 4).astype(np.int32)
 
-# Lipschitz normalization
-class LipschitzNormalization(nn.Module):
-    one = torch.tensor(1.0).cuda()
-
-    def __init__(self, c):
-        super(LipschitzNormalization, self).__init__()
-        self.c = torch.nn.Parameter(torch.tensor(c))
-
-    def forward(self, W):
-        # Normalize W to have Lipschitz bound of at most c
-        absrowsum = torch.sum(torch.abs(W), dim=1)
-        softplus_c = torch.nn.functional.softplus(self.c)
-        scale = torch.min(LipschitzNormalization.one, softplus_c/absrowsum)
-        return W * scale.unsqueeze(1)
-
-L = 0
-class NSC(nn.Module):
-    def __init__(self) -> None:
-        super(NSC, self).__init__()
-
-        self.encoding_linears = [
-            nn.Linear(POINT_ENCODING_SIZE + (L + 1) * 3, 128),
-            nn.Linear(128, 128),
-            nn.Linear(128, 3),
-            # nn.Linear(128, MATRIX_SIZE)
-        ]
-
-        c0 = torch.pow(torch.tensor(0.001), 1.0/len(self.encoding_linears))
-        c0 = torch.log(torch.exp(c0) - LipschitzNormalization.one)
-        self.regularizers = [
-            LipschitzNormalization(c0),
-            LipschitzNormalization(c0),
-            LipschitzNormalization(c0),
-            LipschitzNormalization(c0),
-        ]
-
-        self.encoding_linears = nn.ModuleList(self.encoding_linears)
-        self.regularizers = nn.ModuleList(self.regularizers)
-
-    def forward(self, args):
-        points = args['points']
-        encodings = args['encodings']
-        complexes = args['complexes']
-        resolution = args['resolution']
-
-        local_points = points[complexes, :]
-        local_encodings = encodings[complexes, :]
-
-        local_points = local_points.reshape(-1, 2, 2, 3).permute(0, 3, 1, 2)
-        p = F.interpolate(local_points, size=(resolution, resolution), mode='bilinear', align_corners=True)
-        p = p.permute(0, 2, 3, 1)
-
-        local_encodings = local_encodings.reshape(-1, 2, 2, ENCODING_SIZE).permute(0, 3, 1, 2)
-        e = F.interpolate(local_encodings, size=(resolution, resolution), mode='bilinear', align_corners=True)
-        e = e.permute(0, 2, 3, 1)
-
-        # Now we can evaluate using the network
-        X = []
-        if POINT_ENCODING_SIZE > 0:
-            enc = e[:, :, :, :POINT_ENCODING_SIZE]
-            X = [ enc ]
-
-        for i in range(L + 1):
-            X.append(torch.sin(2 ** i * p))
-
-        # X = torch.concat((p, torch.sin(p), enc), dim=-1)
-        X = torch.concat(X, dim=-1)
-
-        for i, linear in enumerate(self.encoding_linears):
-            W, b = linear.weight, linear.bias
-
-            X = torch.matmul(X, W.t()) + b
-            if i < len(self.encoding_linears) - 1:
-                X = torch.sin(X)
-
-        if MATRIX_SIZE > 0:
-            X = torch.sin(X)
-            m = e[:, :, :, POINT_ENCODING_SIZE:]
-            m = m.reshape(-1, resolution, resolution, 3, MATRIX_SIZE)
-            X = torch.matmul(m, X.unsqueeze(-1)).squeeze(-1)
-
-        lipschitz = LipschitzNormalization.one.clone()
-        return p + X, X, lipschitz
-
 class NSubComplex(nn.Module):
+    L = 8
+    Lpoint = 0
+    Lcomplex = 0
+
     def __init__(self) -> None:
         super(NSubComplex , self).__init__()
 
         self.encoding_linears = [
-            nn.Linear(POINT_ENCODING_SIZE + (L + 1) * 3, 64),
-            nn.Linear(64, 64),
-            nn.Linear(64, 3)
-        ]
-
-        c0 = torch.pow(torch.tensor(0.1), 1.0/len(self.encoding_linears))
-        c0 = torch.log(torch.exp(c0) - LipschitzNormalization.one)
-        self.regularizers = [
-            LipschitzNormalization(c0),
-            LipschitzNormalization(c0),
-            LipschitzNormalization(c0),
-            LipschitzNormalization(c0),
+            # nn.Linear(COMPLEX_ENCODING_SIZE * (self.Lcomplex + 1) + 3, 128),
+            nn.Linear(POINT_ENCODING_SIZE + COMPLEX_ENCODING_SIZE + (2 * self.L + 1) * 3, 128),
+            nn.Linear(128, 128),
+            nn.Linear(128, 3)
         ]
 
         self.encoding_linears = nn.ModuleList(self.encoding_linears)
-        self.regularizers = nn.ModuleList(self.regularizers)
 
-    def forward(self, bases, encodings):
-        enc = encodings
+        # displacements = torch.ones((self.L + 1, 3))
+        # for i in range(self.L + 1):
+        #     displacements[i] *= 1/2 ** i
+        #
+        # self.displacements = nn.Parameter(displacements)
 
-        X = [ enc ]
-        for i in range(L + 1):
+    def forward(self, bases, encodings, complex_encodings):
+        # X = []
+        # for i in range(self.L + 1):
+        #     X.append(torch.concat((torch.sin(2 ** i * encodings), complex_encodings, bases), dim=-1))
+        #     # X.append(torch.concat((torch.sin(2 ** i * encodings), torch.sin(2 ** i * complex_encodings), bases), dim=-1))
+        #
+        # X = torch.stack(X)
+        # # print(X.shape)
+
+        X = [ encodings, complex_encodings, bases ]
+        for i in range(1, self.L + 1):
             X.append(torch.sin(2 ** i * bases))
+            X.append(torch.cos(2 ** i * bases))
         X = torch.concat(X, dim=-1)
 
-        for i, (linear, regularizer) in enumerate(zip(self.encoding_linears, self.regularizers)):
-            W, b = linear.weight, linear.bias
-            # W = regularizer(W)
-
-            X = torch.matmul(X, W.t()) + b
+        for i, linear in enumerate(self.encoding_linears):
+            X = linear(X)
             if i < len(self.encoding_linears) - 1:
-                X = F.elu(X)
-
+                X = torch.sin(X)
+        # X *= self.displacements.unsqueeze(1)
         return bases + X
 
+        # D = bases
+        # for i in range(self.L + 1):
+        #     D += X[i]
+        #
+        # # print(D.shape)
+        # return D
+
+    # def forward(self, bases, encodings, complex_encodings):
+    #     X = [ ]
+    #     # for i in range(self.Lpoint + 1):
+    #     #     X.append(torch.sin(2 ** i * encodings))
+    #     for i in range(self.Lcomplex + 1):
+    #         X.append(torch.sin(2 ** i * complex_encodings))
+    #     X.append(bases)
+    #     X = torch.concat(X, dim=-1)
+    #
+    #     for i, linear in enumerate(self.encoding_linears):
+    #         W, b = linear.weight, linear.bias
+    #
+    #         X = torch.matmul(X, W.t()) + b
+    #         if i < len(self.encoding_linears) - 1:
+    #             X = F.elu(X)
+    #
+    #     return bases + X

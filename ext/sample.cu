@@ -36,7 +36,7 @@ glm::vec3 pcg(glm::vec3 v)
 }
 
 __global__
-void sample_kernel(cumesh g, glm::vec3 *points, glm::vec3 *normals, size_t N, float time)
+void sample_kernel(cumesh g, glm::vec3 *points, glm::vec3 *normals, int32_t *tris, glm::vec3 *bary, size_t N, float time)
 {
 	size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
 	size_t stride = blockDim.x * gridDim.x;
@@ -68,6 +68,8 @@ void sample_kernel(cumesh g, glm::vec3 *points, glm::vec3 *normals, size_t N, fl
 
 		points[i] = p;
 		normals[i] = g.normals[index];
+		bary[i] = b;
+		tris[i] = index;
 	}
 }
 
@@ -107,9 +109,13 @@ auto torch_sample(torch::Tensor vertices, torch::Tensor normals, torch::Tensor t
 
 	torch::Tensor Ps = torch::zeros({ (signed long) N, 3 }, torch::kFloat32).cuda();
 	torch::Tensor Ns = torch::zeros({ (signed long) N, 3 }, torch::kFloat32).cuda();
+	torch::Tensor Ts = torch::zeros({ (signed long) N }, torch::kInt32).cuda();
+	torch::Tensor Bs = torch::zeros({ (signed long) N, 3 }, torch::kFloat32).cuda();
 
 	assert(Ps.device().is_cuda());
 	assert(Ns.device().is_cuda());
+	assert(Ts.device().is_cuda());
+	assert(Bs.device().is_cuda());
 
 	dim3 block(256);
 	dim3 grid((N + block.x - 1) / block.x);
@@ -117,9 +123,11 @@ auto torch_sample(torch::Tensor vertices, torch::Tensor normals, torch::Tensor t
 	sample_kernel <<< grid, block >>> (g,
 		(glm::vec3 *) Ps.data_ptr(),
 		(glm::vec3 *) Ns.data_ptr(),
+		(int32_t *) Ts.data_ptr(),
+		(glm::vec3 *) Bs.data_ptr(),
 		N, time);
 
-	return std::make_pair(Ps, Ns);
+	return std::make_tuple(Ps, Ns, Ts, Bs);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
