@@ -1,26 +1,29 @@
+import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 import polyscope as ps
 import seaborn as sns
 import shutil
-import sys
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import tqdm
 import trimesh
-import time
 
 from collections import namedtuple
+from pytorch3d.loss import chamfer_distance, mesh_laplacian_smoothing, mesh_normal_consistency, point_mesh_face_distance
+from pytorch3d.ops import sample_points_from_meshes
+from pytorch3d.structures import Meshes, Pointclouds
 from torch.utils.cpp_extension import load
+from torchviz import make_dot
 
 from models import *
 
-if len(sys.argv) < 4:
-    print('Usage: python3 train.py <quad mesh> <reference> <directory>')
-    # TODO: one homogenized python script...
-    sys.exit(1)
+parser = argparse.ArgumentParser(description='Configure the experiment.')
+parser.add_argument('-q', '--quads', type=str, help='Path to the base quad mesh.', required=True)
+parser.add_argument('-r', '--reference', type=str, help='Path to the reference mesh.', required=True)
+parser.add_argument('-d', '--directory', type=str, help='Path to the result directory.', required=True)
+args = parser.parse_args()
 
 def read_quad_mesh(path):
     quads, vertices = [], []
@@ -31,22 +34,43 @@ def read_quad_mesh(path):
 
     return namedtuple('QuadMesh', ['quads', 'vertices'])(quads, vertices)
 
-qm = read_quad_mesh(sys.argv[1])
-ref = trimesh.load_mesh(sys.argv[2])
+qm = read_quad_mesh(args.quads)
+ref = trimesh.load_mesh(args.reference)
+name = os.path.basename(args.reference).split('.')[0]
 
 complexes = torch.from_numpy(qm.quads).cuda()
 points = torch.from_numpy(qm.vertices).cuda()
 
-#FIXME:
-encodings = torch.zeros((points.shape[0], ENCODING_SIZE), requires_grad=True, device='cuda')
-# encodings = torch.randn((points.shape[0], ENCODING_SIZE), requires_grad=True, device='cuda')
+encodings = torch.zeros((points.shape[0], POINT_ENCODING_SIZE), requires_grad=True, device='cuda')
+
+# Compute normal vectors for each complex
+complex_normals = torch.zeros((complexes.shape[0], 3), device='cuda')
+for i, c in enumerate(complexes):
+    v = points[c]
+    n0 = torch.cross(v[1] - v[0], v[2] - v[0])
+    n1 = torch.cross(v[2] - v[0], v[3] - v[0])
+    complex_normals[i] = n0 + n1
+
+# Get vertex -> complexes mapping
+mapping = dict()
+for i, c in enumerate(complexes):
+    for v in c:
+        mapping.setdefault(v.item(), []).append(i)
+
+# Compute per-vertex encodings
+normals  = torch.zeros((points.shape[0], 3), device='cuda')
+for v, cs in mapping.items():
+    n = torch.stack([complex_normals[c] for c in cs]).sum(dim=0)
+    normals[v] = F.normalize(n, dim=0)
+
+# Convert to spherical coordinates and normalize
+phi = 0.5 * (torch.atan2(normals[:, 1], normals[:, 0])/np.pi) + 0.5
+theta = torch.acos(normals[:, 2])/np.pi
+normals = torch.stack([phi, theta], dim=1)
 
 print('Complexes:', complexes.shape)
 print('Points:   ', points.shape)
 print('Encodings:', encodings.shape)
-
-# Uniform UV coordinates for each complex
-# sample_rate = 2
 
 def lerp(X, U, V):
     lp00 = X[:, 0, :].unsqueeze(1) * U.unsqueeze(-1) * V.unsqueeze(-1)
@@ -56,13 +80,6 @@ def lerp(X, U, V):
     return lp00 + lp01 + lp10 + lp11
 
 nsc = NSubComplex().cuda()
-
-def chamfer(X, Y):
-    d = torch.cdist(X, Y)
-    return torch.min(d, dim=1)[0].mean() + torch.min(d, dim=0)[0].mean()
-
-ref_vertices = torch.from_numpy(ref.vertices.astype(np.float32)).cuda()
-ref_triangles = torch.from_numpy(ref.faces.astype(np.int32)).cuda()
 
 def average_edge_length(V, T):
     v0 = V[T[:, 0], :]
@@ -78,99 +95,13 @@ def average_edge_length(V, T):
     l12 = torch.norm(v12, dim=1)
     return (l01 + l02 + l12).mean()/3.0
 
-def unormed_tri_normals(V, T):
-    v0 = V[T[:, 0], :]
-    v1 = V[T[:, 1], :]
-    v2 = V[T[:, 2], :]
-    v01 = v1 - v0
-    v02 = v2 - v0
-    return torch.cross(v01, v02, dim=1)
-
-def tri_normals(V, T):
-    v0 = V[T[:, 0], :]
-    v1 = V[T[:, 1], :]
-    v2 = V[T[:, 2], :]
-    v01 = v1 - v0
-    v02 = v2 - v0
-    v12 = v2 - v1
-    N0 = torch.cross(v01, v02, dim=1)
-    N1 = torch.cross(v02, v12, dim=1)
-    N = F.normalize(N0 + N1, dim=1)
-    return N
-
-def quad_normals(V, Q):
-    v0 = V[Q[:, 0], :]
-    v1 = V[Q[:, 1], :]
-    v2 = V[Q[:, 2], :]
-    v3 = V[Q[:, 3], :]
-
-    v01 = v1 - v0
-    v02 = v2 - v0
-    v03 = v3 - v0
-
-    N0 = torch.cross(v01, v02, dim=1)
-    N1 = torch.cross(v02, v03, dim=1)
-
-    # TODO: swap normals by doing a closest pass before starting
-    # (and then using the sign)
-    N = F.normalize(N0 + N1, dim=1)
-    return -N
-
-def tri_areas(V, T):
-    v0 = V[T[:, 0], :]
-    v1 = V[T[:, 1], :]
-    v2 = V[T[:, 2], :]
-    v01 = v1 - v0
-    v02 = v2 - v0
-    return torch.norm(torch.cross(v01, v02, dim=1), dim=1)/2.0
-
-def quad_area(V, Q):
-    v0 = V[Q[:, 0], :]
-    v1 = V[Q[:, 1], :]
-    v2 = V[Q[:, 2], :]
-    v3 = V[Q[:, 3], :]
-
-    v01 = v1 - v0
-    v02 = v2 - v0
-    v03 = v3 - v0
-
-    N0 = torch.cross(v01, v02, dim=1)
-    N1 = torch.cross(v02, v03, dim=1)
-
-    A0 = torch.norm(N0, dim=1)/2.0
-    A1 = torch.norm(N1, dim=1)/2.0
-
-    return torch.concatenate((A0, A1), dim=0)
-
-ref_normals = tri_normals(ref_vertices, ref_triangles)
-
-print('Loading geometry library...')
-geom_cpp = load(name="geom_cpp",
-        sources=[ "ext/geometry.cpp" ],
-        extra_include_paths=[ "glm" ],
-        build_directory="build",
-)
-
-print('Loading query library...')
-query_cpp = load(name="query_cpp",
-        sources=[ "ext/query.cu" ],
-        extra_include_paths=[ "glm" ],
-        build_directory="build",
-)
-
-print('Loading sample library...')
-sample_cpp = load(name="sample_cpp",
-        sources=[ "ext/sample.cu" ],
-        extra_include_paths=[ "glm" ],
-        build_directory="build",
-)
-
 def sample(sample_rate):
     U = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
     V = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
     U, V = torch.meshgrid(U, V)
 
     corner_points = points[complexes, :] # TODO: this should also be differentiable... (chamfer only?)
+    corner_normals = normals[complexes, :]
     corner_encodings = encodings[complexes, :]
 
     U, V = U.reshape(-1), V.reshape(-1)
@@ -178,49 +109,56 @@ def sample(sample_rate):
     V = V.repeat((complexes.shape[0], 1))
 
     lerped_points = lerp(corner_points, U, V).reshape(-1, 3)
-    lerped_encodings = lerp(corner_encodings, U, V).reshape(-1, ENCODING_SIZE)
-    return lerped_points, lerped_encodings
+    lerped_normals = lerp(corner_normals, U, V).reshape(-1, 2)
+    lerped_encodings = lerp(corner_encodings, U, V).reshape(-1, POINT_ENCODING_SIZE)
 
-def make_cmap(complexes, LP):
-    Cs = complexes.cpu().numpy()
-    lp = LP.detach().cpu().numpy()
+    return lerped_points, lerped_normals, lerped_encodings
 
-    cmap = dict()
-    for i in range(Cs.shape[0]):
-        for j in Cs[i]:
-            if cmap.get(j) is None:
-                cmap[j] = set()
+# def make_cmap(complexes, LP):
+#     Cs = complexes.cpu().numpy()
+#     lp = LP.detach().cpu().numpy()
+#
+#     cmap = dict()
+#     for i in range(Cs.shape[0]):
+#         for j in Cs[i]:
+#             if cmap.get(j) is None:
+#                 cmap[j] = set()
+#
+#         corners = np.array([
+#             0, sample_rate - 1,
+#             sample_rate * (sample_rate - 1),
+#             sample_rate ** 2 - 1
+#         ]) + (i * sample_rate ** 2)
+#
+#         qvs = qm.vertices[Cs[i]]
+#         cvs = lp[corners]
+#
+#         for j in range(4):
+#             # Find the closest corner
+#             dists = np.linalg.norm(qvs[j] - cvs, axis=1)
+#             closest = np.argmin(dists)
+#             cmap[Cs[i][j]].add(corners[closest])
+#
+#     return cmap
 
-        corners = np.array([
-            0, sample_rate - 1,
-            sample_rate * (sample_rate - 1),
-            sample_rate ** 2 - 1
-        ]) + (i * sample_rate ** 2)
-
-        qvs = qm.vertices[Cs[i]]
-        cvs = lp[corners]
-
-        for j in range(4):
-            # Find the closest corner
-            dists = np.linalg.norm(qvs[j] - cvs, axis=1)
-            closest = np.argmin(dists)
-            cmap[Cs[i][j]].add(corners[closest])
-
-    return cmap
-
-optimizer = torch.optim.Adam(list(nsc.parameters()) + [ encodings ], lr=1e-3)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.9)
+optimizer = torch.optim.Adam(list(nsc.parameters()) + [ encodings, points ], lr=1e-3)
 
 history = {}
 saves = []
 
-for sample_rate in [ 2, 4 ]:
+ref_vertices = torch.from_numpy(ref.vertices.astype(np.float32)).cuda()
+ref_triangles = torch.from_numpy(ref.faces.astype(np.int32)).cuda()
+mref = Meshes(verts=[ ref_vertices ], faces=[ ref_triangles ])
+print('mref', mref.verts_padded().shape, mref.faces_padded().shape)
+
+# TODO: config file...
+
+for sample_rate in [ 2, 4, 8, 16 ]:
     qindices = []
     for i in range(complexes.shape[0]):
         qi = quad_indices(sample_rate)
         qi += i * sample_rate ** 2
         qindices.append(qi)
-
     qindices = np.concatenate(qindices, axis=0)
     qindices_tensor = torch.from_numpy(qindices).cuda()
 
@@ -233,141 +171,101 @@ for sample_rate in [ 2, 4 ]:
     tri_indices = np.concatenate(tri_indices, axis=0)
     tri_indices_tensor = torch.from_numpy(tri_indices).cuda()
 
-    # Prepare an accelerator
-    LP, LE = sample(sample_rate)
-    X = nsc(LP, LE)
+    LP, LN, LE = sample(sample_rate)
+    X = nsc(LP, LN, LE)
 
-    for i in tqdm.tqdm(range(1000)):
-        LP, LE = sample(sample_rate)
-        X = nsc(LP, LE)
+    aell = average_edge_length(X, tri_indices_tensor).detach()
+    for i in tqdm.tqdm(range(sample_rate * 1000), desc=f'Optimizing {name} at {sample_rate}x{sample_rate}'):
+        LP, LN, LE = sample(sample_rate)
+        X = nsc(LP, LN, LE)
 
-        optimizer.zero_grad()
+        mopt = Meshes(verts=[ X ], faces=[ tri_indices_tensor ])
 
-        # y, n = acc.closest(X, sample_rate)
-        # print('y:', y.shape, 'n:', n.shape)
+        vertex_loss, normal_loss = chamfer_distance(
+            x=mref.verts_padded(),
+            y=mopt.verts_padded(),
+            x_normals=mref.verts_normals_padded(),
+            y_normals=mopt.verts_normals_padded(),
+            abs_cosine=False)
 
-        Y, N = query_cpp.closest(X, ref_vertices, ref_normals, ref_triangles)
-        # Y, N = acc.closest(X, sample_rate)
-        vertex_loss = torch.mean(torch.pow(X - Y, 2))
+        laplacian_loss = mesh_laplacian_smoothing(mopt, method='uniform')
+        consistency_loss = mesh_normal_consistency(mopt) #TODO: use with mlap
 
-        t = np.sin(time.perf_counter())
-        Xs, Ns, _, _ = sample_cpp.sample(ref_vertices, ref_normals, ref_triangles, 1000, t)
-        T, B = query_cpp.closest_bary(Xs, X, tri_indices_tensor)
-        Tris = tri_indices_tensor[T]
-        V0, V1, V2 = X[Tris[:, 0], :], X[Tris[:, 1], :], X[Tris[:, 2], :]
-        Vh = V0 * B[:, 0].unsqueeze(1) + V1 * B[:, 1].unsqueeze(1) + V2 * B[:, 2].unsqueeze(1)
-        sampled_vertex_loss = torch.mean(torch.pow(Xs - Vh, 2))
+        loss = vertex_loss + aell * normal_loss + aell * consistency_loss/(sample_rate ** 2)
+        if sample_rate <= 4:
+            loss += aell * laplacian_loss
 
-        history.setdefault('opt:vertex loss', []).append(vertex_loss.item())
-        history.setdefault('opt:sampled vertex loss', []).append(sampled_vertex_loss.item())
-        history.setdefault('opt:lr', []).append(scheduler.get_last_lr()[0])
+        dot = make_dot(loss, params=dict(nsc.named_parameters()))
 
-        loss = vertex_loss + sampled_vertex_loss
+        history.setdefault('vertex:loss', []).append(vertex_loss.item())
+        history.setdefault('normal:loss', []).append(normal_loss.item())
+        history.setdefault('miscellaneous:laplacian loss', []).append(laplacian_loss.item())
+        history.setdefault('miscellaneous:consistency loss', []).append(consistency_loss.item())
+        history.setdefault('miscellaneous:total loss', []).append(loss.item())
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        scheduler.step()
 
-    saves.append((X.detach().cpu().numpy(), qindices_tensor.cpu().numpy(), tri_indices_tensor.cpu().numpy(), sample_rate))
+    saves.append((X.detach().cpu().numpy(), qindices))
 
-structs = []
+# Last iteration
+optimizer = torch.optim.Adam([ encodings ], lr=1e-4)
 
-for sample_rate in [ 8 ]:
-    qindices = []
-    for i in range(complexes.shape[0]):
-        qi = quad_indices(sample_rate)
-        qi += i * sample_rate ** 2
-        qindices.append(qi)
+qindices = []
+for i in range(complexes.shape[0]):
+    qi = quad_indices(sample_rate)
+    qi += i * sample_rate ** 2
+    qindices.append(qi)
+qindices = np.concatenate(qindices, axis=0)
+qindices_tensor = torch.from_numpy(qindices).cuda()
 
-    qindices = np.concatenate(qindices, axis=0)
-    qindices_tensor = torch.from_numpy(qindices).cuda()
+tri_indices = []
+for i in range(complexes.shape[0]):
+    ind = indices(sample_rate)
+    ind += i * sample_rate ** 2
+    tri_indices.append(ind)
 
-    tri_indices = []
-    for i in range(complexes.shape[0]):
-        ind = indices(sample_rate)
-        ind += i * sample_rate ** 2
-        tri_indices.append(ind)
+tri_indices = np.concatenate(tri_indices, axis=0)
+tri_indices_tensor = torch.from_numpy(tri_indices).cuda()
 
-    tri_indices = np.concatenate(tri_indices, axis=0)
-    tri_indices_tensor = torch.from_numpy(tri_indices).cuda()
+LP, LN, LE = sample(sample_rate)
+X = nsc(LP, LN, LE)
 
-    nsc_ids = np.arange(complexes.shape[0]).astype(np.int32)
-    nsc_ids = np.tile(nsc_ids, ((sample_rate - 1) ** 2, 1)).T.reshape(-1)
-    nsc_ids_tensor = torch.from_numpy(nsc_ids).cuda()
+aell = average_edge_length(X, tri_indices_tensor).detach()
+for i in tqdm.tqdm(range(sample_rate * 1000), desc=f'Optimizing {name} at {sample_rate}x{sample_rate}'):
+    LP, LN, LE = sample(sample_rate)
+    X = nsc(LP, LN, LE)
 
-    for i in range(1):
-        LP, LE = sample(sample_rate)
-        X = nsc(LP, LE)
+    mopt = Meshes(verts=[ X ], faces=[ tri_indices_tensor ])
 
-        V = X.detach().clone().requires_grad_(True)
-        vopt = torch.optim.SGD([ V ], lr=1e-2)
+    vertex_loss, normal_loss = chamfer_distance(
+        x=mref.verts_padded(),
+        y=mopt.verts_padded(),
+        x_normals=mref.verts_normals_padded(),
+        y_normals=mopt.verts_normals_padded(),
+        abs_cosine=False)
 
-        cmap = make_cmap(complexes, LP)
-        I, remap = geom_cpp.sdc_weld(complexes.cpu(), X.cpu(), cmap, sample_rate)
-        I = I.cuda()
+    laplacian_loss = mesh_laplacian_smoothing(mopt, method='uniform')
+    consistency_loss = mesh_normal_consistency(mopt) #TODO: use with mlap
 
-        for i in tqdm.tqdm(range(1000)):
-            vopt.zero_grad()
+    loss = vertex_loss + aell * normal_loss
+    if sample_rate <= 4:
+        loss += aell * laplacian_loss
 
-            # Compute triangle normals
-            Tn = tri_normals(V, I)
+    dot = make_dot(loss, params=dict(nsc.named_parameters()))
 
-            # Find closest points on the reference
-            Y, N = query_cpp.closest(V, ref_vertices, ref_normals, ref_triangles)
-            vertex_loss = torch.sum(torch.pow(V - Y, 2))
+    history.setdefault('vertex:loss', []).append(vertex_loss.item())
+    history.setdefault('normal:loss', []).append(normal_loss.item())
+    history.setdefault('miscellaneous:laplacian loss', []).append(laplacian_loss.item())
+    history.setdefault('miscellaneous:consistency loss', []).append(consistency_loss.item())
+    history.setdefault('miscellaneous:total loss', []).append(loss.item())
 
-            # Sampling points on the ref
-            t = np.sin(time.perf_counter())
-            Xs, Ns, _, _ = sample_cpp.sample(ref_vertices, ref_normals, ref_triangles, 1000, t)
-            T, B = query_cpp.closest_bary(Xs, V, I)
-            Tris = tri_indices_tensor[T]
-            V0, V1, V2 = V[Tris[:, 0], :], V[Tris[:, 1], :], V[Tris[:, 2], :]
-            Vh = V0 * B[:, 0].unsqueeze(1) + V1 * B[:, 1].unsqueeze(1) + V2 * B[:, 2].unsqueeze(1)
-            sampled_vertex_loss = torch.sum(torch.pow(Xs - Vh, 2)) # * (V.shape[0] / Xs.shape[0])
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
 
-            loss = vertex_loss + sampled_vertex_loss
-
-            history.setdefault('vopt:loss', []).append(loss.item())
-            history.setdefault('vopt:vertex_loss', []).append(vertex_loss.item())
-            history.setdefault('vopt:sampled_vertex_loss', []).append(sampled_vertex_loss.item())
-
-            loss.backward()
-            vopt.step()
-
-            # Laplacian smoothing every now and then
-            if (i > 0 and i < 500) and i % 50 == 0:
-                Vnew = geom_cpp.laplacian_smooth(V.detach().cpu(), I.cpu(), 0.9)
-                with torch.no_grad():
-                    V.data.copy_(Vnew.cuda())
-
-        V = geom_cpp.sdc_separate(V.detach().cpu(), remap).cuda()
-        Vn = tri_normals(V, tri_indices_tensor)
-        aell = average_edge_length(V, tri_indices_tensor)
-
-        optimizer = torch.optim.Adam(list(nsc.parameters()) + [ encodings ], lr=1e-3)
-
-        for i in tqdm.tqdm(range(10000)):
-            LP, LE = sample(sample_rate)
-            X = nsc(LP, LE)
-
-            vertex_loss = torch.mean(torch.pow(X - V, 2))
-
-            Xn = tri_normals(X, tri_indices_tensor)
-            normal_loss = torch.mean(torch.pow(Xn - Vn, 2))
-
-            loss = vertex_loss
-
-            history.setdefault('nsc:loss', []).append(loss.item())
-            history.setdefault('nsc:vertex_loss', []).append(vertex_loss.item())
-            history.setdefault('nsc:normal_loss', []).append(normal_loss.item())
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-    structs.append((V.cpu().numpy(), qindices_tensor.cpu().numpy()))
-    saves.append((X.detach().cpu().numpy(), qindices_tensor.cpu().numpy(), tri_indices_tensor.cpu().numpy(), sample_rate))
+saves.append((X.detach().cpu().numpy(), qindices))
 
 # Plot the loss
 groups = {}
@@ -395,7 +293,7 @@ for ax, origin, group in zip(axs, groups.keys(), groups.values()):
 fig.tight_layout()
 
 # Save results
-output_dir = sys.argv[3]
+output_dir = args.directory
 model_file = os.path.join(output_dir, 'model.bin')
 complexes_file = os.path.join(output_dir, 'complexes.bin')
 corner_points_file = os.path.join(output_dir, 'points.bin')
@@ -411,7 +309,7 @@ torch.save(points, corner_points_file)
 torch.save(encodings, corner_encodings_file)
 plt.savefig(os.path.join(output_dir, 'loss.png'))
 
-filename = sys.argv[2]
+filename = args.reference
 extension = os.path.splitext(filename)[1]
 print('Copying', filename, 'to', os.path.join(output_dir, 'ref' + extension))
 shutil.copyfile(filename, os.path.join(output_dir, 'ref' + extension))
@@ -419,19 +317,14 @@ shutil.copyfile(filename, os.path.join(output_dir, 'ref' + extension))
 # Display results
 ps.init()
 
-q = ps.register_surface_mesh("quad", qm.vertices, qm.quads)
 r = ps.register_surface_mesh("ref", ref.vertices, ref.faces)
-r.add_color_quantity("color", (0.5 * ref_normals + 0.5).detach().cpu().numpy(), defined_on='faces')
-
-for i, (X, Q, T, S) in enumerate(saves):
+for i, (X, Q) in enumerate(saves):
     ps.register_surface_mesh("save" + str(i), X, Q)
 
-    # Save to output directory as well
-    m = trimesh.Trimesh(vertices=X, faces=Q)
-    m.export(os.path.join(output_dir, f'mesh{S}x{S}.obj'))
-    print('exported to', os.path.join(output_dir, f'mesh{S}x{S}.obj'))
-
-for i, (V, Q) in enumerate(structs):
-    ps.register_surface_mesh("struct" + str(i), V, Q)
+# I = np.arange(sample_rate * sample_rate)
+# I = np.tile(I, (attentive_indices.shape[0], 1)).reshape(-1)
+# O = attentive_indices.repeat(sample_rate * sample_rate) * (sample_rate * sample_rate) + I
+#
+# ps.register_surface_mesh("attentive", X[O], att_tri_indices)
 
 ps.show()

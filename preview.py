@@ -32,6 +32,32 @@ encodings = data_dir + '/encodings.bin'
 total_size += os.path.getsize(encodings)
 encodings = torch.load(encodings)
 
+# Compute normal vectors for each complex
+complex_normals = torch.zeros((complexes.shape[0], 3), device='cuda')
+for i, c in enumerate(complexes):
+    v = points[c]
+    n0 = torch.cross(v[1] - v[0], v[2] - v[0])
+    n1 = torch.cross(v[2] - v[0], v[3] - v[0])
+    complex_normals[i] = n0 + n1
+
+# Get vertex -> complexes mapping
+mapping = dict()
+for i, c in enumerate(complexes):
+    for v in c:
+        mapping.setdefault(v.item(), []).append(i)
+
+# Compute per-vertex encodings
+normals  = torch.zeros((points.shape[0], 3), device='cuda')
+for v, cs in mapping.items():
+    n = torch.stack([complex_normals[c] for c in cs]).sum(dim=0)
+    normals[v] = F.normalize(n, dim=0)
+
+# Convert to spherical coordinates and normalize
+phi = 0.5 * (torch.atan2(normals[:, 1], normals[:, 0])/np.pi) + 0.5
+theta = torch.acos(normals[:, 2])/np.pi
+normals = torch.stack([phi, theta], dim=1)
+print('normals:', normals.shape)
+
 # Find the ref.* file
 ref = None
 for f in os.listdir(data_dir):
@@ -53,14 +79,6 @@ print('complexes:', complexes.shape)
 print('corner_points:', points.shape)
 print('corner_encodings:', encodings.shape)
 
-resolution = 16
-# args = {
-#         'points': corner_points,
-#         'encodings': corner_encodings,
-#         'complexes': complexes,
-#         'resolution': resolution,
-# }
-
 print('-' * 40)
 print('Analytics:')
 print('-' * 40)
@@ -75,6 +93,7 @@ print('Reduction       {:.3f}%'.format(reduction))
 
 ps.init()
 
+resolution = 16
 enable_ref = True
 enable_nsc = True
 enable_normals = False
@@ -96,6 +115,7 @@ def sample(sample_rate):
     U, V = torch.meshgrid(U, V)
 
     corner_points = points[complexes, :]
+    corner_normals = normals[complexes, :]
     corner_encodings = encodings[complexes, :]
 
     U, V = U.reshape(-1), V.reshape(-1)
@@ -103,8 +123,25 @@ def sample(sample_rate):
     V = V.repeat((complexes.shape[0], 1))
 
     lerped_points = lerp(corner_points, U, V).reshape(-1, 3)
-    lerped_encodings = lerp(corner_encodings, U, V).reshape(-1, ENCODING_SIZE)
-    return lerped_points, lerped_encodings
+    lerped_normals = lerp(corner_normals, U, V).reshape(-1, 2)
+    lerped_encodings = lerp(corner_encodings, U, V).reshape(-1, POINT_ENCODING_SIZE)
+
+    return lerped_points, lerped_normals, lerped_encodings
+
+    # U = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
+    # V = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
+    # U, V = torch.meshgrid(U, V)
+    #
+    # corner_points = points[complexes, :]
+    # corner_encodings = encodings[complexes, :]
+    #
+    # U, V = U.reshape(-1), V.reshape(-1)
+    # U = U.repeat((complexes.shape[0], 1))
+    # V = V.repeat((complexes.shape[0], 1))
+    #
+    # lerped_points = lerp(corner_points, U, V).reshape(-1, 3)
+    # lerped_encodings = lerp(corner_encodings, U, V).reshape(-1, POINT_ENCODING_SIZE)
+    # return lerped_points, lerped_encodings
 
 def redraw():
     global eval_vertices, downsample_it, upsample_it, resolution, \
@@ -131,11 +168,9 @@ def redraw():
 		(0.750, 0.250, 0.500)
     ]
 
-    LP, LE = sample(resolution)
-    print('LP:', LP.shape)
-    print('LE:', LE.shape)
+    LP, LN, LE = sample(resolution)
 
-    eval_vertices = model(LP, LE)
+    eval_vertices = model(LP, LN, LE)
     print('eval_vertices:', eval_vertices.shape)
     eval_vertices = eval_vertices.reshape(-1, resolution, resolution, 3)
     print('eval_vertices:', eval_vertices.shape)
