@@ -14,7 +14,6 @@ from collections import namedtuple
 from pytorch3d.loss import chamfer_distance, mesh_laplacian_smoothing, mesh_normal_consistency, point_mesh_face_distance
 from pytorch3d.ops import sample_points_from_meshes
 from pytorch3d.structures import Meshes, Pointclouds
-from torch.utils.cpp_extension import load
 from torchviz import make_dot
 
 from models import *
@@ -114,34 +113,7 @@ def sample(sample_rate):
 
     return lerped_points, lerped_normals, lerped_encodings
 
-# def make_cmap(complexes, LP):
-#     Cs = complexes.cpu().numpy()
-#     lp = LP.detach().cpu().numpy()
-#
-#     cmap = dict()
-#     for i in range(Cs.shape[0]):
-#         for j in Cs[i]:
-#             if cmap.get(j) is None:
-#                 cmap[j] = set()
-#
-#         corners = np.array([
-#             0, sample_rate - 1,
-#             sample_rate * (sample_rate - 1),
-#             sample_rate ** 2 - 1
-#         ]) + (i * sample_rate ** 2)
-#
-#         qvs = qm.vertices[Cs[i]]
-#         cvs = lp[corners]
-#
-#         for j in range(4):
-#             # Find the closest corner
-#             dists = np.linalg.norm(qvs[j] - cvs, axis=1)
-#             closest = np.argmin(dists)
-#             cmap[Cs[i][j]].add(corners[closest])
-#
-#     return cmap
-
-optimizer = torch.optim.Adam(list(nsc.parameters()) + [ encodings, points ], lr=1e-3)
+optimizer = torch.optim.Adam(list(nsc.parameters()) + [ encodings ], lr=1e-3)
 
 history = {}
 saves = []
@@ -189,9 +161,9 @@ for sample_rate in [ 2, 4, 8, 16 ]:
             abs_cosine=False)
 
         laplacian_loss = mesh_laplacian_smoothing(mopt, method='uniform')
-        consistency_loss = mesh_normal_consistency(mopt) #TODO: use with mlap
+        consistency_loss = mesh_normal_consistency(mopt)
 
-        loss = vertex_loss + aell * normal_loss + aell * consistency_loss/(sample_rate ** 2)
+        loss = vertex_loss + aell * normal_loss + aell * consistency_loss/(sample_rate ** 2) + aell * laplacian_loss/(sample_rate ** 2)
         if sample_rate <= 4:
             loss += aell * laplacian_loss
 
@@ -208,64 +180,6 @@ for sample_rate in [ 2, 4, 8, 16 ]:
         optimizer.step()
 
     saves.append((X.detach().cpu().numpy(), qindices))
-
-# Last iteration
-optimizer = torch.optim.Adam([ encodings ], lr=1e-4)
-
-qindices = []
-for i in range(complexes.shape[0]):
-    qi = quad_indices(sample_rate)
-    qi += i * sample_rate ** 2
-    qindices.append(qi)
-qindices = np.concatenate(qindices, axis=0)
-qindices_tensor = torch.from_numpy(qindices).cuda()
-
-tri_indices = []
-for i in range(complexes.shape[0]):
-    ind = indices(sample_rate)
-    ind += i * sample_rate ** 2
-    tri_indices.append(ind)
-
-tri_indices = np.concatenate(tri_indices, axis=0)
-tri_indices_tensor = torch.from_numpy(tri_indices).cuda()
-
-LP, LN, LE = sample(sample_rate)
-X = nsc(LP, LN, LE)
-
-aell = average_edge_length(X, tri_indices_tensor).detach()
-for i in tqdm.tqdm(range(sample_rate * 1000), desc=f'Optimizing {name} at {sample_rate}x{sample_rate}'):
-    LP, LN, LE = sample(sample_rate)
-    X = nsc(LP, LN, LE)
-
-    mopt = Meshes(verts=[ X ], faces=[ tri_indices_tensor ])
-
-    vertex_loss, normal_loss = chamfer_distance(
-        x=mref.verts_padded(),
-        y=mopt.verts_padded(),
-        x_normals=mref.verts_normals_padded(),
-        y_normals=mopt.verts_normals_padded(),
-        abs_cosine=False)
-
-    laplacian_loss = mesh_laplacian_smoothing(mopt, method='uniform')
-    consistency_loss = mesh_normal_consistency(mopt) #TODO: use with mlap
-
-    loss = vertex_loss + aell * normal_loss
-    if sample_rate <= 4:
-        loss += aell * laplacian_loss
-
-    dot = make_dot(loss, params=dict(nsc.named_parameters()))
-
-    history.setdefault('vertex:loss', []).append(vertex_loss.item())
-    history.setdefault('normal:loss', []).append(normal_loss.item())
-    history.setdefault('miscellaneous:laplacian loss', []).append(laplacian_loss.item())
-    history.setdefault('miscellaneous:consistency loss', []).append(consistency_loss.item())
-    history.setdefault('miscellaneous:total loss', []).append(loss.item())
-
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-
-saves.append((X.detach().cpu().numpy(), qindices))
 
 # Plot the loss
 groups = {}
@@ -314,17 +228,76 @@ extension = os.path.splitext(filename)[1]
 print('Copying', filename, 'to', os.path.join(output_dir, 'ref' + extension))
 shutil.copyfile(filename, os.path.join(output_dir, 'ref' + extension))
 
+# Serialize NSC data into a single file
+serial_name = name + '.nsc'
+serial_path = os.path.join(output_dir, serial_name)
+
+l0, l1, l2 = nsc.encoding_linears
+with open(serial_path, 'wb') as f:
+    # Write size information
+    f.write(np.array([
+        complexes.shape[0],
+        points.shape[0],
+        POINT_ENCODING_SIZE,
+    ], dtype=np.int32).tobytes())
+
+    # Complexes
+    complexes_bytes = complexes.cpu().numpy().astype(np.int32).tobytes()
+    print('complexes_bytes:', len(complexes_bytes))
+    f.write(complexes_bytes)
+
+    # Corner points, normals and encodings
+    # TODO: are the normals necessary?
+    K = points.shape[0]
+    assert(points.shape[0] == K)
+    assert(normals.shape[0] == K)
+    assert(encodings.shape[0] == K)
+    points_bytes = points.detach().cpu().numpy().astype(np.float32).tobytes()
+    normals_bytes = normals.detach().cpu().numpy().astype(np.float32).tobytes()
+    encodings_bytes = encodings.detach().cpu().numpy().astype(np.float32).tobytes()
+    print('points_bytes:', len(points_bytes))
+    print('normals_bytes:', len(normals_bytes))
+    print('encodings_bytes:', len(encodings_bytes))
+    f.write(points_bytes)
+    f.write(normals_bytes)
+    f.write(encodings_bytes)
+
+    # Write the model parameters
+    W0, H0 = l0.weight.shape
+    print('W0, H0:', W0, H0)
+    l0_weights = l0.weight.detach().cpu().numpy().astype(np.float32).tobytes()
+    l0_bias = l0.bias.detach().cpu().numpy().astype(np.float32).tobytes()
+    f.write(np.array([W0, H0], dtype=np.int32).tobytes())
+    bytes = f.write(l0_weights)
+    print('l0_weights:', bytes)
+    bytes = f.write(l0_bias)
+    print('l0_bias:', bytes)
+
+    W1, H1 = l1.weight.shape
+    print('W1, H1:', W1, H1)
+    l1_weights = l1.weight.detach().cpu().numpy().astype(np.float32).tobytes()
+    l1_bias = l1.bias.detach().cpu().numpy().astype(np.float32).tobytes()
+    f.write(np.array([W1, H1], dtype=np.int32).tobytes())
+    bytes = f.write(l1_weights)
+    print('l1_weights:', bytes)
+    bytes = f.write(l1_bias)
+    print('l1_bias:', bytes)
+
+    W2, H2 = l2.weight.shape
+    print('W2, H2:', W2, H2)
+    l2_weights = l2.weight.detach().cpu().numpy().astype(np.float32).tobytes()
+    l2_bias = l2.bias.detach().cpu().numpy().astype(np.float32).tobytes()
+    f.write(np.array([W2, H2], dtype=np.int32).tobytes())
+    bytes = f.write(l2_weights)
+    print('l2_weights:', bytes)
+    bytes = f.write(l2_bias)
+    print('l2_bias:', bytes)
+
 # Display results
 ps.init()
 
 r = ps.register_surface_mesh("ref", ref.vertices, ref.faces)
 for i, (X, Q) in enumerate(saves):
     ps.register_surface_mesh("save" + str(i), X, Q)
-
-# I = np.arange(sample_rate * sample_rate)
-# I = np.tile(I, (attentive_indices.shape[0], 1)).reshape(-1)
-# O = attentive_indices.repeat(sample_rate * sample_rate) * (sample_rate * sample_rate) + I
-#
-# ps.register_surface_mesh("attentive", X[O], att_tri_indices)
 
 ps.show()

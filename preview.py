@@ -93,7 +93,7 @@ print('Reduction       {:.3f}%'.format(reduction))
 
 ps.init()
 
-resolution = 16
+resolution = 4
 enable_ref = True
 enable_nsc = True
 enable_normals = False
@@ -128,21 +128,6 @@ def sample(sample_rate):
 
     return lerped_points, lerped_normals, lerped_encodings
 
-    # U = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
-    # V = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
-    # U, V = torch.meshgrid(U, V)
-    #
-    # corner_points = points[complexes, :]
-    # corner_encodings = encodings[complexes, :]
-    #
-    # U, V = U.reshape(-1), V.reshape(-1)
-    # U = U.repeat((complexes.shape[0], 1))
-    # V = V.repeat((complexes.shape[0], 1))
-    #
-    # lerped_points = lerp(corner_points, U, V).reshape(-1, 3)
-    # lerped_encodings = lerp(corner_encodings, U, V).reshape(-1, POINT_ENCODING_SIZE)
-    # return lerped_points, lerped_encodings
-
 def redraw():
     global eval_vertices, downsample_it, upsample_it, resolution, \
             enable_ref, \
@@ -169,11 +154,12 @@ def redraw():
     ]
 
     LP, LN, LE = sample(resolution)
+    print('points:', LP.shape, LP)
+    print('normals:', LN.shape, LN)
+    print('encodings:', LE.shape, LE)
 
     eval_vertices = model(LP, LN, LE)
-    print('eval_vertices:', eval_vertices.shape)
     eval_vertices = eval_vertices.reshape(-1, resolution, resolution, 3)
-    print('eval_vertices:', eval_vertices.shape)
     assert complexes.shape[0] == eval_vertices.shape[0]
     eval_vertices = eval_vertices.detach().cpu().numpy()
 

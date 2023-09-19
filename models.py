@@ -46,10 +46,10 @@ class NSubComplex(nn.Module):
 
     def forward(self, bases, normals, encodings):
         X = [ encodings, bases ]
+        # TODO: from 0?
         for i in range(1, self.L + 1):
             X += [ torch.sin(2 ** i * bases), torch.cos(2 ** i * bases) ]
         X += [ normals, one_blob(normals[:, 0], self.T), one_blob(normals[:, 1], self.T) ]
-        # X += [ normals ] # , one_blob(normals[:, 0], self.T), one_blob(normals[:, 1], self.T) ]
         X = torch.concat(X, dim=-1)
 
         for i, linear in enumerate(self.encoding_linears):
