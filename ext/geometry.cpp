@@ -218,7 +218,6 @@ auto torch_sdc_weld(const torch::Tensor &complexes,
 	}
 
 	for (const auto &[p, bs] : bmap) {
-		assert(bs.size() == 2);
 		const auto &ref = *bs.begin();
 		for (const auto &b : bs) {
 			for (int32_t i = 0; i < b.second.size(); i++) {
@@ -247,12 +246,14 @@ auto torch_sdc_weld(const torch::Tensor &complexes,
 				i01 = remap[i01 + voffset];
 				i11 = remap[i11 + voffset];
 
-				faces.push_back(glm::ivec3(i00, i10, i11));
-				faces.push_back(glm::ivec3(i00, i11, i01));
+				faces.push_back(glm::ivec3(i00, i11, i10));
+				faces.push_back(glm::ivec3(i00, i01, i11));
 				// faces.push_back(glm::ivec4(i00, i10, i11, i01));
 			}
 		}
 	}
+
+	// TODO: fix and align the normals (different function)
 
 	torch::Tensor indices = torch::zeros({ (long) faces.size(), 3 }, torch::kInt32);
 	ptr = indices.data_ptr <int32_t> ();

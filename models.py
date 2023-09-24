@@ -3,9 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-POINT_ENCODING_SIZE = 20
+POINT_ENCODING_SIZE = 10
 
-# NSC subdivision complex indices
 def indices(N):
     gim_indices = []
     for i in range(N - 1):
@@ -27,6 +26,20 @@ def one_blob(s, t, sigma=0.1, k=32):
     kernel = torch.exp(-((s - t) ** 2) / (2 * sigma ** 2))
     return kernel
 
+class LipschitzNormalization(nn.Module):
+    one = torch.tensor(1.0).cuda()
+
+    def __init__(self, c):
+        super(LipschitzNormalization, self).__init__()
+        self.c = torch.nn.Parameter(torch.tensor(c))
+
+    def forward(self, W):
+        # Normalize W to have Lipschitz bound of at most c
+        absrowsum = torch.sum(torch.abs(W), dim=1)
+        softplus_c = torch.nn.functional.softplus(self.c)
+        scale = torch.min(LipschitzNormalization.one, softplus_c/absrowsum)
+        return W * scale.unsqueeze(1)
+
 class NSubComplex(nn.Module):
     L = 8
     K = 16
@@ -35,10 +48,10 @@ class NSubComplex(nn.Module):
         super(NSubComplex , self).__init__()
 
         self.encoding_linears = [
-            nn.Linear(POINT_ENCODING_SIZE + (2 * self.L + 1) * 3 + (2 + 2 * self.K), 64),
-            # nn.Linear(POINT_ENCODING_SIZE + (2 * self.L + 1) * 3 + 2, 64),
-            nn.Linear(64, 64),
-            nn.Linear(64, 3)
+            # nn.Linear(POINT_ENCODING_SIZE + (2 * self.L + 1) * 3 + (2 + 2 * self.K), 128),
+            nn.Linear(POINT_ENCODING_SIZE + (2 * self.L + 1) * 3, 128),
+            nn.Linear(128, 128),
+            nn.Linear(128, 3)
         ]
 
         self.encoding_linears = nn.ModuleList(self.encoding_linears)
@@ -46,10 +59,9 @@ class NSubComplex(nn.Module):
 
     def forward(self, bases, normals, encodings):
         X = [ encodings, bases ]
-        # TODO: from 0?
-        for i in range(1, self.L + 1):
+        for i in range(self.L):
             X += [ torch.sin(2 ** i * bases), torch.cos(2 ** i * bases) ]
-        X += [ normals, one_blob(normals[:, 0], self.T), one_blob(normals[:, 1], self.T) ]
+        # X += [ normals, one_blob(normals[:, 0], self.T), one_blob(normals[:, 1], self.T) ]
         X = torch.concat(X, dim=-1)
 
         for i, linear in enumerate(self.encoding_linears):
