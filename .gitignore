@@ -1,3 +1,4 @@
+*.nsc
 *.tar.gz
 .cache/
 .polyscope.ini

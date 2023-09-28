@@ -51,9 +51,7 @@ with open(name + '.nsc', 'wb') as f:
     f.write(np.array([
         complexes.shape[0],
         corner_points.shape[0],
-        ENCODING_SIZE,
         POINT_ENCODING_SIZE,
-        MATRIX_SIZE
     ], dtype=np.int32).tobytes())
     
     # Complexes

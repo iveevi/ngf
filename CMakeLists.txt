@@ -24,7 +24,6 @@ target_link_libraries(reshape
 	OpenMP::OpenMP_CXX
 	SPIRV
 	Vulkan::Vulkan
-	glslang::glslang
 	glslang::glslang-default-resource-limits
 )
 
@@ -37,6 +36,9 @@ target_link_libraries(rasterizer
 	assimp
 	polyscope
 	OpenMP::OpenMP_CXX
+	SPIRV
+	Vulkan::Vulkan
+	glslang::glslang-default-resource-limits
 )
 
 target_link_libraries(to_quads assimp)
