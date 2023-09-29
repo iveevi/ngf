@@ -150,7 +150,7 @@ class NVDRenderer:
         self.shading = shading
 
         # Initialize rasterizing context
-        self.glctx = dr.RasterizeGLContext()
+        self.ctx = dr.RasterizeCudaContext()
         # Load the environment map
         w,h,_ = scene_params['envmap'].shape
         envmap = scene_params['envmap_scale'] * scene_params['envmap']
@@ -203,7 +203,7 @@ class NVDRenderer:
         """
         v_hom = torch.nn.functional.pad(v, (0,1), 'constant', 1.0)
         v_ndc = torch.matmul(v_hom, self.mvps.transpose(1,2))
-        rast = dr.rasterize(self.glctx, v_ndc, f, self.res)[0]
+        rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
         if self.shading:
             v_cols = torch.zeros_like(v)
 

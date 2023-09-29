@@ -7,9 +7,3 @@
 [submodule "imgui"]
 	path = imgui
 	url = https://github.com/ocornut/imgui.git
-[submodule "polyscope"]
-	path = polyscope
-	url = https://github.com/nmwsharp/polyscope
-[submodule "indicators"]
-	path = indicators
-	url = https://github.com/p-ranav/indicators.git
