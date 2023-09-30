@@ -8,7 +8,7 @@ void ulog_warning (const char *, const char *, ...);
 void ulog_info    (const char *, const char *, ...);
 void ulog_assert  (bool, const char *, const char *, ...);
 
-void ulog_error(const char *header, const char *format, ...)
+inline void ulog_error(const char *header, const char *format, ...)
 {
 	static const char *error = "\033[31;1m";
 	static const char *reset = "\033[0m";
@@ -21,7 +21,7 @@ void ulog_error(const char *header, const char *format, ...)
 	va_end(args);
 }
 
-void ulog_warning(const char *header, const char *format, ...)
+inline void ulog_warning(const char *header, const char *format, ...)
 {
 	static const char *warning = "\033[33;1m";
 	static const char *reset = "\033[0m";
@@ -34,7 +34,7 @@ void ulog_warning(const char *header, const char *format, ...)
 	va_end(args);
 }
 
-void ulog_info(const char *header, const char *format, ...)
+inline void ulog_info(const char *header, const char *format, ...)
 {
 	static const char *info = "\033[34;1m";
 	static const char *reset = "\033[0m";
@@ -47,7 +47,7 @@ void ulog_info(const char *header, const char *format, ...)
 	va_end(args);
 }
 
-void ulog_assert(bool condition, const char *header, const char *format, ...)
+inline void ulog_assert(bool condition, const char *header, const char *format, ...)
 {
 	if (!condition) {
 		static const char *error = "\033[35;1m";

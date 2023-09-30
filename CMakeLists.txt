@@ -10,7 +10,22 @@ find_package(Vulkan REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(glslang REQUIRED)
 
-add_executable(rasterizer rasterizer/rasterizer.cu)
+# ImGui object library
+add_library(imgui OBJECT
+	imgui/imgui.cpp
+	imgui/imgui_demo.cpp
+	imgui/imgui_draw.cpp
+	imgui/imgui_widgets.cpp
+	imgui/imgui_tables.cpp
+	imgui/backends/imgui_impl_glfw.cpp
+	imgui/backends/imgui_impl_vulkan.cpp
+)
+
+add_executable(rasterizer
+	rasterizer/rasterizer.cu
+	rasterizer/renderer.cu
+	$<TARGET_OBJECTS:imgui>
+)
 
 target_link_libraries(rasterizer
 	assimp
@@ -21,4 +36,4 @@ target_link_libraries(rasterizer
 	Vulkan::Vulkan
 )
 
-include_directories(. glm)
+include_directories(. glm imgui)
