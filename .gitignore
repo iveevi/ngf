@@ -1,7 +1,9 @@
 *.nsc
+*.obj
 *.tar.gz
 .cache/
 .polyscope.ini
+.vscode/
 __pycache__/
 build/
 compile_commands.json

@@ -32,39 +32,7 @@ encodings = data_dir + '/encodings.bin'
 total_size += os.path.getsize(encodings)
 encodings = torch.load(encodings)
 
-# Compute normal vectors for each complex
-complex_normals = torch.zeros((complexes.shape[0], 3), device='cuda')
-for i, c in enumerate(complexes):
-    v = points[c]
-    n0 = torch.cross(v[1] - v[0], v[2] - v[0])
-    n1 = torch.cross(v[2] - v[0], v[3] - v[0])
-    complex_normals[i] = n0 + n1
-
-# Get vertex -> complexes mapping
-mapping = dict()
-for i, c in enumerate(complexes):
-    for v in c:
-        mapping.setdefault(v.item(), []).append(i)
-
-# Compute per-vertex encodings
-normals  = torch.zeros((points.shape[0], 3), device='cuda')
-for v, cs in mapping.items():
-    n = torch.stack([complex_normals[c] for c in cs]).sum(dim=0)
-    normals[v] = F.normalize(n, dim=0)
-
-# Convert to spherical coordinates and normalize
-phi = 0.5 * (torch.atan2(normals[:, 1], normals[:, 0])/np.pi) + 0.5
-theta = torch.acos(normals[:, 2])/np.pi
-normals = torch.stack([phi, theta], dim=1)
-print('normals:', normals.shape)
-
-# Find the ref.* file
-ref = None
-for f in os.listdir(data_dir):
-    if f.startswith('ref.'):
-        ref = data_dir + '/' + f
-        break
-
+ref = data_dir + '/ref.obj'
 print('Loading reference model:', ref)
 ref_size = os.path.getsize(ref)
 ref = trimesh.load(ref)
