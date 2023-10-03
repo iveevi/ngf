@@ -134,6 +134,41 @@ void main()
 }
 )";
 
+const std::string normal_vertex_shader_source = R"(
+#version 450
+
+layout (location = 0) in vec3 position;
+layout (location = 1) in vec3 normal;
+
+layout (push_constant) uniform PushConstants {
+	mat4 model;
+	mat4 view;
+	mat4 proj;
+} push_constants;
+
+layout (location = 0) out vec3 out_normal;
+
+void main()
+{
+	gl_Position = push_constants.proj * push_constants.view * push_constants.model * vec4(position, 1.0);
+	gl_Position.y = -gl_Position.y;
+	gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
+	out_normal = normalize(mat3(push_constants.model) * normal);
+}
+)";
+
+const std::string normal_fragment_shader_source = R"(
+#version 450
+
+layout (location = 0) in vec3 in_normal;
+layout (location = 0) out vec4 fragment;
+
+void main()
+{
+	fragment = vec4(0.5 * in_normal + 0.5, 1.0);
+}
+)";
+
 const std::string shaded_vertex_shader_source = R"(
 #version 450
 
@@ -153,7 +188,7 @@ void main()
 	gl_Position = push_constants.proj * push_constants.view * push_constants.model * vec4(position, 1.0);
 	gl_Position.y = -gl_Position.y;
 	gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
-	out_normal = mat3(push_constants.model) * normal;
+	out_normal = normalize(mat3(push_constants.model) * normal);
 }
 )";
 
@@ -313,6 +348,58 @@ void Renderer::configure_solid()
 	solid.pipeline = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
 }
 
+void Renderer::configure_normal()
+{
+	static constexpr vk::VertexInputBindingDescription vertex_binding {
+		0, 2 * sizeof(glm::vec3), vk::VertexInputRate::eVertex
+	};
+
+	static constexpr std::array <vk::VertexInputAttributeDescription, 2> vertex_attributes {
+		vk::VertexInputAttributeDescription {
+			0, 0, vk::Format::eR32G32B32Sfloat, 0
+		},
+		vk::VertexInputAttributeDescription {
+			1, 0, vk::Format::eR32G32B32Sfloat, sizeof(glm::vec3)
+		},
+	};
+
+	// Compile shader modules
+	vk::ShaderModule vertex_module = littlevk::shader::compile(
+		device, normal_vertex_shader_source,
+		vk::ShaderStageFlagBits::eVertex
+	).unwrap(dal);
+
+	vk::ShaderModule fragment_module = littlevk::shader::compile(
+		device, normal_fragment_shader_source,
+		vk::ShaderStageFlagBits::eFragment
+	).unwrap(dal);
+
+	// Create the pipeline
+	vk::PushConstantRange push_constant_range {
+		vk::ShaderStageFlagBits::eVertex,
+		0, sizeof(push_constants)
+	};
+
+	normal.pipeline_layout = littlevk::pipeline_layout(
+		device,
+		vk::PipelineLayoutCreateInfo {
+			{}, {}, push_constant_range
+		}
+	).unwrap(dal);
+
+	littlevk::pipeline::GraphicsCreateInfo pipeline_info;
+	pipeline_info.vertex_binding = vertex_binding;
+	pipeline_info.vertex_attributes = vertex_attributes;
+	pipeline_info.vertex_shader = vertex_module;
+	pipeline_info.fragment_shader = fragment_module;
+	pipeline_info.extent = window->extent;
+	pipeline_info.pipeline_layout = normal.pipeline_layout;
+	pipeline_info.render_pass = render_pass;
+	pipeline_info.cull_mode = vk::CullModeFlagBits::eNone;
+
+	normal.pipeline = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
+}
+
 void Renderer::configure_shaded()
 {
 	static constexpr vk::VertexInputBindingDescription vertex_binding {
@@ -374,33 +461,7 @@ void Renderer::from(const vk::PhysicalDevice& phdev_)
 	dal = new littlevk::Deallocator(device);
 
 	// Create the render pass
-	std::array <vk::AttachmentDescription, 2> attachments {
-		littlevk::default_color_attachment(swapchain.format),
-		littlevk::default_depth_attachment()
-	};
-
-	std::array <vk::AttachmentReference, 1> color_attachments {
-		vk::AttachmentReference {
-			0, vk::ImageLayout::eColorAttachmentOptimal,
-		}
-	};
-
-	vk::AttachmentReference depth_attachment {
-		1, vk::ImageLayout::eDepthStencilAttachmentOptimal,
-	};
-
-	vk::SubpassDescription subpass {
-		{}, vk::PipelineBindPoint::eGraphics,
-		{}, color_attachments,
-		{}, &depth_attachment
-	};
-
-	render_pass = littlevk::render_pass(
-		device,
-		vk::RenderPassCreateInfo {
-			{}, attachments, subpass
-		}
-	).unwrap(dal);
+	render_pass = littlevk::default_color_render_pass(device, swapchain.format).unwrap(dal);
 
 	// Create the depth buffer
 	littlevk::ImageCreateInfo depth_info {
@@ -440,6 +501,7 @@ void Renderer::from(const vk::PhysicalDevice& phdev_)
 	// Create the pipelines
 	configure_wireframe();
 	configure_solid();
+	configure_normal();
 	configure_shaded();
 
 	// Setup for ImGui
@@ -473,8 +535,19 @@ void Renderer::render()
 	// Record command buffer
 	vk::CommandBuffer &cmd = command_buffers[frame];
 
-	vk::RenderPassBeginInfo render_pass_info = littlevk::default_rp_begin_info <2>
-			(render_pass, framebuffers[op.index], window);
+	// vk::RenderPassBeginInfo render_pass_info = littlevk::default_rp_begin_info <2>
+	// 		(render_pass, framebuffers[op.index], window);
+
+	std::array <vk::ClearValue, 2> clear_values {
+		vk::ClearColorValue { std::array <float, 4> { 0.0f, 0.0f, 0.0f, 1.0f } },
+		vk::ClearDepthStencilValue { 1.0f, 0 }
+	};
+
+	vk::RenderPassBeginInfo render_pass_info {
+		render_pass, framebuffers[op.index],
+		{ { 0, 0 }, window->extent },
+		clear_values
+	};
 
 	cmd.begin(vk::CommandBufferBeginInfo {});
 	cmd.beginRenderPass(render_pass_info, vk::SubpassContents::eInline);

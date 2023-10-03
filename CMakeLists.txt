@@ -21,11 +21,9 @@ add_library(imgui OBJECT
 	imgui/backends/imgui_impl_vulkan.cpp
 )
 
-add_executable(rasterizer
-	rasterizer/rasterizer.cu
-	rasterizer/renderer.cu
-	$<TARGET_OBJECTS:imgui>
-)
+file(GLOB_RECURSE SOURCES "rasterizer/*.cu")
+
+add_executable(rasterizer ${SOURCES} $<TARGET_OBJECTS:imgui>)
 
 target_link_libraries(rasterizer
 	assimp
