@@ -9,5 +9,6 @@ build/
 compile_commands.json
 data/
 imgui.ini
+measurements/
 output/
 scenes/
