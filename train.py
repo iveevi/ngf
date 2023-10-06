@@ -10,6 +10,12 @@ sns.set()
 filename = os.path.join('scenes', 'dragon', 'dragon.xml')
 print(f'Loading scene from {filename}')
 
+if not os.path.exists('scenes'):
+    print('Loading scenes...')
+    os.system('wget https://rgl.s3.eu-central-1.amazonaws.com/media/papers/Nicolet2021Large.zip')
+    os.system('unzip Nicolet2021Large.zip')
+    os.system('rm Nicolet2021Large.zip')
+
 print('Loading geometry library...')
 
 if not os.path.exists('build'):
