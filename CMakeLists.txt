@@ -5,6 +5,12 @@ project(nsc CXX CUDA)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR})
 
+# MAx CUDA optimization
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xptxas -O3")
+
+# Set architecture to 7.0+
+set(CMAKE_CUDA_ARCHITECTURES 80)
+
 find_package(OpenMP REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(glfw3 REQUIRED)

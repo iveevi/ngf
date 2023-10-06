@@ -103,7 +103,8 @@ int main(int argc, char *argv[])
 	renderer.from(phdev);
 
 	// Evaluate the surface
-	std::vector <glm::vec3> vertices = eval_cuda(rate);
+	// std::vector <glm::vec3> vertices = eval_cuda(renderer.push_constants.proj, renderer.push_constants.view, rate);
+	std::vector <glm::vec3> vertices(g_sdc.complex_count * rate * rate);
 	std::vector <std::array <uint32_t, 3>> indices = nsc_indices(vertices, g_sdc.complex_count, rate);
 	std::vector <glm::vec3> normals = vertex_normals(vertices, indices);
 
@@ -123,6 +124,8 @@ int main(int argc, char *argv[])
 	littlevk::Buffer interleaved_buffer;
 	littlevk::Buffer index_buffer;
 
+	// TODO: make CUDA interop work
+
 	vertex_buffer = littlevk::buffer(renderer.device,
 			vertices,
 			vk::BufferUsageFlagBits::eVertexBuffer,
@@ -139,6 +142,7 @@ int main(int argc, char *argv[])
 			renderer.mem_props).unwrap(renderer.dal);
 
 	enum RenderMode : int {
+		Point,
 		Wireframe,
 		Solid,
 		Normal,
@@ -147,6 +151,22 @@ int main(int argc, char *argv[])
 
 	RenderMode mode = Wireframe;
 	RenderMode ref_mode = Shaded;
+
+	uint32_t nsc_triangle_count = vertices.size() / 3;
+
+	auto point_hook = [&](const vk::CommandBuffer &cmd) {
+		if (mode != Point)
+			return;
+
+		auto *pc = &renderer.push_constants;
+		pc->model = model_transform.matrix();
+		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, renderer.point.pipeline);
+		cmd.pushConstants <Renderer::push_constants_struct> (renderer.point.pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, *pc);
+		cmd.bindVertexBuffers(0, { vertex_buffer.buffer }, { 0 });
+		cmd.bindIndexBuffer(index_buffer.buffer, 0, vk::IndexType::eUint32);
+		// cmd.drawIndexed(nsc_triangle_count * 3, 1, 0, 0, 0);
+		cmd.draw(vertices.size(), 1, 0, 0);
+	};
 
 	auto wireframe_hook = [&](const vk::CommandBuffer &cmd) {
 		if (mode != Wireframe)
@@ -158,7 +178,7 @@ int main(int argc, char *argv[])
 		cmd.pushConstants <Renderer::push_constants_struct> (renderer.wireframe.pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, *pc);
 		cmd.bindVertexBuffers(0, { vertex_buffer.buffer }, { 0 });
 		cmd.bindIndexBuffer(index_buffer.buffer, 0, vk::IndexType::eUint32);
-		cmd.drawIndexed(indices.size() * 3, 1, 0, 0, 0);
+		cmd.drawIndexed(nsc_triangle_count * 3, 1, 0, 0, 0);
 	};
 
 	auto solid_hook = [&](const vk::CommandBuffer &cmd) {
@@ -171,7 +191,7 @@ int main(int argc, char *argv[])
 		cmd.pushConstants <Renderer::push_constants_struct> (renderer.solid.pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, *pc);
 		cmd.bindVertexBuffers(0, { vertex_buffer.buffer }, { 0 });
 		cmd.bindIndexBuffer(index_buffer.buffer, 0, vk::IndexType::eUint32);
-		cmd.drawIndexed(indices.size() * 3, 1, 0, 0, 0);
+		cmd.drawIndexed(nsc_triangle_count * 3, 1, 0, 0, 0);
 	};
 
 	auto normal_hook = [&](const vk::CommandBuffer &cmd) {
@@ -184,7 +204,7 @@ int main(int argc, char *argv[])
 		cmd.pushConstants <Renderer::push_constants_struct> (renderer.normal.pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, *pc);
 		cmd.bindVertexBuffers(0, { *interleaved_buffer }, { 0 });
 		cmd.bindIndexBuffer(*index_buffer, 0, vk::IndexType::eUint32);
-		cmd.drawIndexed(indices.size() * 3, 1, 0, 0, 0);
+		cmd.drawIndexed(nsc_triangle_count * 3, 1, 0, 0, 0);
 	};
 
 	// TODO: monoid to return these hooks...
@@ -198,7 +218,7 @@ int main(int argc, char *argv[])
 		cmd.pushConstants <Renderer::push_constants_struct> (renderer.shaded.pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, *pc);
 		cmd.bindVertexBuffers(0, { *interleaved_buffer }, { 0 });
 		cmd.bindIndexBuffer(*index_buffer, 0, vk::IndexType::eUint32);
-		cmd.drawIndexed(indices.size() * 3, 1, 0, 0, 0);
+		cmd.drawIndexed(nsc_triangle_count * 3, 1, 0, 0, 0);
 	};
 
 	auto ui_hook = [&](const vk::CommandBuffer &cmd) {
@@ -210,6 +230,7 @@ int main(int argc, char *argv[])
 
 		// TODO: radio buttons
 		ImGui::Text("Mode:");
+		ImGui::RadioButton("Point##nsc", (int *) &mode, Point);
 		ImGui::RadioButton("Wireframe##nsc", (int *) &mode, Wireframe);
 		ImGui::RadioButton("Solid##nsc",     (int *) &mode, Solid);
 		ImGui::RadioButton("Normal##nsc",    (int *) &mode, Normal);
@@ -223,6 +244,7 @@ int main(int argc, char *argv[])
 		ImGui::End();
 	};
 
+	renderer.hooks.push_back(point_hook);
 	renderer.hooks.push_back(wireframe_hook);
 	renderer.hooks.push_back(solid_hook);
 	renderer.hooks.push_back(normal_hook);
@@ -277,6 +299,21 @@ int main(int argc, char *argv[])
 	renderer.hooks.push_back(ref_shaded_hook);
 
 	while (!renderer.should_close()) {
+		auto [vertices, triangles, count] = eval_cuda(renderer.push_constants.proj, renderer.push_constants.view, rate);
+	
+		std::vector <glm::vec3> normals = vertex_normals(vertices, triangles);
+
+		std::vector <glm::vec3> interleaved;
+		for (size_t i = 0; i < vertices.size(); i++) {
+			interleaved.push_back(vertices[i]);
+			interleaved.push_back(normals[i]);
+		}
+
+		littlevk::upload(renderer.device, interleaved_buffer, interleaved);
+		littlevk::upload(renderer.device, vertex_buffer, vertices);
+		littlevk::upload(renderer.device, index_buffer, triangles);
+		nsc_triangle_count = count;
+
 		renderer.render();
 		renderer.poll();
 	}

@@ -249,6 +249,56 @@ void Renderer::configure_imgui()
 	);
 }
 
+void Renderer::configure_point()
+{
+	static constexpr vk::VertexInputBindingDescription vertex_binding {
+		0, sizeof(glm::vec3), vk::VertexInputRate::eVertex
+	};
+
+	static constexpr std::array <vk::VertexInputAttributeDescription, 1> vertex_attributes {
+		vk::VertexInputAttributeDescription {
+			0, 0, vk::Format::eR32G32B32Sfloat, 0
+		},
+	};
+
+	// Compile shader modules
+	vk::ShaderModule vertex_module = littlevk::shader::compile(
+		device, wireframe_vertex_shader_source,
+		vk::ShaderStageFlagBits::eVertex
+	).unwrap(dal);
+
+	vk::ShaderModule fragment_module = littlevk::shader::compile(
+		device, wireframe_fragment_shader_source,
+		vk::ShaderStageFlagBits::eFragment
+	).unwrap(dal);
+
+	// Create the pipeline
+	vk::PushConstantRange push_constant_range {
+		vk::ShaderStageFlagBits::eVertex,
+		0, sizeof(push_constants)
+	};
+
+	point.pipeline_layout = littlevk::pipeline_layout(
+		device,
+		vk::PipelineLayoutCreateInfo {
+			{}, {}, push_constant_range
+		}
+	).unwrap(dal);
+
+	littlevk::pipeline::GraphicsCreateInfo pipeline_info;
+	pipeline_info.vertex_binding = vertex_binding;
+	pipeline_info.vertex_attributes = vertex_attributes;
+	pipeline_info.vertex_shader = vertex_module;
+	pipeline_info.fragment_shader = fragment_module;
+	pipeline_info.extent = window->extent;
+	pipeline_info.pipeline_layout = point.pipeline_layout;
+	pipeline_info.render_pass = render_pass;
+	pipeline_info.fill_mode = vk::PolygonMode::ePoint;
+	pipeline_info.cull_mode = vk::CullModeFlagBits::eNone;
+
+	point.pipeline = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
+}
+
 void Renderer::configure_wireframe()
 {
 	static constexpr vk::VertexInputBindingDescription vertex_binding {
@@ -461,7 +511,7 @@ void Renderer::from(const vk::PhysicalDevice& phdev_)
 	dal = new littlevk::Deallocator(device);
 
 	// Create the render pass
-	render_pass = littlevk::default_color_render_pass(device, swapchain.format).unwrap(dal);
+	render_pass = littlevk::default_color_depth_render_pass(device, swapchain.format).unwrap(dal);
 
 	// Create the depth buffer
 	littlevk::ImageCreateInfo depth_info {
@@ -499,6 +549,7 @@ void Renderer::from(const vk::PhysicalDevice& phdev_)
 	});
 
 	// Create the pipelines
+	configure_point();
 	configure_wireframe();
 	configure_solid();
 	configure_normal();

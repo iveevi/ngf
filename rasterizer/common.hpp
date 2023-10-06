@@ -101,11 +101,13 @@ struct Renderer : littlevk::Skeleton {
 		vk::PipelineLayout pipeline_layout;
 	};
 
+	Pipeline point;
 	Pipeline wireframe;
 	Pipeline solid;
 	Pipeline normal;
 	Pipeline shaded;
 
+	void configure_point();
 	void configure_wireframe();
 	void configure_solid();
 	void configure_normal();
@@ -220,4 +222,12 @@ void sdc_read(FILE *);
 std::vector <glm::vec3> eval(uint32_t);
 std::vector <glm::vec3> eval_normals(uint32_t);
 
-std::vector <glm::vec3> eval_cuda(uint32_t);
+// std::vector <glm::vec3> eval_cuda(const glm::mat4 &, const glm::mat4 &, uint32_t);
+
+struct eval_cuda_result {
+	std::vector <glm::vec3> vertices;
+	std::vector <std::array <uint32_t, 3>> indices;
+	uint32_t triangle_count;
+};
+
+eval_cuda_result eval_cuda(const glm::mat4 &, const glm::mat4 &, uint32_t);

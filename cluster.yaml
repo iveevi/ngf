@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nsc
+spec:
+  affinity:
+   nodeAffinity:
+     requiredDuringSchedulingIgnoredDuringExecution:
+       nodeSelectorTerms:
+       - matchExpressions:
+         - key: nvidia.com/gpu.product
+           operator: In
+           values:
+           - NVIDIA-GeForce-RTX-3090
+  containers:
+    - name: nsc
+      # image: vedavamadathil/nsc
+      image: nvidia/cuda:12.1.0-devel-ubuntu22.04
+      command: [ "sleep", "infinity" ]
+      resources:
+        requests:
+          memory: 16Gi
+          cpu: 8
+          nvidia.com/gpu: 1
+        limits:
+          memory: 16Gi
+          cpu: 8
+          nvidia.com/gpu: 1
+  restartPolicy: Never
