@@ -83,7 +83,6 @@ def sample(sample_rate):
     U, V = torch.meshgrid(U, V)
 
     corner_points = points[complexes, :]
-    corner_normals = normals[complexes, :]
     corner_encodings = encodings[complexes, :]
 
     U, V = U.reshape(-1), V.reshape(-1)
@@ -91,10 +90,9 @@ def sample(sample_rate):
     V = V.repeat((complexes.shape[0], 1))
 
     lerped_points = lerp(corner_points, U, V).reshape(-1, 3)
-    lerped_normals = lerp(corner_normals, U, V).reshape(-1, 2)
     lerped_encodings = lerp(corner_encodings, U, V).reshape(-1, POINT_ENCODING_SIZE)
 
-    return lerped_points, lerped_normals, lerped_encodings
+    return lerped_points, lerped_encodings
 
 def redraw():
     global eval_vertices, downsample_it, upsample_it, resolution, \
@@ -121,12 +119,11 @@ def redraw():
 		(0.750, 0.250, 0.500)
     ]
 
-    LP, LN, LE = sample(resolution)
+    LP, LE = sample(resolution)
     print('points:', LP.shape, LP)
-    print('normals:', LN.shape, LN)
     print('encodings:', LE.shape, LE)
 
-    eval_vertices = model(LP, LN, LE)
+    eval_vertices = model(LP, None, LE)
     eval_vertices = eval_vertices.reshape(-1, resolution, resolution, 3)
     assert complexes.shape[0] == eval_vertices.shape[0]
     eval_vertices = eval_vertices.detach().cpu().numpy()

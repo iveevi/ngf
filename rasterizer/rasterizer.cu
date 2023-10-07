@@ -300,7 +300,7 @@ int main(int argc, char *argv[])
 
 	while (!renderer.should_close()) {
 		auto [vertices, triangles, count] = eval_cuda(renderer.push_constants.proj, renderer.push_constants.view, rate);
-	
+
 		std::vector <glm::vec3> normals = vertex_normals(vertices, triangles);
 
 		std::vector <glm::vec3> interleaved;
@@ -313,6 +313,8 @@ int main(int argc, char *argv[])
 		littlevk::upload(renderer.device, vertex_buffer, vertices);
 		littlevk::upload(renderer.device, index_buffer, triangles);
 		nsc_triangle_count = count;
+
+		printf("triangles: %d/%d\n", triangles.size(), indices.size());
 
 		renderer.render();
 		renderer.poll();

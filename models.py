@@ -5,20 +5,20 @@ import torch.nn.functional as F
 
 POINT_ENCODING_SIZE = 10
 
-def indices(N):
-    gim_indices = []
-    for i in range(N - 1):
-        for j in range(N - 1):
-            gim_indices.append([i * N + j, (i + 1) * N + j, i * N + j + 1])
-            gim_indices.append([(i + 1) * N + j, (i + 1) * N + j + 1, i * N + j + 1])
-    return np.array(gim_indices).reshape(-1, 3).astype(np.int32)
-
-def quad_indices(N):
-    gim_indices = []
-    for i in range(N - 1):
-        for j in range(N - 1):
-            gim_indices.append([i * N + j, i * N + j + 1, (i + 1) * N + j + 1, (i + 1) * N + j])
-    return np.array(gim_indices).reshape(-1, 4).astype(np.int32)
+# def indices(N):
+#     gim_indices = []
+#     for i in range(N - 1):
+#         for j in range(N - 1):
+#             gim_indices.append([i * N + j, (i + 1) * N + j, i * N + j + 1])
+#             gim_indices.append([(i + 1) * N + j, (i + 1) * N + j + 1, i * N + j + 1])
+#     return np.array(gim_indices).reshape(-1, 3).astype(np.int32)
+#
+# def quad_indices(N):
+#     gim_indices = []
+#     for i in range(N - 1):
+#         for j in range(N - 1):
+#             gim_indices.append([i * N + j, i * N + j + 1, (i + 1) * N + j + 1, (i + 1) * N + j])
+#     return np.array(gim_indices).reshape(-1, 4).astype(np.int32)
 
 class NSubComplex(nn.Module):
     L = 8

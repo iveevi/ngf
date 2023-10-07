@@ -290,20 +290,23 @@ eval_cuda_result eval_cuda(const glm::mat4 &proj, const glm::mat4 &view, uint32_
 
 		// Compute the sampling rate
 		float area = a0 + a1;
-		float pixels = area * resolution;
+		float pixels = area * resolution * resolution;
 		// float pixels_per_triangle = pixels / (2.0f *
 		// printf("area: %f, pixels: %f\n", area, pixels);
 
 		// Find smallest resolution which results in at least 1-4 pixels per triangles
 		uint32_t rate = 2;
-		while (rate * rate < pixels && rate < 16)
+		while (pixels/(2.0f * rate * rate) > 256.0f && rate < 16)
 			rate++;
 
 		sample_rates[i] = rate;
+
+		// TODO: also do frustum culling here?
+
 		// printf("complex: %d pixels, rate %d\n", (int) pixels, rate);
 	}
 
-	// TODO: update log timer manaully here?
+	// TODO: reset log timer manaully here?
 	// ulog_info("eval_cuda", "embedding %d complexes\n", g_sdc.complex_count);
 	// lerp_and_embed(sample_rate);
 	// cudaDeviceSynchronize();
