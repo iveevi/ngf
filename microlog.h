@@ -15,6 +15,10 @@ void ulog_assert  (bool, const char *, const char *, ...);
 // currently implementing delta time
 
 static struct {
+	bool timer;
+} ulog_config = { .timer = false };
+
+static struct {
 	bool enabled;
 	struct timespec previous;
 } ulog_timer = { .enabled = false };
@@ -76,8 +80,12 @@ inline void ulog_info(const char *header, const char *format, ...)
 	static const char *info = "\033[34;1m";
 	static const char *reset = "\033[0m";
 
-	ulog_timer_start();
-	printf("%s[*]%s [%+8.2f ms] (%s) ", info, reset, ulog_timer_update(), header);
+	if (ulog_config.timer) {
+		ulog_timer_start();
+		printf("%s[*]%s [%+8.2f ms] (%s) ", info, reset, ulog_timer_update(), header);
+	} else {
+		printf("%s[*]%s (%s) ", info, reset, header);
+	}
 
 	va_list args;
 	va_start(args, format);
