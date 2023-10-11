@@ -8,6 +8,7 @@
 
 #include <torch/extension.h>
 
+// TODO: rename to surface opt
 struct geometry {
 	std::vector <glm::vec3> vertices;
         std::vector <glm::vec3> normals;
@@ -52,12 +53,12 @@ struct dev_cas_grid {
 	glm::vec3 max;
 	glm::vec3 bin_size;
 
-	glm::vec3 *vertices;
-	glm::uvec3 *triangles;
+	glm::vec3 *vertices = nullptr;
+	glm::uvec3 *triangles = nullptr;
 
-	uint32_t *query_triangles;
-	uint32_t *index0;
-	uint32_t *index1;
+	uint32_t *query_triangles = nullptr;
+	uint32_t *index0 = nullptr;
+	uint32_t *index1 = nullptr;
 
 	uint32_t vertex_count;
 	uint32_t triangle_count;
@@ -91,16 +92,10 @@ struct cas_grid {
 	// float precache_query(const std::vector <glm::vec3> &points);
 
 	float precache_query_vector(const torch::Tensor &);
+	float precache_query_vector_device(const torch::Tensor &);
 
 	// Returns closest point, barycentric coordinates, distance, and triangle index
 	std::tuple <glm::vec3, glm::vec3, float, uint32_t> query(const glm::vec3 &p) const;
-
-	/*
-	void query(const std::vector <glm::vec3> &,
-			std::vector <glm::vec3> &,
-			std::vector <glm::vec3> &,
-			std::vector <float> &,
-			std::vector <uint32_t> &) const; */
 
 	void query_vector(const torch::Tensor &,
 		torch::Tensor &,
@@ -108,8 +103,13 @@ struct cas_grid {
 		torch::Tensor &,
 		torch::Tensor &) const;
 
+	void query_vector_device(const torch::Tensor &,
+		torch::Tensor &,
+		torch::Tensor &,
+		torch::Tensor &,
+		torch::Tensor &) const;
+
 	void precache_device();
-	// void query_device(closest_point_kinfo kinfo);
 };
 
 // Bounding box of mesh
@@ -383,18 +383,6 @@ bool cas_grid::precache_query(const glm::vec3 &p)
 	return true;
 }
 
-// Precache a collection of query points
-
-/*
-float cas_grid::precache_query(const std::vector <glm::vec3> &points)
-{
-	uint32_t any_count = 0;
-	for (const glm::vec3 &p : points)
-		any_count += precache_query(p);
-
-	return (float) any_count / (float) points.size();
-} */
-
 float cas_grid::precache_query_vector(const torch::Tensor &sources)
 {
 	// Ensure device and type and size
@@ -407,11 +395,42 @@ float cas_grid::precache_query_vector(const torch::Tensor &sources)
 
 	glm::vec3 *sources_ptr = (glm::vec3 *) sources.data_ptr <float> ();
 
-	#pragma omp parallel for reduction(+:any_count)
+	// #pragma omp parallel for reduction(+:any_count)
 	for (uint32_t i = 0; i < size; i++) {
 		any_count += precache_query(sources_ptr[i]);
 	}
 
+	return (float) any_count / (float) size;
+}
+
+float cas_grid::precache_query_vector_device(const torch::Tensor &sources)
+{
+	// Ensure device and type and size
+	assert(sources.dim() == 2 && sources.size(1) == 3);
+	assert(sources.device().is_cuda());
+	assert(sources.dtype() == torch::kFloat32);
+
+	size_t size = sources.size(0);
+	size_t any_count = 0;
+
+	glm::vec3 *sources_ptr_device = (glm::vec3 *) sources.data_ptr <float> ();
+	glm::vec3 *sources_ptr = new glm::vec3[size];
+	cudaMemcpy(sources_ptr, sources_ptr_device, size * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+
+	// TODO: cuda check
+	cudaDeviceSynchronize();
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		std::cerr << "(precache) CUDA error: " << cudaGetErrorString(err) << std::endl;
+		exit(1);
+	}
+
+	// #pragma omp parallel for reduction(+:any_count)
+	for (uint32_t i = 0; i < size; i++) {
+		any_count += precache_query(sources_ptr[i]);
+	}
+
+	delete[] sources_ptr;
 	return (float) any_count / (float) size;
 }
 
@@ -451,29 +470,6 @@ std::tuple <glm::vec3, glm::vec3, float, uint32_t> cas_grid::query(const glm::ve
 
 	return std::make_tuple(closest, barycentric, distance, triangle_index);
 }
-
-// Host-side query
-
-/*
-void cas_grid::query(const std::vector <glm::vec3> &sources,
-		std::vector <glm::vec3> &closest,
-		std::vector <glm::vec3> &bary,
-		std::vector <float> &distance,
-		std::vector <uint32_t> &triangle_index) const
-{
-	// Assuming all elements are precached already
-	// and that the dst vector is already allocated
-	#pragma omp parallel for
-	for (uint32_t i = 0; i < sources.size(); i++) {
-		uint32_t bin_index = to_index(sources[i]);
-		auto [c, b, d, t] = query(sources[i]);
-
-		closest[i] = c;
-		bary[i] = b;
-		distance[i] = d;
-		triangle_index[i] = t;
-	}
-} */
 
 void cas_grid::query_vector(const torch::Tensor &sources,
 		torch::Tensor &closest,
@@ -527,6 +523,125 @@ void cas_grid::query_vector(const torch::Tensor &sources,
 	}
 }
 
+struct closest_point_kinfo {
+	glm::vec3 *points;
+	glm::vec3 *closest;
+	glm::vec3 *bary;
+	float     *distances;
+	int32_t   *triangles;
+
+	int32_t   point_count;
+};
+
+__global__
+static void closest_point_kernel(dev_cas_grid cas, closest_point_kinfo kinfo)
+{
+	uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+	uint32_t stride = blockDim.x * gridDim.x;
+
+	for (uint32_t i = tid; i < kinfo.point_count; i += stride) {
+		glm::vec3 point = kinfo.points[i];
+		glm::vec3 closest;
+		uint32_t triangle;
+
+		glm::vec3 bin_flt = glm::clamp((point - cas.min) / cas.bin_size,
+				glm::vec3(0), glm::vec3(cas.resolution - 1));
+
+		glm::ivec3 bin = glm::ivec3(bin_flt);
+		uint32_t bin_index = bin.x + bin.y * cas.resolution + bin.z * cas.resolution * cas.resolution;
+
+		uint32_t index0 = cas.index0[bin_index];
+		uint32_t index1 = cas.index1[bin_index];
+
+		glm::vec3 min_bary;
+		float min_distance = FLT_MAX;
+
+		for (uint32_t j = index0; j < index1; j++) {
+			uint32_t triangle_index = cas.query_triangles[j];
+			glm::uvec3 tri = cas.triangles[triangle_index];
+
+			glm::vec3 v0 = cas.vertices[tri.x];
+			glm::vec3 v1 = cas.vertices[tri.y];
+			glm::vec3 v2 = cas.vertices[tri.z];
+
+			// TODO: prune triangles that are too far away (based on bbox)?
+			glm::vec3 candidate;
+			glm::vec3 bary;
+			float distance;
+
+			triangle_closest_point(v0, v1, v2, point, &candidate, &bary, &distance);
+
+			if (distance < min_distance) {
+				closest = candidate;
+				min_bary = bary;
+				min_distance = distance;
+				triangle = triangle_index;
+			}
+		}
+
+		// TODO: barycentrics as well...
+		kinfo.bary[i] = min_bary;
+		kinfo.closest[i] = closest;
+		kinfo.distances[i] = min_distance;
+		kinfo.triangles[i] = triangle;
+	}
+}
+
+void cas_grid::query_vector_device(const torch::Tensor &sources,
+		torch::Tensor &closest,
+		torch::Tensor &bary,
+		torch::Tensor &distance,
+		torch::Tensor &triangle_index) const
+{
+	// Check types, devices and sizes
+	assert(sources.dim() == 2 && sources.size(1) == 3);
+	assert(closest.dim() == 2 && closest.size(1) == 3);
+	assert(bary.dim() == 2 && bary.size(1) == 3);
+	assert(distance.dim() == 1);
+	assert(triangle_index.dim() == 1);
+
+	assert(sources.device().is_cuda());
+	assert(closest.device().is_cuda());
+	assert(bary.device().is_cuda());
+	assert(distance.device().is_cuda());
+	assert(triangle_index.device().is_cuda());
+
+	assert(sources.dtype() == torch::kFloat32);
+	assert(closest.dtype() == torch::kFloat32);
+	assert(bary.dtype() == torch::kFloat32);
+	assert(distance.dtype() == torch::kFloat32);
+	assert(triangle_index.dtype() == torch::kInt32);
+
+	assert(sources.size(0) == closest.size(0));
+	assert(sources.size(0) == bary.size(0));
+	assert(sources.size(0) == distance.size(0));
+	assert(sources.size(0) == triangle_index.size(0));
+
+	// Assuming all elements are precached already (in device as well)
+	// and that the dst vector is already allocated
+	size_t size = sources.size(0);
+
+	closest_point_kinfo kinfo;
+	kinfo.points = (glm::vec3 *) sources.data_ptr <float> ();
+	kinfo.closest = (glm::vec3 *) closest.data_ptr <float> ();
+	kinfo.bary = (glm::vec3 *) bary.data_ptr <float> ();
+	kinfo.distances = distance.data_ptr <float> ();
+	kinfo.triangles = triangle_index.data_ptr <int32_t> ();
+	kinfo.point_count = size;
+
+	dim3 block(256);
+	dim3 grid((size + block.x - 1) / block.x);
+
+	closest_point_kernel <<<grid, block>>> (dev_cas, kinfo);
+	cudaDeviceSynchronize();
+	// TODO: cuda check
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
+		exit(1);
+	}
+}
+
 void cas_grid::precache_device()
 {
 	dev_cas.min = min;
@@ -572,6 +687,7 @@ void cas_grid::precache_device()
 		cudaFree(dev_cas.index1);
 
 	// Allocate new memory
+	// TODO: no need to keep reallocating
 	cudaMalloc(&dev_cas.vertices, sizeof(glm::vec3) * ref.vertices.size());
 	cudaMalloc(&dev_cas.triangles, sizeof(glm::uvec3) * ref.triangles.size());
 
@@ -587,14 +703,229 @@ void cas_grid::precache_device()
 	cudaMemcpy(dev_cas.index1, index1.data(), sizeof(uint32_t) * index1.size(), cudaMemcpyHostToDevice);
 }
 
-/*
-void cas_grid::query_device(closest_point_kinfo kinfo)
-{
-	dim3 block(256);
-	dim3 grid((kinfo.point_count + block.x - 1) / block.x);
+struct cumesh {
+	const glm::vec3 *vertices;
+	const glm::uvec3 *triangles;
 
-	closest_point_kernel <<< grid, block >>> (dev_cas, kinfo);
-} */
+	uint32_t vertex_count = 0;
+	uint32_t triangle_count = 0;
+};
+
+__global__
+static void barycentric_closest_point_kernel(cumesh cm, closest_point_kinfo kinfo)
+{
+	uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+	uint32_t stride = blockDim.x * gridDim.x;
+
+	for (uint32_t i = tid; i < kinfo.point_count; i += stride) {
+		glm::vec3 point = kinfo.points[i];
+		glm::vec3 closest;
+		glm::vec3 barycentrics;
+		uint32_t triangle;
+
+		float min_distance = FLT_MAX;
+		for (uint32_t j = 0; j < cm.triangle_count; j++) {
+			glm::uvec3 tri = cm.triangles[j];
+
+			glm::vec3 v0 = cm.vertices[tri.x];
+			glm::vec3 v1 = cm.vertices[tri.y];
+			glm::vec3 v2 = cm.vertices[tri.z];
+
+			glm::vec3 candidate;
+			glm::vec3 bary;
+			float distance;
+
+			triangle_closest_point(v0, v1, v2, point, &candidate, &bary, &distance);
+
+			if (distance < min_distance) {
+				min_distance = distance;
+				closest = candidate;
+				barycentrics = bary;
+				triangle = j;
+			}
+		}
+
+		kinfo.bary[i] = barycentrics;
+		kinfo.triangles[i] = triangle;
+	}
+}
+
+void barycentric_closest_points(const torch::Tensor &vertices, const torch::Tensor &triangles, const torch::Tensor &sources, torch::Tensor &bary, torch::Tensor &indices)
+{
+	// Check types, devices and sizes
+	assert(vertices.dim() == 2 && vertices.size(1) == 3);
+	assert(triangles.dim() == 2 && triangles.size(1) == 3);
+	assert(sources.dim() == 2 && sources.size(1) == 3);
+	assert(bary.dim() == 2 && bary.size(1) == 3);
+	assert(indices.dim() == 1);
+
+	assert(vertices.device().is_cuda());
+	assert(triangles.device().is_cuda());
+	assert(sources.device().is_cuda());
+	assert(bary.device().is_cuda());
+	assert(indices.device().is_cuda());
+
+	assert(vertices.dtype() == torch::kFloat32);
+	assert(triangles.dtype() == torch::kInt32);
+	assert(sources.dtype() == torch::kFloat32);
+	assert(bary.dtype() == torch::kFloat32);
+	assert(indices.dtype() == torch::kInt32);
+
+	assert(sources.size(0) == bary.size(0));
+	assert(sources.size(0) == indices.size(0));
+
+	// Assuming all elements are precached already (in device as well)
+	// and that the dst vector is already allocated
+	size_t size = sources.size(0);
+
+	cumesh cm;
+
+	cm.vertices = (glm::vec3 *) vertices.data_ptr <float> ();
+	cm.triangles = (glm::uvec3 *) triangles.data_ptr <int32_t> ();
+	cm.vertex_count = vertices.size(0);
+	cm.triangle_count = triangles.size(0);
+
+	closest_point_kinfo kinfo;
+
+	kinfo.points = (glm::vec3 *) sources.data_ptr <float> ();
+	kinfo.bary = (glm::vec3 *) bary.data_ptr <float> ();
+	kinfo.triangles = (int32_t *) indices.data_ptr <int32_t> ();
+	kinfo.point_count = size;
+
+	dim3 block(256);
+	dim3 grid((size + block.x - 1) / block.x);
+
+	barycentric_closest_point_kernel <<<grid, block>>> (cm, kinfo);
+
+	// TODO: cuda check
+	cudaDeviceSynchronize();
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
+		exit(1);
+	}
+}
+
+__global__
+void laplacian_smooth_kernel(glm::vec3 *result, glm::vec3 *vertices, uint32_t *graph, uint32_t count, uint32_t max_adj, float factor)
+{
+	uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+	if (tid >= count)
+		return;
+
+	glm::vec3 sum = glm::vec3(0.0f);
+	uint32_t adj_count = graph[tid * max_adj];
+	uint32_t *adj = graph + tid * max_adj + 1;
+	for (uint32_t i = 0; i < adj_count; i++)
+		sum += vertices[adj[i]];
+	sum /= (float) adj_count;
+	if (adj_count == 0)
+		sum = vertices[tid];
+
+	result[tid] = vertices[tid] + (sum - vertices[tid]) * factor;
+}
+
+struct vertex_graph {
+	std::unordered_map <uint32_t, std::unordered_set <uint32_t>> graph;
+	uint32_t *dev_graph;
+
+	int32_t max;
+	int32_t max_adj;
+
+	// TODO: CUDA version...
+	vertex_graph(const torch::Tensor &triangles) {
+		assert(triangles.dim() == 2 && triangles.size(1) == 3);
+		assert(triangles.dtype() == torch::kInt32);
+		assert(triangles.device().is_cpu());
+
+		uint32_t triangle_count = triangles.size(0);
+
+		max = 0;
+		for (uint32_t i = 0; i < triangle_count; i++) {
+			int32_t v0 = triangles[i][0].item().to <int32_t> ();
+			int32_t v1 = triangles[i][1].item().to <int32_t> ();
+			int32_t v2 = triangles[i][2].item().to <int32_t> ();
+
+			graph[v0].insert(v1);
+			graph[v0].insert(v2);
+
+			graph[v1].insert(v0);
+			graph[v1].insert(v2);
+
+			graph[v2].insert(v0);
+			graph[v2].insert(v1);
+
+			max = std::max(max, std::max(v0, std::max(v1, v2)));
+		}
+
+		max_adj = 0;
+		for (auto &kv : graph)
+			max_adj = std::max(max_adj, (int32_t) kv.second.size());
+
+		// Allocate a device graph
+		uint32_t graph_size = max * (max_adj + 1);
+		cudaMalloc(&dev_graph, graph_size * sizeof(uint32_t));
+
+		std::vector <uint32_t> host_graph(graph_size, 0);
+		for (auto &kv : graph) {
+			uint32_t i = kv.first;
+			uint32_t j = 0;
+			assert(i * max_adj + j < graph_size);
+			host_graph[i * max_adj + j++] = kv.second.size();
+			for (auto &adj : kv.second) {
+				assert(i * max_adj + j < graph_size);
+				host_graph[i * max_adj + j++] = adj;
+			}
+		}
+
+		cudaMemcpy(dev_graph, host_graph.data(), graph_size * sizeof(uint32_t), cudaMemcpyHostToDevice);
+	}
+
+	torch::Tensor smooth(const torch::Tensor &vertices, float factor) const {
+		assert(vertices.dim() == 2 && vertices.size(1) == 3);
+		assert(vertices.dtype() == torch::kFloat32);
+		assert(vertices.device().is_cpu());
+		assert(max < vertices.size(0));
+
+		torch::Tensor result = torch::zeros_like(vertices);
+
+		glm::vec3 *v = (glm::vec3 *) vertices.data_ptr <float> ();
+		glm::vec3 *r = (glm::vec3 *) result.data_ptr <float> ();
+
+		for (uint32_t i = 0; i <= max; i++) {
+			if (graph.find(i) == graph.end())
+				continue;
+
+			glm::vec3 sum = glm::vec3(0.0f);
+			for (auto j : graph.at(i))
+				sum += v[j];
+			sum /= (float) graph.at(i).size();
+
+			r[i] = (1.0f - factor) * v[i] + factor * sum;
+		}
+
+		return result;
+	}
+
+	torch::Tensor smooth_device(const torch::Tensor &vertices, float factor) const {
+		assert(vertices.dim() == 2 && vertices.size(1) == 3);
+		assert(vertices.dtype() == torch::kFloat32);
+		assert(vertices.device().is_cuda());
+		assert(max < vertices.size(0));
+
+		torch::Tensor result = torch::zeros_like(vertices);
+
+		glm::vec3 *v = (glm::vec3 *) vertices.data_ptr <float> ();
+		glm::vec3 *r = (glm::vec3 *) result.data_ptr <float> ();
+
+		dim3 block(256);
+		dim3 grid((vertices.size(0) + block.x - 1) / block.x);
+
+		laplacian_smooth_kernel <<<grid, block>>> (r, v, dev_graph, vertices.size(0), max_adj, factor);
+
+		return result;
+	}
+};
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
@@ -607,5 +938,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 	py::class_ <cas_grid> (m, "cas_grid")
 		.def(py::init <const geometry &, uint32_t> ())
 		.def("precache_query", &cas_grid::precache_query_vector)
-		.def("query", &cas_grid::query_vector);
+		.def("precache_query_device", &cas_grid::precache_query_vector_device)
+		.def("precache_device", &cas_grid::precache_device)
+		.def("query", &cas_grid::query_vector)
+		.def("query_device", &cas_grid::query_vector_device);
+
+	py::class_ <vertex_graph> (m, "vertex_graph")
+		.def(py::init <const torch::Tensor &> ())
+		.def("smooth", &vertex_graph::smooth)
+		.def("smooth_device", &vertex_graph::smooth_device);
+
+	m.def("barycentric_closest_points", &barycentric_closest_points);
 }

@@ -6,11 +6,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtx/hash.hpp>
 
-#include <assimp/Importer.hpp>
-#include <assimp/postprocess.h>
-#include <assimp/scene.h>
-#include <assimp/Exporter.hpp>
-
+#include "geometry.hpp"
 #include "microlog.h"
 
 struct ordered_pair {
@@ -26,10 +22,6 @@ struct ordered_pair {
 		return a == other.a && b == other.b;
 	}
 
-	// bool operator<(const ordered_pair &other) const {
-	// 	return a < other.a || (a == other.a && b < other.b);
-	// }
-
 	static size_t hash(const ordered_pair &p) {
 		return std::hash <uint32_t> ()(p.a) ^ std::hash <uint32_t> ()(p.b);
 	}
@@ -38,29 +30,13 @@ struct ordered_pair {
 template <typename T>
 using ordered_pair_map = std::unordered_map <ordered_pair, T, decltype(&ordered_pair::hash)>;
 
-enum {
-	eTriangle,
-	eQuad
-};
-
 template <size_t primitive>
-struct geometry {
-	static_assert(primitive == eTriangle || primitive == eQuad, "Invalid primitive type");
-
-	std::vector <glm::vec3> vertices;
-
-	typename std::conditional <primitive == eTriangle, std::vector <glm::uvec3>, void *>::type triangles;
-	typename std::conditional <primitive == eQuad, std::vector <glm::uvec4>, void *>::type quads;
-
-	geometry() = default;
-};
-
-geometry <eTriangle> compact(const geometry <eTriangle> &ref)
+geometry <primitive> compact(const geometry <primitive> &ref)
 {
 	std::unordered_map <glm::vec3, uint32_t> existing;
 
-	geometry <eTriangle> fixed;
-	auto add_uniquely = [&](int32_t i) ->size_t {
+	geometry <primitive> fixed;
+	auto add_uniquely = [&](int32_t i) -> size_t {
 		glm::vec3 v = ref.vertices[i];
 		if (existing.find(v) == existing.end()) {
 			int32_t csize = fixed.vertices.size();
@@ -73,12 +49,29 @@ geometry <eTriangle> compact(const geometry <eTriangle> &ref)
 		return existing[v];
 	};
 
-	for (const glm::uvec3 &t : ref.triangles) {
-		fixed.triangles.push_back(glm::uvec3 {
-			add_uniquely(t[0]),
-			add_uniquely(t[1]),
-			add_uniquely(t[2])
-		});
+	const auto &primitives = [&]() -> const auto & {
+		if constexpr (primitive == eTriangle)
+			return ref.triangles;
+		else if constexpr (primitive == eQuad)
+			return ref.quads;
+	} ();
+
+	using primitive_type = typename std::conditional <primitive == eTriangle, glm::uvec3, glm::uvec4> ::type;
+	for (const primitive_type &p : primitives) {
+		if constexpr (primitive == eTriangle) {
+			fixed.triangles.push_back(glm::uvec3 {
+				add_uniquely(p[0]),
+				add_uniquely(p[1]),
+				add_uniquely(p[2])
+			});
+		} else if constexpr (primitive == eQuad) {
+			fixed.quads.push_back(glm::uvec4 {
+				add_uniquely(p[0]),
+				add_uniquely(p[1]),
+				add_uniquely(p[2]),
+				add_uniquely(p[3])
+			});
+		}
 	}
 
 	return fixed;
@@ -126,6 +119,208 @@ geometry <primitive> sanitize(const geometry <primitive> &ref)
 	}
 
 	return fixed;
+}
+
+struct vertex_graph : std::unordered_map <uint32_t, std::vector <uint32_t>> {
+	using std::unordered_map <uint32_t, std::vector <uint32_t>> ::unordered_map;
+
+	template <size_t primitive>
+	vertex_graph(const geometry <primitive> &ref) {
+		const auto &primitives = [&]() -> const auto & {
+			if constexpr (primitive == eTriangle)
+				return ref.triangles;
+			else if constexpr (primitive == eQuad)
+				return ref.quads;
+		} ();
+
+		using primitive_type = typename std::conditional <primitive == eTriangle, glm::uvec3, glm::uvec4> ::type;
+		for (const primitive_type &p : primitives) {
+			if constexpr (primitive == eTriangle) {
+				(*this)[p[0]].push_back(p[1]);
+				(*this)[p[0]].push_back(p[2]);
+
+				(*this)[p[1]].push_back(p[0]);
+				(*this)[p[1]].push_back(p[2]);
+
+				(*this)[p[2]].push_back(p[0]);
+				(*this)[p[2]].push_back(p[1]);
+			} else if constexpr (primitive == eQuad) {
+				(*this)[p[0]].push_back(p[1]);
+				(*this)[p[0]].push_back(p[3]);
+
+				(*this)[p[1]].push_back(p[0]);
+				(*this)[p[1]].push_back(p[2]);
+
+				(*this)[p[2]].push_back(p[1]);
+				(*this)[p[2]].push_back(p[3]);
+
+				(*this)[p[3]].push_back(p[0]);
+				(*this)[p[3]].push_back(p[2]);
+			}
+		}
+	}
+};
+
+struct edge_graph : ordered_pair_map <std::vector <uint32_t>> {
+	using base = ordered_pair_map <std::vector <uint32_t>>;
+	using ordered_pair_map <std::vector <uint32_t>> ::ordered_pair_map;
+
+	template <size_t primitive>
+	edge_graph(const geometry <primitive> &ref) : base(0, ordered_pair::hash) {
+		const auto &primitives = [&]() -> const auto & {
+			if constexpr (primitive == eTriangle)
+				return ref.triangles;
+			else if constexpr (primitive == eQuad)
+				return ref.quads;
+		} ();
+
+		using primitive_type = typename std::conditional <primitive == eTriangle, glm::uvec3, glm::uvec4> ::type;
+		for (uint32_t i = 0; i < primitives.size(); i++) {
+			const primitive_type &p = primitives[i];
+			if constexpr (primitive == eTriangle) {
+				ordered_pair op0(p[0], p[1]);
+				ordered_pair op1(p[1], p[2]);
+				ordered_pair op2(p[2], p[0]);
+
+				(*this)[op0].push_back(i);
+				(*this)[op1].push_back(i);
+				(*this)[op2].push_back(i);
+			} else if constexpr (primitive == eQuad) {
+				ordered_pair op0(p[0], p[1]);
+				ordered_pair op1(p[1], p[2]);
+				ordered_pair op2(p[2], p[3]);
+				ordered_pair op3(p[3], p[0]);
+
+				(*this)[op0].push_back(i);
+				(*this)[op1].push_back(i);
+				(*this)[op2].push_back(i);
+				(*this)[op3].push_back(i);
+			}
+		}
+	}
+
+	// Display distribution of edge adjacency
+	void check() const {
+		std::unordered_map <uint32_t, uint32_t> distribution;
+		for (const auto &pair : *this)
+			distribution[pair.second.size()]++;
+
+		ulog_info("edge_graph", "distribution of edge adjacency:\n");
+		for (const auto &pair : distribution)
+			ulog_info("edge_graph", "%7u edges are adjacent to %u faces\n", pair.second, pair.first);
+	}
+
+	void check(uint32_t N) {
+		std::unordered_map <uint32_t, uint32_t> distribution;
+		for (const auto &pair : *this)
+			distribution[pair.second.size()]++;
+
+		printf("elements with %u adjacencies: %u\n", N, distribution[N]);
+		for (const auto &pair : *this) {
+			if (pair.second.size() == N) {
+				printf("  %u-%u: ", pair.first.a, pair.first.b);
+				for (uint32_t i : pair.second)
+					printf("%u ", i);
+				printf("\n");
+			}
+		}
+	}
+};
+
+struct dual_graph : std::unordered_map <uint32_t, std::unordered_set <uint32_t>> {
+	// TODO: record manifoldness per face?
+	using std::unordered_map <uint32_t, std::unordered_set <uint32_t>> ::unordered_map;
+
+	dual_graph(const edge_graph &egraph) {
+		for (const auto &pair : egraph) {
+			for (uint32_t i = 0; i < pair.second.size(); i++) {
+				for (uint32_t j = i + 1; j < pair.second.size(); j++) {
+					(*this)[pair.second[i]].insert(pair.second[j]);
+					(*this)[pair.second[j]].insert(pair.second[i]);
+				}
+			}
+		}
+	}
+};
+
+template <size_t primitive>
+geometry <primitive> laplacian_smoothing(const geometry <primitive> &ref, float factor)
+{
+	std::unordered_map <uint32_t, std::unordered_set <uint32_t>> adjacency(0);
+
+	if constexpr (primitive == eTriangle) {
+		for (const auto &triangle : ref.triangles) {
+			adjacency[triangle[0]].insert(triangle[1]);
+			adjacency[triangle[0]].insert(triangle[2]);
+			adjacency[triangle[1]].insert(triangle[0]);
+			adjacency[triangle[1]].insert(triangle[2]);
+			adjacency[triangle[2]].insert(triangle[0]);
+			adjacency[triangle[2]].insert(triangle[1]);
+		}
+	} else {
+		for (const auto &quad : ref.quads) {
+			adjacency[quad[0]].insert(quad[1]);
+			adjacency[quad[0]].insert(quad[3]);
+			adjacency[quad[1]].insert(quad[0]);
+			adjacency[quad[1]].insert(quad[2]);
+			adjacency[quad[2]].insert(quad[1]);
+			adjacency[quad[2]].insert(quad[3]);
+			adjacency[quad[3]].insert(quad[0]);
+			adjacency[quad[3]].insert(quad[2]);
+		}
+	}
+
+	geometry <primitive> result;
+	result.vertices.resize(ref.vertices.size());
+	result.triangles = ref.triangles;
+	result.quads = ref.quads;
+
+	for (uint32_t i = 0; i < ref.vertices.size(); i++) {
+		const glm::vec3 &vertex = ref.vertices[i];
+		const std::unordered_set <uint32_t> &adjacent = adjacency[i];
+
+		glm::vec3 sum(0.0f);
+		for (uint32_t j : adjacent)
+			sum += ref.vertices[j];
+
+		result.vertices[i] = vertex + (sum/(float) adjacent.size() - vertex) * factor;
+	}
+
+	return result;
+}
+
+// Compute primitive areas
+template <size_t primitive>
+std::vector <double> primitive_areas(const geometry <primitive> &ref)
+{
+	std::vector <double> areas;
+	if constexpr (primitive == eTriangle)
+		areas.resize(ref.triangles.size());
+	else
+		areas.resize(ref.quads.size());
+
+	// TODO: openmp?
+	for (uint32_t i = 0; i < areas.size(); i++) {
+		if constexpr (primitive == eTriangle) {
+			const glm::uvec3 &triangle = ref.triangles[i];
+			const glm::dvec3 &a = ref.vertices[triangle[0]];
+			const glm::dvec3 &b = ref.vertices[triangle[1]];
+			const glm::dvec3 &c = ref.vertices[triangle[2]];
+			glm::dvec3 cross = glm::cross(b - a, c - a);
+			areas[i] = glm::length(cross) / 2.0;
+		} else if constexpr (primitive == eQuad) {
+			const glm::uvec4 &quad = ref.quads[i];
+			const glm::dvec3 &a = ref.vertices[quad[0]];
+			const glm::dvec3 &b = ref.vertices[quad[1]];
+			const glm::dvec3 &c = ref.vertices[quad[2]];
+			const glm::dvec3 &d = ref.vertices[quad[3]];
+			glm::dvec3 cross1 = glm::cross(b - a, c - a);
+			glm::dvec3 cross2 = glm::cross(c - a, d - a);
+			areas[i] = (glm::length(cross1) + glm::length(cross2)) / 2.0;
+		}
+	}
+
+	return areas;
 }
 
 geometry <eQuad> quadrangulate(const geometry <eTriangle> &ref)
@@ -191,52 +386,6 @@ geometry <eQuad> quadrangulate(const geometry <eTriangle> &ref)
 	geometry <eQuad> result;
 	result.vertices = std::move(vertices);
 	result.quads = std::move(quads);
-	return result;
-}
-
-template <size_t primitive>
-geometry <primitive> laplacian_smoothing(const geometry <primitive> &ref, float factor)
-{
-	std::unordered_map <uint32_t, std::unordered_set <uint32_t>> adjacency(0);
-
-	if constexpr (primitive == eTriangle) {
-		for (const auto &triangle : ref.triangles) {
-			adjacency[triangle[0]].insert(triangle[1]);
-			adjacency[triangle[0]].insert(triangle[2]);
-			adjacency[triangle[1]].insert(triangle[0]);
-			adjacency[triangle[1]].insert(triangle[2]);
-			adjacency[triangle[2]].insert(triangle[0]);
-			adjacency[triangle[2]].insert(triangle[1]);
-		}
-	} else {
-		for (const auto &quad : ref.quads) {
-			adjacency[quad[0]].insert(quad[1]);
-			adjacency[quad[0]].insert(quad[3]);
-			adjacency[quad[1]].insert(quad[0]);
-			adjacency[quad[1]].insert(quad[2]);
-			adjacency[quad[2]].insert(quad[1]);
-			adjacency[quad[2]].insert(quad[3]);
-			adjacency[quad[3]].insert(quad[0]);
-			adjacency[quad[3]].insert(quad[2]);
-		}
-	}
-
-	geometry <primitive> result;
-	result.vertices.resize(ref.vertices.size());
-	result.triangles = ref.triangles;
-	result.quads = ref.quads;
-
-	for (uint32_t i = 0; i < ref.vertices.size(); i++) {
-		const glm::vec3 &vertex = ref.vertices[i];
-		const std::unordered_set <uint32_t> &adjacent = adjacency[i];
-
-		glm::vec3 sum(0.0f);
-		for (uint32_t j : adjacent)
-			sum += ref.vertices[j];
-
-		result.vertices[i] = vertex + (sum/(float) adjacent.size() - vertex) * factor;
-	}
-
 	return result;
 }
 
@@ -323,8 +472,6 @@ geometry <eQuad> cleanse_doublets(const geometry <eQuad> &ref)
 		ordered_pair edge0(d.a, d.b);
 		ordered_pair edge1(d.b, d.c);
 
-		// printf("dissovling doublet (%u, %u, %u) -> edges (%u, %u) and (%u, %u)\n", d.a, d.b, d.c, edge0.a, edge0.b, edge1.a, edge1.b);
-
 		const auto &equads = edge_quads[edge0];
 		ulog_assert(edge_quads[edge0].size() == 2, "Invalid doublet", "quads %u and %u share %d\n", quads[0], quads[1], quads.size());
 		ulog_assert(edge_quads[edge1].size() == 2, "Invalid doublet", "quads %u and %u share %d\n", quads[0], quads[1], quads.size());
@@ -356,10 +503,6 @@ geometry <eQuad> cleanse_doublets(const geometry <eQuad> &ref)
 				v1 = quad1[i];
 		}
 
-		// printf("new quad (%u, %u, %u, %u)\n", d.a, v0, d.c, v1);
-		// printf("  > original q0 (%u, %u, %u, %u)\n", quad0[0], quad0[1], quad0[2], quad0[3]);
-		// printf("  > original q1 (%u, %u, %u, %u)\n", quad1[0], quad1[1], quad1[2], quad1[3]);
-
 		quads.push_back({ d.a, v0, d.c, v1 });
 	}
 
@@ -382,146 +525,205 @@ geometry <eQuad> cleanse_doublets(const geometry <eQuad> &ref)
 	return result;
 }
 
-struct loader {
-	std::vector <geometry <eTriangle>> meshes;
+// template <size_t primitive>
+// struct geomety_optimization_state {
+// 	vertex_graph vgraph;
+// 	edge_graph edge_graph;
+// 	dual_graph dgraph;
+// 	geometry <primitive> ref;
+// 	std::vector <bool> valid;
+// };
 
-	loader(const std::filesystem::path &path) {
-		Assimp::Importer importer;
-
-		// Read scene
-		const aiScene *scene;
-		scene = importer.ReadFile(path, aiProcess_GenNormals | aiProcess_Triangulate);
-
-		// Check if the scene was loaded
-		if ((!scene | scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode) {
-			ulog_error("loader", "Assimp error: \"%s\"\n", importer.GetErrorString());
-			return;
-		}
-
-		process_node(scene->mRootNode, scene, path.parent_path());
-	}
-
-	void process_node(aiNode *node, const aiScene *scene, const std::string &directory) {
-		// Process all the node's meshes (if any)
-		for (uint32_t i = 0; i < node->mNumMeshes; i++) {
-			aiMesh *mesh = scene->mMeshes[node->mMeshes[i]];
-			process_mesh(mesh, scene, directory);
-		}
-
-		// Recusively process all the node's children
-		for (uint32_t i = 0; i < node->mNumChildren; i++)
-			process_node(node->mChildren[i], scene, directory);
-
-	}
-
-	void process_mesh(aiMesh *, const aiScene *, const std::string &);
-
-	const geometry <eTriangle> &get(uint32_t i) const {
-		return meshes[i];
-	}
-};
-
-void loader::process_mesh(aiMesh *mesh, const aiScene *scene, const std::string &dir)
+// Perform a diagonal collapse on a specific quad
+// TODO: use an optimization state object
+geometry <eQuad> diagonal_collapse(const geometry <eQuad> &ref, const vertex_graph &vgraph, uint32_t quad)
 {
+	geometry <eQuad> result = ref;
 
-	std::vector <glm::vec3> vertices;
-	std::vector <glm::vec3> normals;
-	std::vector <glm::uvec3> triangles;
+	glm::uvec4 q = ref.quads[quad];
+	// std::swap(q[1], q[2]);
 
-	// Process all the mesh's vertices
-	for (uint32_t i = 0; i < mesh->mNumVertices; i++) {
-		vertices.push_back({
-			mesh->mVertices[i].x,
-			mesh->mVertices[i].y,
-			mesh->mVertices[i].z
-		});
-	}
+	glm::vec3 v0 = ref.vertices[q[0]];
+	glm::vec3 v1 = ref.vertices[q[1]];
+	glm::vec3 v2 = ref.vertices[q[2]];
+	glm::vec3 v3 = ref.vertices[q[3]];
 
-	// Process all the mesh's triangles
-	for (uint32_t i = 0; i < mesh->mNumFaces; i++) {
-		aiFace face = mesh->mFaces[i];
-		ulog_assert(face.mNumIndices == 3, "process_mesh", "Only triangles are supported, got %d-sided polygon instead\n", face.mNumIndices);
-		triangles.push_back({
-			face.mIndices[0],
-			face.mIndices[1],
-			face.mIndices[2]
-		});
-	}
+	// Compute the two diagonals
+	glm::vec3 d0 = v2 - v0;
+	glm::vec3 d1 = v3 - v1;
 
-	meshes.push_back({ vertices, triangles, {} });
-}
+	float l0 = glm::length(d0);
+	float l1 = glm::length(d1);
 
-template <size_t primitive>
-void write_obj(const geometry <primitive> &mesh, const std::filesystem::path &path)
-{
-	aiScene scene;
+	// Compute and add the new vertex (midpoint of the diagonal)
+	glm::vec3 mid = (l0 < l1) ? (v0 + v2) * 0.5f : (v1 + v3) * 0.5f;
+	uint32_t nvi = result.vertices.size();
+	result.vertices.push_back(mid);
 
-	scene.mRootNode = new aiNode();
+	if (l0 < l1) {
+		// Dissolving v0 -- v2
+		auto adj_v0 = vgraph.at(q[0]);
+		auto adj_v2 = vgraph.at(q[2]);
 
-	scene.mMaterials = new aiMaterial*[ 1 ];
-	scene.mMaterials[ 0 ] = nullptr;
-	scene.mNumMaterials = 1;
+		auto adj = std::unordered_set <uint32_t> (adj_v0.begin(), adj_v0.end());
+		adj.insert(adj_v2.begin(), adj_v2.end());
 
-	scene.mMaterials[ 0 ] = new aiMaterial();
+		// Fix vertex index for quads using v0 or v2
+		for (uint32_t i = 0; i < result.quads.size(); i++) {
+			auto &quad = result.quads[i];
 
-	scene.mMeshes = new aiMesh*[ 1 ];
-	scene.mMeshes[ 0 ] = nullptr;
-	scene.mNumMeshes = 1;
+			if (quad[0] == q[0] || quad[0] == q[2])
+				quad[0] = nvi;
 
-	scene.mMeshes[ 0 ] = new aiMesh();
-	scene.mMeshes[ 0 ]->mMaterialIndex = 0;
+			if (quad[1] == q[0] || quad[1] == q[2])
+				quad[1] = nvi;
 
-	scene.mRootNode->mMeshes = new unsigned int[ 1 ];
-	scene.mRootNode->mMeshes[ 0 ] = 0;
-	scene.mRootNode->mNumMeshes = 1;
+			if (quad[2] == q[0] || quad[2] == q[2])
+				quad[2] = nvi;
 
-	auto pMesh = scene.mMeshes[ 0 ];
-
-	pMesh->mVertices = new aiVector3D[mesh.vertices.size()];
-	pMesh->mNormals = new aiVector3D[mesh.vertices.size()];
-	pMesh->mNumVertices = mesh.vertices.size();
-	pMesh->mNumUVComponents[0] = 0;
-
-	for (uint32_t i = 0; i < mesh.vertices.size(); i++) {
-		pMesh->mVertices[i] = { mesh.vertices[i].x, mesh.vertices[i].y, mesh.vertices[i].z };
-		// pMesh->mNormals[i] = { mesh.normals[i].x, mesh.normals[i].y, mesh.normals[i].z };
-	}
-
-	if constexpr (primitive == eTriangle) {
-		pMesh->mFaces = new aiFace[mesh.triangles.size()];
-		pMesh->mNumFaces = mesh.triangles.size();
-
-		for (uint32_t i = 0; i < mesh.triangles.size(); i++) {
-			aiFace &face = pMesh->mFaces[i];
-			face.mIndices = new unsigned int[3];
-			face.mNumIndices = 3;
-
-			glm::uvec3 t = mesh.triangles[i];
-			face.mIndices[0] = t[0];
-			face.mIndices[1] = t[1];
-			face.mIndices[2] = t[2];
+			if (quad[3] == q[0] || quad[3] == q[2])
+				quad[3] = nvi;
 		}
 	} else {
-		pMesh->mFaces = new aiFace[mesh.quads.size()];
-		pMesh->mNumFaces = mesh.quads.size();
+		// Dissolving v1 -- v3
+		auto adj_v1 = vgraph.at(q[1]);
+		auto adj_v3 = vgraph.at(q[3]);
 
-		for (uint32_t i = 0; i < mesh.quads.size(); i++) {
-			aiFace &face = pMesh->mFaces[i];
-			face.mIndices = new unsigned int[4];
-			face.mNumIndices = 4;
+		auto adj = std::unordered_set <uint32_t> (adj_v1.begin(), adj_v1.end());
+		adj.insert(adj_v3.begin(), adj_v3.end());
 
-			glm::uvec4 t = mesh.quads[i];
-			face.mIndices[0] = t[0];
-			face.mIndices[1] = t[1];
-			face.mIndices[2] = t[2];
-			face.mIndices[3] = t[3];
+		// Fix vertex index for quads using v1 or v3
+		for (uint32_t i = 0; i < result.quads.size(); i++) {
+			auto &quad = result.quads[i];
+
+			if (quad[0] == q[1] || quad[0] == q[3])
+				quad[0] = nvi;
+
+			if (quad[1] == q[1] || quad[1] == q[3])
+				quad[1] = nvi;
+
+			if (quad[2] == q[1] || quad[2] == q[3])
+				quad[2] = nvi;
+
+			if (quad[3] == q[1] || quad[3] == q[3])
+				quad[3] = nvi;
 		}
 	}
 
-	Assimp::Exporter exporter;
-	exporter.Export(&scene, "obj", path.string());
+	// TODO: remove old quads
+	result.quads.erase(result.quads.begin() + quad);
+	return result;
+}
 
-	ulog_info("write_obj", "exported result to %s\n", path.c_str());
+// Perform decimation on a quad mesh
+// TODO: pass options
+geometry <eQuad> decimate(const geometry <eQuad> &ref)
+{
+	geometry <eQuad> result = ref;
+
+	for (int i = 0; i < 1000; i++) {
+		// Progress
+		printf("\rdecimate: %d / %d", i, 5000);
+		fflush(stdout);
+
+		vertex_graph vgraph(result);
+		edge_graph egraph(result);
+		dual_graph dgraph(egraph);
+		// egraph.check();
+		// egraph.check(1);
+
+		const auto &areas = primitive_areas(result);
+
+		std::vector <std::pair <float, uint32_t>> sorted(areas.size());
+		for (uint32_t i = 0; i < areas.size(); i++)
+			sorted[i] = { areas[i], i };
+
+		std::sort(sorted.begin(), sorted.end(),
+			[](const auto &a, const auto &b) {
+				return a.first > b.first;
+			}
+		);
+
+		printf("\n(B) %d vertices, %d quads\n", result.vertices.size(), result.quads.size());
+
+		for (int j = 0; j < sorted.size(); j++) {
+			// TODO: this would be an outright error
+			if (dgraph.count(sorted[j].second) == 0)
+				continue;
+
+			if (dgraph.at(sorted[j].second).size() != 4)
+				continue;
+
+			result = diagonal_collapse(result, vgraph, sorted[j].second);
+			break;
+		}
+
+		printf("(A) %d vertices, %d quads\n", result.vertices.size(), result.quads.size());
+		result = compact(result);
+
+		// TODO: clean up any doublets afterwards...
+	}
+
+	vertex_graph vgraph(result);
+	edge_graph egraph(result);
+	dual_graph dgraph(egraph);
+	// egraph.check();
+	// egraph.check(1);
+
+	return result;
+	// return compact(result);
+
+	// vertex_graph vgraph(result);
+	// edge_graph egraph(result);
+	// dual_graph dgraph(egraph);
+
+	// for (const auto &[f, adj] : dgraph)
+	// 	ulog_assert(adj.size() == 4, "decimate", "quad %u is non-manifold; it has %lu neighbors\n", f, adj.size());
+
+	// Iteratively collapse quad diagonals; heuristic is minimum area, along shortest diagonal
+	// TODO: use a priority queue with removable elements...
+	// then keep inserting new elements as they are created (put into a geometry_decimation_state : optimization_state)
+	// const auto &areas = primitive_areas(result);
+
+	// printf("areas: ");
+	// for (int i = 0; i < areas.size(); i++)
+	// 	printf("%f, ", areas[i]);
+	// printf("\n");
+
+	// Sort with an augmented array
+	// std::vector <std::pair <float, uint32_t>> sorted(areas.size());
+	// for (uint32_t i = 0; i < areas.size(); i++)
+	// 	sorted[i] = { areas[i], i };
+	//
+	// std::sort(sorted.begin(), sorted.end(),
+	// 	[](const auto &a, const auto &b) {
+	// 		return a.first < b.first;
+	// 	}
+	// );
+	//
+	// printf("sorted areas: ");
+	// for (int i = 0; i < 10; i++)
+	// 	printf("%f (%d), ", sorted[i].first, sorted[i].second);
+	// printf("\n");
+
+	// TODO: stop at a maximum smallest area threshold?
+
+	// TODO: maintain a optimzation state, with the graphs and valid states...
+
+	// TODO: extract disjoint (non adjacent) quads to decimatewith diagonal collapse
+
+	// TODO: only for faces with exactly four neighbors
+
+	// printf("(B) %d vertices, %d quads\n", result.vertices.size(), result.quads.size());
+	// result = diagonal_collapse(result, dgraph, sorted[0].second);
+	// printf("(A) %d vertices, %d quads\n", result.vertices.size(), result.quads.size());
+	//
+	// // Rebuid the graphs (TODO:collect fix operations into a queue, and apply them...)
+	// vgraph = vertex_graph(result);
+	// egraph = edge_graph(result);
+	// dgraph = dual_graph(egraph);
+
+	return result;
 }
 
 int main(int argc, char *argv[])
@@ -533,7 +735,8 @@ int main(int argc, char *argv[])
 
 	std::filesystem::path input { argv[1] };
 
-	geometry <eTriangle> ref = loader(input).get(0);
+	// geometry <eTriangle> ref = loader(input).get(0);
+	geometry <eTriangle> ref = load_geometry <eTriangle> (input)[0];
 	ulog_info("quadrangulate", "loaded %s, mesh has %d vertices and %d triangles\n", input.c_str(), ref.vertices.size(), ref.triangles.size());
 
 	ref = compact(ref);
@@ -543,13 +746,19 @@ int main(int argc, char *argv[])
 	geometry <eQuad> result = quadrangulate(ref);
 	ulog_info("quadrangulate", "quadrangulated %s, resulting mesh has %d vertices and %d quads\n", input.c_str(), result.vertices.size(), result.quads.size());
 
-	for (int i = 0; i < 3; i++)
-		result = laplacian_smoothing(result, 0.9f);
+	// TODO: after...
+	// for (int i = 0; i < 3; i++)
+	// 	result = laplacian_smoothing(result, 0.9f);
 
 	result = sanitize(result);
-	result = cleanse_doublets(result);
+	// result = cleanse_doublets(result);
 
 	ulog_info("quadrangulate", "smoothed %s, resulting mesh has %d vertices and %d quads\n", input.c_str(), result.vertices.size(), result.quads.size());
 
-	write_obj(result, (input.stem().string() + "_quad.obj"));
+	result = decimate(result);
+	ulog_info("quadrangulate", "decimated %s, resulting mesh has %d vertices and %d quads\n", input.c_str(), result.vertices.size(), result.quads.size());
+
+	write_geometry(result, (input.stem().string() + "_quad.obj"));
+
+	// TODO: convert-geometry utility, which should automatically compact everything..
 }

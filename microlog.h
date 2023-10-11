@@ -108,6 +108,6 @@ inline void ulog_assert(bool condition, const char *header, const char *format, 
 		va_end(args);
 
 		fflush(stdout);
-		abort();
+		exit(EXIT_FAILURE);
 	}
 }

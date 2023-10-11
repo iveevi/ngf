@@ -30,6 +30,12 @@ add_library(imgui OBJECT
 file(GLOB_RECURSE SOURCES "rasterizer/*.cu")
 
 add_executable(rasterizer ${SOURCES} $<TARGET_OBJECTS:imgui>)
+add_executable(simplify quads/main.cpp)
+add_executable(quadrangulate quads/quadrangulate.cpp)
+add_executable(convert quads/convert.cpp)
+
+target_compile_options(quadrangulate PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(convert PRIVATE -Wall -Wextra -Wpedantic)
 
 target_link_libraries(rasterizer
 	assimp
@@ -39,5 +45,8 @@ target_link_libraries(rasterizer
 	OpenMP::OpenMP_CXX
 	Vulkan::Vulkan
 )
+
+target_link_libraries(quadrangulate assimp)
+target_link_libraries(convert assimp)
 
 include_directories(. glm imgui)

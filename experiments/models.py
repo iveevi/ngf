@@ -1,9 +1,13 @@
 import torch
 import numpy as np
 import polyscope as ps
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 from tqdm import trange
 from mlp import *
+
+sns.set()
 
 # TODO: 4 complex version so test if mlp degrades with more complexes
 # also test various scales to check normal vector losses...
@@ -54,7 +58,7 @@ def curved(sample_rate=16):
 def perlin(sample_rate=16):
     from perlin_noise import PerlinNoise
 
-    noise = PerlinNoise(octaves=8, seed=1)
+    noise = PerlinNoise(octaves=12, seed=1)
     complexes = np.array([[0, 1, 2, 3]])
     points = []
 
@@ -118,21 +122,30 @@ experiments = {
 
 models = {
         # 'simple': MLP_Simple,
-        'pos-enc': MLP_Positional_Encoding,
+        # 'pos-enc': MLP_Positional_Encoding,
+        # 'pos-wide-enc': MLP_Positional_Encoding_Wide,
+        # 'morlet-enc': MLP_Positional_Morlet_Encoding,
+        'onion-enc': MLP_Positional_Onion_Encoding,
         'feat-enc': MLP_Feature_Sinusoidal_Encoding,
-        'feat-pos-enc': MLP_Feature_Position_Encoding,
+        'feat-morlet-enc': MLP_Feature_Morlet_Encoding,
+        'feat-onion-enc': MLP_Feature_Onion_Encoding,
+        # 'feat-pos-enc': MLP_Feature_Position_Encoding,
         # 'uv': MLP_UV,
-        'uv-enc': MLP_UV_Sinusoidal_Encoding,
-        'uv-feat-uv-enc': MLP_Feature_UV_Sinusoidal_Encoding,
+        # 'uv-enc': MLP_UV_Sinusoidal_Encoding,
+        # 'uv-morlet-enc': MLP_UV_Morlet_Encoding,
+        # 'uv-onion-enc': MLP_UV_Onion_Encoding,
+        # 'uv-feat-uv-enc': MLP_Feature_UV_Sinusoidal_Encoding,
+        # 'uv-pos-uv-enc': MLP_Position_UV_Sinusoidal_Encoding,
 }
+
+# morlet and onion seems to get rid of the ripple artifacts
+# feature encoding seems to be better (at least in single patches)
 
 # TODO: also test different losses... (plain, +normal, +consistency loss), also using L1 for vertex/normal
 
-# TODO: color wheel...
-
-# TODO: two 64x64 layers... (test network size later?) compare to a single 128x128 (on the best performing)
-
 # TODO: apply linear transformation to the input to probe the effects on vertex input space
+
+# TODO: 3D perlin noise as input (or some other high frequency procedural noise)
 
 ps.init()
 
@@ -147,7 +160,7 @@ def lerp(X, U, V):
 def sample(complexes, corners, encodings, sample_rate):
     U = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
     V = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
-    U, V = torch.meshgrid(U, V)
+    U, V = torch.meshgrid(U, V, indexing='ij')
 
     corner_points = corners[complexes, :]
     corner_encodings = encodings[complexes, :]
@@ -161,6 +174,9 @@ def sample(complexes, corners, encodings, sample_rate):
 
     return lerped_points, lerped_encodings, torch.stack([U, V], dim=-1).squeeze(0)
 
+# Graphing
+fig, axs = plt.subplots(len(experiments), len(models), figsize=(20, 15))
+
 sample_rate = 256
 for i, (name, experiment) in enumerate(experiments.items()):
     # Generate reference
@@ -171,12 +187,11 @@ for i, (name, experiment) in enumerate(experiments.items()):
 
     for j, (model_name, M) in enumerate(models.items()):
         # Load the model and parameters
-        # m = MLP_Feature_UV_Sinusoidal_Encoding().cuda()
         m = M().cuda()
 
         tch_complexes = torch.from_numpy(complexes).int().cuda()
         tch_corners   = torch.from_numpy(corners).float().cuda()
-        tch_encodings = torch.randn((target.shape[0], POINT_ENCODING_SIZE), requires_grad=True, dtype=torch.float32, device='cuda')
+        tch_encodings = torch.randn((corners.shape[0], POINT_ENCODING_SIZE), requires_grad=True, dtype=torch.float32, device='cuda')
 
         tch_target = torch.from_numpy(target).float().cuda()
 
@@ -191,7 +206,7 @@ for i, (name, experiment) in enumerate(experiments.items()):
         tch_normals = torch.cross(tch_e0, tch_e1, dim=1)
 
         # Train the model
-        optimizer = torch.optim.Adam(list(m.parameters()) + [ tch_encodings ], lr=1e-2)
+        optimizer = torch.optim.Adam(list(m.parameters()) + [ tch_encodings ], lr=1e-3)
 
         history = []
         for _ in trange(1_000):
@@ -209,6 +224,7 @@ for i, (name, experiment) in enumerate(experiments.items()):
 
             normals = torch.cross(E0, E1, dim=1)
 
+            # TODO: L1 loss...
             loss = torch.mean(torch.norm(V - tch_target, dim=1)) + 10000.0 * torch.mean(torch.norm(normals - tch_normals, dim=1))
 
             history.append(loss.item())
@@ -229,12 +245,21 @@ for i, (name, experiment) in enumerate(experiments.items()):
 
         off_model = V.detach().cpu().numpy() + np.array([1.5 * i, 0, 1.5 * (j + 1)])
         nsc_mesh = ps.register_surface_mesh(name + ':' + model_name, off_model, triangles, color=(0.5, 0.5, 1.0))
-        nsc_mesh.add_scalar_quantity('Y', V[:, 1].detach().cpu().numpy(), defined_on='vertices')
 
-    # TODO: local experimental model architectures...
-    # try to feed procedural perlin noise as well (or check the nvidia paper)
+        # Print the cdist between features
+        # TODO: loss to maximize min distance (or minimize max distance)
+        distances = torch.cdist(tch_encodings, tch_encodings)
+        print(f'{name}: {model_name}: {distances.mean().item():.3f} {distances.std().item():.3f}')
+
+        # Plot
+        axs[i, j].plot(history)
+        axs[i, j].set_title(f'{name}:{model_name}')
+        axs[i, j].set_yscale('log')
 
     # TODO: also generate loss graphs for each case
+
+plt.tight_layout()
+plt.savefig('loss.png')
 
 ps.show()
 
