@@ -48,7 +48,7 @@ class NSubComplex(nn.Module):
                 X = torch.sin(X)
 
         return bases + X
-    
+
     def serialize(self, complexes, corner_points, corner_encodings, path):
         l0, l1, l2 = self.encoding_linears
 
@@ -58,7 +58,7 @@ class NSubComplex(nn.Module):
                 corner_points.shape[0],
                 POINT_ENCODING_SIZE,
             ], dtype=np.int32).tobytes())
-            
+
             # Complexes
             complexes_bytes = complexes.cpu().numpy().astype(np.int32).tobytes()
             print('complexes_bytes:', len(complexes_bytes))
@@ -85,7 +85,7 @@ class NSubComplex(nn.Module):
             print('l0_weights:', bytes)
             bytes = f.write(l0_bias)
             print('l0_bias:', bytes)
-            
+
             W1, H1 = l1.weight.shape
             print('W1, H1:', W1, H1)
             l1_weights = l1.weight.detach().cpu().numpy().astype(np.float32).tobytes()

@@ -10,7 +10,7 @@ def lerp(X, U, V):
     lp11 = X[:, 2, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * (1.0 - V.unsqueeze(-1))
     return lp00 + lp01 + lp10 + lp11
 
-def sample(complexes, corners, encodings, sample_rate):
+def sample(complexes, corners, encodings, sample_rate, kernel=lerp):
     U = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
     V = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
     U, V = torch.meshgrid(U, V, indexing='ij')
@@ -23,7 +23,7 @@ def sample(complexes, corners, encodings, sample_rate):
     V = V.repeat((complexes.shape[0], 1))
 
     lerped_points = lerp(corner_points, U, V).reshape(-1, 3)
-    lerped_encodings = lerp(corner_encodings, U, V).reshape(-1, POINT_ENCODING_SIZE)
+    lerped_encodings = kernel(corner_encodings, U, V).reshape(-1, POINT_ENCODING_SIZE)
 
     return lerped_points, lerped_encodings, torch.stack([U, V], dim=-1).squeeze(0)
 

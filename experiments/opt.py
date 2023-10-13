@@ -131,7 +131,7 @@ F, remap    = geom.sdc_weld(complexes.cpu(), cmap, Tv.shape[0], sample_rate)
 F           = F.cuda()
 vgraph      = casdf.vertex_graph(F.cpu())
 
-Tv_opt      = torch.optim.Adam([Tv], lr=0.01)
+Tv_opt      = torch.optim.Adam([Tv], lr=1e-3)
 
 closest     = torch.zeros((Tv.shape[0], 3)).cuda()
 bary        = torch.zeros((Tv.shape[0], 3)).cuda()
@@ -162,22 +162,27 @@ for i in trange(1_000):
 
     sampled_loss = torch.sum((Vrandom - Vreconstructed).square())
 
+    Tv_smoothed = vgraph.smooth_device(Tv, 1.0)
+    laplacian_loss = torch.sum((Tv - Tv_smoothed).square())
+
     # TODO: tirangle area min/maxing...
     # print('direct = %f, loss = %f' % (direct_loss, sampled_loss))
-    loss = direct_loss + sampled_loss
+    loss = direct_loss + sampled_loss + laplacian_loss
 
     history.setdefault('direct', []).append(direct_loss.item())
     history.setdefault('sampled', []).append(sampled_loss.item())
+    history.setdefault('laplacian', []).append(laplacian_loss.item())
 
     Tv_opt.zero_grad()
     loss.backward()
     Tv_opt.step()
 
-    # TODO: stop at a certain point...
-    if i > 0 and i < 750 and i % 100 == 0:
-        with torch.no_grad():
-            V = vgraph.smooth_device(Tv, 1.0)
-            Tv.data.copy_(V)
+    # TODO: since smoothing is now fast enough, we can do it every iteration as
+    # a proper loss, during the relevant iterations
+    # if i > 0 and i < 750 and i % 100 == 0:
+    #     with torch.no_grad():
+    #         V = vgraph.smooth_device(Tv, 1.0)
+    #         Tv.data.copy_(V)
 
 # Save this tensor
 Tv = geom.sdc_separate(Tv.detach().cpu(), remap).cuda()
@@ -206,6 +211,7 @@ sns.set_style('darkgrid')
 # TODO: figure(filename) in util
 plt.plot(history['direct'], label='direct')
 plt.plot(history['sampled'], label='sampled')
+plt.plot(history['laplacian'], label='laplacian')
 plt.xlabel('iteration')
 plt.ylabel('loss')
 plt.yscale('log')

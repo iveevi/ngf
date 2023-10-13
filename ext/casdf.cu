@@ -14,6 +14,48 @@ struct geometry {
         std::vector <glm::vec3> normals;
 	std::vector <glm::uvec3> triangles;
 
+	geometry(const torch::Tensor &torch_vertices, const torch::Tensor &torch_triangles) {
+		// Expects:
+		//   2D tensor of shape (N, 3) for vertices
+		//   2D tensor of shape (N, 3) for normals
+		//   2D tensor of shape (M, 3) for triangles
+		assert(torch_vertices.dim() == 2 && torch_vertices.size(1) == 3);
+		assert(torch_triangles.dim() == 2 && torch_triangles.size(1) == 3);
+
+		// Ensure CPU tensors
+		assert(torch_vertices.device().is_cpu());
+		assert(torch_triangles.device().is_cpu());
+
+		// Ensure float32 and uint32
+		assert(torch_vertices.dtype() == torch::kFloat32);
+		assert(torch_triangles.dtype() == torch::kInt32);
+
+		vertices.resize(torch_vertices.size(0));
+		triangles.resize(torch_triangles.size(0));
+
+		float *vertices_ptr = torch_vertices.data_ptr <float> ();
+		int32_t *triangles_ptr = torch_triangles.data_ptr <int32_t> ();
+
+		memcpy(vertices.data(), vertices_ptr, sizeof(glm::vec3) * vertices.size());
+		memcpy(triangles.data(), triangles_ptr, sizeof(glm::ivec3) * triangles.size());
+
+		// Compute normals vectors
+		normals.resize(torch_vertices.size(0), glm::vec3(0.0f));
+		for (int i = 0; i < torch_triangles.size(0); i++) {
+			glm::uvec3 triangle = *(glm::uvec3 *) (triangles_ptr + i * 3);
+			glm::vec3 v0 = *(glm::vec3 *) (vertices_ptr + triangle[0] * 3);
+			glm::vec3 v1 = *(glm::vec3 *) (vertices_ptr + triangle[1] * 3);
+			glm::vec3 v2 = *(glm::vec3 *) (vertices_ptr + triangle[2] * 3);
+			glm::vec3 normal = glm::cross(v1 - v0, v2 - v0);
+			normals[triangle[0]] += normal;
+			normals[triangle[1]] += normal;
+			normals[triangle[2]] += normal;
+		}
+
+		for (glm::vec3 &n : normals)
+			n = glm::normalize(n);
+	}
+
 	geometry(const torch::Tensor &torch_vertices, const torch::Tensor &torch_normals, const torch::Tensor &torch_triangles) {
 		// Expects:
 		//   2D tensor of shape (N, 3) for vertices
@@ -44,6 +86,23 @@ struct geometry {
 		memcpy(vertices.data(), vertices_ptr, sizeof(glm::vec3) * vertices.size());
 		memcpy(normals.data(), normals_ptr, sizeof(glm::vec3) * normals.size());
 		memcpy(triangles.data(), triangles_ptr, sizeof(glm::ivec3) * triangles.size());
+	}
+
+	std::tuple <torch::Tensor, torch::Tensor, torch::Tensor> torched() const {
+		// Return torch tensors for vertices, normals, and triangles (on CPU)
+		torch::Tensor torch_vertices = torch::zeros({ (long) vertices.size(), 3 }, torch::kFloat32);
+		torch::Tensor torch_normals = torch::zeros({ (long) normals.size(), 3 }, torch::kFloat32);
+		torch::Tensor torch_triangles = torch::zeros({ (long) triangles.size(), 3 }, torch::kInt32);
+
+		float *vertices_ptr = torch_vertices.data_ptr <float> ();
+		float *normals_ptr = torch_normals.data_ptr <float> ();
+		int32_t *triangles_ptr = torch_triangles.data_ptr <int32_t> ();
+
+		memcpy(vertices_ptr, vertices.data(), sizeof(glm::vec3) * vertices.size());
+		memcpy(normals_ptr, normals.data(), sizeof(glm::vec3) * normals.size());
+		memcpy(triangles_ptr, triangles.data(), sizeof(glm::ivec3) * triangles.size());
+
+		return std::make_tuple(torch_vertices.cuda(), torch_normals.cuda(), torch_triangles.cuda());
 	}
 };
 
@@ -930,7 +989,9 @@ struct vertex_graph {
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
         py::class_ <geometry> (m, "geometry")
+                .def(py::init <const torch::Tensor &, const torch::Tensor &> ())
                 .def(py::init <const torch::Tensor &, const torch::Tensor &, const torch::Tensor &> ())
+		.def("torched", &geometry::torched)
 		.def_readonly("vertices", &geometry::vertices)
 		.def_readonly("normals", &geometry::normals)
 		.def_readonly("triangles", &geometry::triangles);

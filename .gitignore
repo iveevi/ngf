@@ -12,3 +12,5 @@ imgui.ini
 measurements/
 output/
 scenes/
+experiments/meshes
+experiments/results

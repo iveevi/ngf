@@ -262,4 +262,3 @@ plt.tight_layout()
 plt.savefig('loss.png')
 
 ps.show()
-
