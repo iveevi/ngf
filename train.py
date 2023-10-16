@@ -37,151 +37,21 @@ f_ref = scene_parameters['mesh-target']['faces']
 
 print('vertices:', v_ref.shape, 'faces:', f_ref.shape)
 
-import meshio
-import pymeshlab
-
-mesh = meshio.Mesh(v_ref.cpu(), [('triangle', f_ref.cpu())], { 'n': n_ref.cpu() })
-mesh.write('ref.obj')
-
-ms = pymeshlab.MeshSet()
-ms.load_new_mesh('ref.obj')
-
-face_count = f_ref.shape[0]
-target_count = 750
-
-print(f'Attempting to reduce from {face_count} faces to {target_count}')
-
-ms.meshing_decimation_quadric_edge_collapse(
-    targetfacenum=target_count,
-    qualitythr=0.7,
-    preservenormal=True,
-    preservetopology=True,
-    preserveboundary=True,
-    optimalplacement=False,
-)
-
-ms.meshing_repair_non_manifold_edges()
-ms.meshing_tri_to_quad_by_4_8_subdivision()
-ms.save_current_mesh('quadrangulated.obj')
-
-print('Resulting face count   ', str(ms.current_mesh().face_number()))
-print('Resulting vertex count ', str(ms.current_mesh().vertex_number()))
-
-mesh = meshio.read('quadrangulated.obj')
-
-v = mesh.points
-f = mesh.cells_dict['quad']
-
-v = torch.from_numpy(v).float().cuda()
-
-print('Quadrangulated shape; vertices:', v.shape, 'faces:', f.shape)
-
-# Configure neural subdivision complex parameters
-from models import *
-
-nsc = NSubComplex().cuda()
-
-points = v
-complexes = torch.from_numpy(f).int().cuda()
-encodings = torch.zeros((points.shape[0], POINT_ENCODING_SIZE), requires_grad=True, device='cuda')
-
-# Computing initial normal vectors
-from scripts.geometry import compute_vertex_normals, compute_face_normals
-
-complex_normals = compute_face_normals(v, complexes)
-n = compute_vertex_normals(v, complexes, complex_normals)
-
-# Convert to spherical coordinates
-phi = 0.5 * (torch.atan2(n[:, 1], n[:, 0])/np.pi) + 0.5
-theta = torch.acos(n[:, 2])/np.pi
-normals = torch.stack([phi, theta], dim=1)
-
-points.shape, complexes.shape, encodings.shape, normals.shape, nsc.parameters()
-
-# TODO: keep these functions in the scrits directory
-
-# Sampling methods for the neural subdivision complex
-def lerp(X, U, V):
-    lp00 = X[:, 0, :].unsqueeze(1) * U.unsqueeze(-1) * V.unsqueeze(-1)
-    lp01 = X[:, 1, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * V.unsqueeze(-1)
-    lp10 = X[:, 3, :].unsqueeze(1) * U.unsqueeze(-1) * (1.0 - V.unsqueeze(-1))
-    lp11 = X[:, 2, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * (1.0 - V.unsqueeze(-1))
-    return lp00 + lp01 + lp10 + lp11
-
-def sample(sample_rate):
-    U = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
-    V = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
-    U, V = torch.meshgrid(U, V)
-
-    corner_points = points[complexes, :]
-    corner_encodings = encodings[complexes, :]
-
-    U, V = U.reshape(-1), V.reshape(-1)
-    U = U.repeat((complexes.shape[0], 1))
-    V = V.repeat((complexes.shape[0], 1))
-
-    lerped_points = lerp(corner_points, U, V).reshape(-1, 3)
-    lerped_encodings = lerp(corner_encodings, U, V).reshape(-1, POINT_ENCODING_SIZE)
-
-    return lerped_points, lerped_encodings
-
-def sample_rate_indices(sample_rate):
-    tri_indices = []
-    for i in range(complexes.shape[0]):
-        ind = indices(sample_rate)
-        ind += i * sample_rate ** 2
-        tri_indices.append(ind)
-
-    tri_indices = np.concatenate(tri_indices, axis=0)
-    tri_indices_tensor = torch.from_numpy(tri_indices).cuda()
-    return tri_indices_tensor
-
-def make_cmap(complexes, LP, sample_rate):
-    Cs = complexes.cpu().numpy()
-    lp = LP.detach().cpu().numpy()
-
-    cmap = dict()
-    for i in range(Cs.shape[0]):
-        for j in Cs[i]:
-            if cmap.get(j) is None:
-                cmap[j] = set()
-
-        corners = np.array([
-            0, sample_rate - 1,
-            sample_rate * (sample_rate - 1),
-            sample_rate ** 2 - 1
-        ]) + (i * sample_rate ** 2)
-
-        qvs = points[Cs[i]].cpu().numpy()
-        cvs = lp[corners]
-
-        for j in range(4):
-            # Find the closest corner
-            dists = np.linalg.norm(qvs[j] - cvs, axis=1)
-            closest = np.argmin(dists)
-            cmap[Cs[i][j]].add(corners[closest])
-
-    return cmap
-
-def average_edge_length(V, T):
-    v0 = V[T[:, 0], :]
-    v1 = V[T[:, 1], :]
-    v2 = V[T[:, 2], :]
-
-    v01 = v1 - v0
-    v02 = v2 - v0
-    v12 = v2 - v1
-
-    l01 = torch.norm(v01, dim=1)
-    l02 = torch.norm(v02, dim=1)
-    l12 = torch.norm(v12, dim=1)
-    return (l01 + l02 + l12).mean()/3.0
-
-import matplotlib.pyplot as plt
-
 from scripts.render import NVDRenderer
 
 renderer = NVDRenderer(scene_parameters, shading=True, boost=3)
+
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(20, 10))
+for i in range(min(len(renderer.bgs), 5)):
+    plt.subplot(1, min(len(renderer.bgs), 5), i + 1)
+    plt.imshow(renderer.bgs[i,...,:-1].cpu().numpy(), origin='lower')
+    plt.axis('off')
+
+plt.show()
+
+print('Renderer initialized')
 
 def preview(V, N, F, batch=5, title='Preview'):
     imgs = renderer.render(V, N, F)

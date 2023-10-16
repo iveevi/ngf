@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-POINT_ENCODING_SIZE = 10
+POINT_ENCODING_SIZE = 20
 
 class MLP_Simple(nn.Module):
     def __init__(self) -> None:

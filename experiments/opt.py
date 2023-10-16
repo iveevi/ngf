@@ -1,4 +1,5 @@
 import argparse
+import imageio.v2 as imageio
 import meshio
 import numpy as np
 import os
@@ -6,14 +7,16 @@ import torch
 
 from tqdm import trange
 
-# from largesteps.parameterize import from_differential, to_differential
-# from largesteps.geometry import compute_matrix, laplacian_uniform
-# from largesteps.optimize import AdamUniform
+from largesteps.parameterize import from_differential, to_differential
+from largesteps.geometry import compute_matrix, laplacian_uniform
+from largesteps.optimize import AdamUniform
 
 from torch.utils.cpp_extension import load
 
 from mlp import *
 from util import *
+from render import *
+
 
 # TODO: apply additional inverse rendering to refine even further...
 
@@ -27,6 +30,65 @@ parser.add_argument('--output', type=str, default='', help='tensor output file')
 args = parser.parse_args()
 if args.output == '':
     args.output = os.path.splitext(args.source)[0] + '_opt.pt'
+
+# Load the target object
+target = meshio.read(args.target)
+source = meshio.read(args.source)
+
+print('Loaded target mesh: %s' % args.target)
+print('Loaded source mesh: %s' % args.source)
+
+tch_target_vertices = torch.from_numpy(target.points).float().cuda()
+tch_target_triangles = torch.from_numpy(target.cells_dict['triangle']).int().cuda()
+
+tch_target_face_normals = compute_face_normals(tch_target_vertices, tch_target_triangles)
+tch_target_vertex_normals = compute_vertex_normals(tch_target_vertices, tch_target_triangles, tch_target_face_normals)
+
+# Generate random camera views
+# TODO: provide a selection of environment maps?
+# and pass a config file for each mesh instead of command line arguments?
+# which also includes the netx stage paramters (for training)
+
+center = torch.mean(tch_target_vertices, dim=0)
+
+environment = torch.tensor(imageio.imread('environment.hdr', format='HDR-FI'), device='cuda')
+alpha = torch.ones((*environment.shape[:2], 1), device='cuda')
+environment = torch.cat((environment, alpha), dim=-1)
+
+def lookat(eye, center, up):
+    normalize = lambda x: x / torch.norm(x)
+
+    f = normalize(eye - center)
+    u = normalize(up)
+    s = normalize(torch.cross(f, u))
+    u = torch.cross(s, f)
+
+    dot_f = torch.dot(f, eye)
+    dot_u = torch.dot(u, eye)
+    dot_s = torch.dot(s, eye)
+
+    return torch.tensor([
+        [s[0], u[0], -f[0], -dot_s],
+        [s[1], u[1], -f[1], -dot_u],
+        [s[2], u[2], -f[2], dot_f],
+        [0, 0, 0, 1]
+    ], device='cuda', dtype=torch.float32)
+
+views = []
+for i in range(10):
+    up = torch.tensor([0.0, -1.0, 0.0], device='cuda')
+    r = torch.randn(3, device='cuda') * 0.5
+    phi, theta = (r[0] * np.pi).item(), (r[1] * np.pi).item()
+    radius = (r[2] * 5.0 + 1.0).item()
+    eye = torch.tensor([np.cos(phi) * np.sin(theta), np.sin(phi) * np.sin(theta), np.cos(theta)], device='cuda', dtype=torch.float32) * radius + center
+    views.append(lookat(eye, center, up))
+
+# TODO: use lookat?
+
+print('Generated %d views' % len(views))
+
+renderer = NVDRenderer(views, environment)
+print('backgrounds:', renderer.bgs.shape)
 
 # Load all necessary extensions
 if not os.path.exists('../build'):
@@ -48,18 +110,8 @@ casdf = load(name='casdf',
 
 print('Loaded casdf extension')
 
-# Load the target object
-target = meshio.read(args.target)
-source = meshio.read(args.source)
-
-print('Loaded target mesh: %s' % args.target)
-print('Loaded source mesh: %s' % args.source)
-
-tch_target_vertices = torch.from_numpy(target.points).float().cuda()
-tch_target_triangles = torch.from_numpy(target.cells_dict['triangle']).int().cuda()
-
 # TODO: automatically compute normals if not provided...
-cas = casdf.geometry(tch_target_vertices.cpu(), tch_target_vertices.cpu(), tch_target_triangles.cpu())
+cas = casdf.geometry(tch_target_vertices.cpu(), tch_target_triangles.cpu())
 cas = casdf.cas_grid(cas, 32)
 
 # points = source.points
@@ -142,8 +194,40 @@ samples     = 10_000
 sample_bary = torch.zeros((samples, 3), dtype=torch.float32).cuda()
 sample_tris = torch.zeros(samples, dtype=torch.int32).cuda()
 
+# Tv_face_normals = compute_face_normals(Tv, F)
+# print('nans:', torch.isnan(Tv).sum().item(), torch.isnan(Tv_face_normals).sum().item())
+# Tv_vertex_normals = compute_vertex_normals(Tv, F, Tv_face_normals)
+# print('nans:', torch.isnan(Tv).sum().item(), torch.isnan(Tv_vertex_normals).sum().item())
+
+target_imgs = renderer.render(tch_target_vertices, tch_target_vertex_normals, tch_target_triangles)
+
+# for i in range(len(imgs)):
+#     plt.subplot(2, len(imgs), i + 1)
+#     plt.imshow(imgs[i].cpu().numpy())
+#     plt.axis('off')
+#
+# imgs = renderer.render(Tv, Tv_vertex_normals, F)
+# imgs = torch.clamp(imgs, 0.0, 1.0)
+# for i in range(len(imgs)):
+#     plt.subplot(2, len(imgs), len(imgs) + i + 1)
+#     plt.imshow(imgs[i].detach().cpu().numpy())
+#     plt.axis('off')
+#
+# plt.show()
+
+M = compute_matrix(Tv.detach(), F, 0.001)
+U = to_differential(M, Tv.detach())
+print('Tv initial shape:', Tv.shape)
+
+# U.requires_grad = True
+# Tv_opt = AdamUniform([ U ], 1e-3)
+
+# TODO: use the UV parametrization
+
 history = {}
 for i in trange(1_000):
+    # Tv = from_differential(M, U, 'Cholesky')
+
     # Direct loss computation
     rate = cas.precache_query_device(Tv)
 
@@ -162,27 +246,32 @@ for i in trange(1_000):
 
     sampled_loss = torch.sum((Vrandom - Vreconstructed).square())
 
+    # Laplacian loss
     Tv_smoothed = vgraph.smooth_device(Tv, 1.0)
     laplacian_loss = torch.sum((Tv - Tv_smoothed).square())
 
+    # TODO: match normal vectors?
+
+    # Rendering loss
+    # Tv_Fn = compute_face_normals(Tv, I_tch)
+    # Tv_Vn = compute_vertex_normals(Tv, I_tch, Tv_Fn)
+
+    # imgs = renderer.render(Tv, Tv_Vn, F)
+    # rendered_loss = 1e1 * torch.mean((imgs - target_imgs).abs())
+    # print('rendered loss:', rendered_loss.item(), rendered_loss)
+
     # TODO: tirangle area min/maxing...
-    # print('direct = %f, loss = %f' % (direct_loss, sampled_loss))
-    loss = direct_loss + sampled_loss + laplacian_loss
+    # print('direct:', direct_loss.item(), 'sampled:', sampled_loss.item(), 'laplacian:', laplacian_loss.item(), 'rendered:', rendered_loss.item())
+    loss = direct_loss + sampled_loss + laplacian_loss # + rendered_loss
 
     history.setdefault('direct', []).append(direct_loss.item())
     history.setdefault('sampled', []).append(sampled_loss.item())
     history.setdefault('laplacian', []).append(laplacian_loss.item())
+    # history.setdefault('rendered', []).append(rendered_loss.item())
 
     Tv_opt.zero_grad()
     loss.backward()
     Tv_opt.step()
-
-    # TODO: since smoothing is now fast enough, we can do it every iteration as
-    # a proper loss, during the relevant iterations
-    # if i > 0 and i < 750 and i % 100 == 0:
-    #     with torch.no_grad():
-    #         V = vgraph.smooth_device(Tv, 1.0)
-    #         Tv.data.copy_(V)
 
 # Save this tensor
 Tv = geom.sdc_separate(Tv.detach().cpu(), remap).cuda()
@@ -200,6 +289,7 @@ sI = shorted_indices(Tv, complexes, sample_rate)
 ps.init()
 ps.register_surface_mesh('target', target.points, target.cells_dict['triangle'])
 ps.register_surface_mesh('Tv', Tv, sI).add_color_quantity('complex', C_colors, defined_on='faces')
+ps.register_surface_mesh('Tv init', LP.cpu(), sI).add_color_quantity('complex', C_colors, defined_on='faces')
 ps.set_ground_plane_mode('none')
 ps.show()
 
@@ -212,6 +302,7 @@ sns.set_style('darkgrid')
 plt.plot(history['direct'], label='direct')
 plt.plot(history['sampled'], label='sampled')
 plt.plot(history['laplacian'], label='laplacian')
+# plt.plot(history['rendered'], label='rendered')
 plt.xlabel('iteration')
 plt.ylabel('loss')
 plt.yscale('log')
