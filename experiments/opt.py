@@ -3,6 +3,7 @@ import imageio.v2 as imageio
 import meshio
 import numpy as np
 import os
+import sys
 import torch
 
 from tqdm import trange
@@ -12,6 +13,9 @@ from largesteps.geometry import compute_matrix, laplacian_uniform
 from largesteps.optimize import AdamUniform
 
 from torch.utils.cpp_extension import load
+
+sys.path.append('..')
+from scripts.load_xml import load_scene
 
 from mlp import *
 from util import *
@@ -51,9 +55,13 @@ tch_target_vertex_normals = compute_vertex_normals(tch_target_vertices, tch_targ
 
 center = torch.mean(tch_target_vertices, dim=0)
 
-environment = torch.tensor(imageio.imread('environment.hdr', format='HDR-FI'), device='cuda')
-alpha = torch.ones((*environment.shape[:2], 1), device='cuda')
-environment = torch.cat((environment, alpha), dim=-1)
+scene = load_scene('../scenes/nefertiti/nefertiti.xml')
+# print('Loaded scene:', scene)
+
+environment = scene['envmap']
+# environment = 0.1 * torch.tensor(imageio.imread('environment.hdr', format='HDR-FI'), device='cuda')
+# alpha = torch.ones((*environment.shape[:2], 1), device='cuda')
+# environment = torch.cat((environment, alpha), dim=-1)
 
 def lookat(eye, center, up):
     normalize = lambda x: x / torch.norm(x)
@@ -75,19 +83,40 @@ def lookat(eye, center, up):
     ], device='cuda', dtype=torch.float32)
 
 views = []
-for i in range(10):
-    up = torch.tensor([0.0, -1.0, 0.0], device='cuda')
-    r = torch.randn(3, device='cuda') * 0.5
-    phi, theta = (r[0] * np.pi).item(), (r[1] * np.pi).item()
-    radius = (r[2] * 5.0 + 1.0).item()
-    eye = torch.tensor([np.cos(phi) * np.sin(theta), np.sin(phi) * np.sin(theta), np.cos(theta)], device='cuda', dtype=torch.float32) * radius + center
-    views.append(lookat(eye, center, up))
+
+radius = 4.0
+splitsTheta = 10
+splitsPhi = 10
+
+for theta in np.linspace(0, 2 * np.pi, splitsTheta, endpoint=False):
+    for i, phi in enumerate(np.linspace(np.pi * 0.05, np.pi * 0.95, splitsPhi, endpoint=True)):
+        # Spiral as a function of phi
+        ptheta = (2 * np.pi / splitsTheta) * i/splitsPhi
+        theta += ptheta
+
+        eye_offset = torch.tensor([
+            radius * np.sin(theta) * np.sin(phi),
+            radius * np.cos(phi),
+            radius * np.cos(theta) * np.sin(phi)
+        ], device='cuda', dtype=torch.float32)
+
+        # TODO: random perturbations to the angles
+
+        normalized_eye_offset = eye_offset / torch.norm(eye_offset)
+
+        canonical_up = torch.tensor([0.0, 0.0, 1.0], device='cuda')
+        right = torch.cross(normalized_eye_offset, canonical_up)
+        up = torch.cross(right, normalized_eye_offset)
+
+        view = lookat(center + eye_offset, center, canonical_up)
+        views.append(view)
 
 # TODO: use lookat?
 
 print('Generated %d views' % len(views))
 
-renderer = NVDRenderer(views, environment)
+# renderer = NVDRenderer(views, environment)
+renderer = NVDRenderer(scene['view_mats'], environment)
 print('backgrounds:', renderer.bgs.shape)
 
 # Load all necessary extensions
@@ -199,79 +228,79 @@ sample_tris = torch.zeros(samples, dtype=torch.int32).cuda()
 # Tv_vertex_normals = compute_vertex_normals(Tv, F, Tv_face_normals)
 # print('nans:', torch.isnan(Tv).sum().item(), torch.isnan(Tv_vertex_normals).sum().item())
 
-target_imgs = renderer.render(tch_target_vertices, tch_target_vertex_normals, tch_target_triangles)
+import matplotlib.pyplot as plt
 
-# for i in range(len(imgs)):
-#     plt.subplot(2, len(imgs), i + 1)
-#     plt.imshow(imgs[i].cpu().numpy())
-#     plt.axis('off')
-#
-# imgs = renderer.render(Tv, Tv_vertex_normals, F)
-# imgs = torch.clamp(imgs, 0.0, 1.0)
-# for i in range(len(imgs)):
-#     plt.subplot(2, len(imgs), len(imgs) + i + 1)
-#     plt.imshow(imgs[i].detach().cpu().numpy())
-#     plt.axis('off')
-#
-# plt.show()
+def view_images(images, splitsTheta, splitsPhi):
+    plt.figure(figsize=(splitsTheta * 2, splitsPhi * 2))
+    for i in range(splitsTheta * splitsPhi):
+        plt.subplot(splitsPhi, splitsTheta, i + 1)
+        plt.imshow(images[i].cpu())
+        plt.axis('off')
+    # plt.show()
 
-M = compute_matrix(Tv.detach(), F, 0.001)
+M = compute_matrix(Tv.detach(), F, 200.0)
 U = to_differential(M, Tv.detach())
 print('Tv initial shape:', Tv.shape)
 
-# U.requires_grad = True
-# Tv_opt = AdamUniform([ U ], 1e-3)
+U.requires_grad = True
+Tv_opt = AdamUniform([ U ], 1e-2)
 
 # TODO: use the UV parametrization
+# TODO: Subdivide...
 
 history = {}
+
+views = scene['view_mats']
+batch = 25
+
+intervals = []
+i = 0
+while i < len(views):
+    start = i
+    end = min(i + batch, len(views))
+    intervals.append((start, end))
+    i = end
+
+print('intervals:', intervals)
+
 for i in trange(1_000):
-    # Tv = from_differential(M, U, 'Cholesky')
+    # Batch the views
+    # batch_indices = torch.randint(0, len(views), (batch,)).cuda()
+    # print('batch indices:', batch_indices)
 
-    # Direct loss computation
-    rate = cas.precache_query_device(Tv)
+    for I in intervals:
+        batch_indices = torch.arange(I[0], I[1]).cuda()
+        Tv = from_differential(M, U, 'Cholesky')
 
-    cas.precache_device()
-    cas.query_device(Tv, closest, bary, dist, index)
+        # Laplacian loss
+        Tv_smoothed = vgraph.smooth_device(Tv, 1.0)
+        laplacian_loss = torch.sum((Tv - Tv_smoothed).square())
 
-    direct_loss = torch.sum((closest - Tv).square())
+        # TODO: match normal vectors?
 
-    # Sampled loss computation
-    Vrandom = sample_surface(tch_target_vertices, tch_target_triangles, count=samples)
-    casdf.barycentric_closest_points(Tv, F, Vrandom, sample_bary, sample_tris)
-    Ts = F[sample_tris]
-    Vreconstructed = Tv[Ts[:, 0]] * sample_bary[:, 0].unsqueeze(-1) + \
-                        Tv[Ts[:, 1]] * sample_bary[:, 1].unsqueeze(-1) + \
-                        Tv[Ts[:, 2]] * sample_bary[:, 2].unsqueeze(-1)
+        Tv_Fn = compute_face_normals(Tv, F)
+        Tv_Vn = compute_vertex_normals(Tv, F, Tv_Fn)
 
-    sampled_loss = torch.sum((Vrandom - Vreconstructed).square())
+        target_imgs = renderer.render(tch_target_vertices, tch_target_vertex_normals, tch_target_triangles, batch_indices)
+        imgs = renderer.render(Tv, -Tv_Vn, F, batch_indices)
+        rendered_loss = (imgs - target_imgs).abs().mean()
+        print('rendered loss:', rendered_loss.item())
 
-    # Laplacian loss
-    Tv_smoothed = vgraph.smooth_device(Tv, 1.0)
-    laplacian_loss = torch.sum((Tv - Tv_smoothed).square())
+        # TODO: tirangle area min/maxing...
+        # print('direct:', direct_loss.item(), 'sampled:', sampled_loss.item(), 'laplacian:', laplacian_loss.item(), 'rendered:', rendered_loss.item())
+        # loss = direct_loss + sampled_loss + laplacian_loss # + rendered_loss
+        loss = rendered_loss
 
-    # TODO: match normal vectors?
+        history.setdefault('laplacian', []).append(laplacian_loss.item())
+        history.setdefault('rendered', []).append(rendered_loss.item())
 
-    # Rendering loss
-    # Tv_Fn = compute_face_normals(Tv, I_tch)
-    # Tv_Vn = compute_vertex_normals(Tv, I_tch, Tv_Fn)
+        Tv_opt.zero_grad()
+        loss.backward()
+        Tv_opt.step()
 
-    # imgs = renderer.render(Tv, Tv_Vn, F)
-    # rendered_loss = 1e1 * torch.mean((imgs - target_imgs).abs())
-    # print('rendered loss:', rendered_loss.item(), rendered_loss)
-
-    # TODO: tirangle area min/maxing...
-    # print('direct:', direct_loss.item(), 'sampled:', sampled_loss.item(), 'laplacian:', laplacian_loss.item(), 'rendered:', rendered_loss.item())
-    loss = direct_loss + sampled_loss + laplacian_loss # + rendered_loss
-
-    history.setdefault('direct', []).append(direct_loss.item())
-    history.setdefault('sampled', []).append(sampled_loss.item())
-    history.setdefault('laplacian', []).append(laplacian_loss.item())
-    # history.setdefault('rendered', []).append(rendered_loss.item())
-
-    Tv_opt.zero_grad()
-    loss.backward()
-    Tv_opt.step()
+view_images(target_imgs, 4, 5)
+view_images(imgs.detach(), 4, 5)
+plt.show()
 
 # Save this tensor
 Tv = geom.sdc_separate(Tv.detach().cpu(), remap).cuda()
@@ -299,10 +328,8 @@ import seaborn as sns
 sns.set_style('darkgrid')
 
 # TODO: figure(filename) in util
-plt.plot(history['direct'], label='direct')
-plt.plot(history['sampled'], label='sampled')
 plt.plot(history['laplacian'], label='laplacian')
-# plt.plot(history['rendered'], label='rendered')
+plt.plot(history['rendered'], label='rendered')
 plt.xlabel('iteration')
 plt.ylabel('loss')
 plt.yscale('log')

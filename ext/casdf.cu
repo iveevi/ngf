@@ -1,4 +1,8 @@
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <set>
+#include <stdio.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -985,6 +989,235 @@ struct vertex_graph {
 		return result;
 	}
 };
+	
+/* struct ordered_pair {
+	uint32_t a;
+	uint32_t b;
+
+	ordered_pair(uint32_t a_, uint32_t b_) {
+		a = std::min(a_, b_);
+		b = std::max(a_, b_);
+	}
+
+	bool operator==(const ordered_pair &other) const {
+		return a == other.a && b == other.b;
+	}
+
+	static size_t hash(const ordered_pair &p) {
+		return std::hash <uint32_t> ()(p.a) ^ std::hash <uint32_t> ()(p.b);
+	}
+}; */
+
+struct ordered_pair {
+	uint32_t a;
+	uint32_t b;
+
+	ordered_pair(uint32_t a_, uint32_t b_) : a(a_), b(b_) {
+		if (a > b)
+			std::swap(a, b);
+	}
+
+	bool operator==(const ordered_pair &other) const {
+		return a == other.a && b == other.b;
+	}
+
+	static size_t hash(const ordered_pair &p) {
+		return std::hash <uint32_t> ()(p.a) ^ std::hash <uint32_t> ()(p.b);
+	}
+};
+
+template <typename T>
+using ordered_pair_map = std::unordered_map <ordered_pair, T, decltype(&ordered_pair::hash)>;
+
+using directed_pair = std::pair <uint32_t, uint32_t>;
+
+namespace std {
+
+template <>
+struct hash <directed_pair> {
+	size_t operator()(const directed_pair &p) const {
+		return std::hash <uint32_t> ()(p.first) ^ std::hash <uint32_t> ()(p.second);
+	}
+};
+
+}
+
+struct dual_graph {
+	ordered_pair_map <std::unordered_set <uint32_t>> edges;
+	std::unordered_map <uint32_t, std::unordered_set <uint32_t>> faces;
+	std::vector <glm::ivec3> triangles;
+
+	dual_graph(const torch::Tensor &triangles) : edges(0, ordered_pair::hash) {
+		assert(triangles.dim() == 2 && triangles.size(1) == 3);
+		assert(triangles.dtype() == torch::kInt32);
+		assert(triangles.device().is_cpu());
+
+		uint32_t triangle_count = triangles.size(0);
+
+		for (uint32_t i = 0; i < triangle_count; i++) {
+			int32_t v0 = triangles[i][0].item().to <int32_t> ();
+			int32_t v1 = triangles[i][1].item().to <int32_t> ();
+			int32_t v2 = triangles[i][2].item().to <int32_t> ();
+
+			ordered_pair e0(v0, v1);
+			ordered_pair e1(v1, v2);
+			ordered_pair e2(v2, v0);
+
+			edges[e0].insert(i);
+			edges[e1].insert(i);
+			edges[e2].insert(i);
+
+			this->triangles.push_back(glm::ivec3(v0, v1, v2));
+		}
+
+		for (auto &kv : edges) {
+			for (uint32_t f0 : kv.second) {
+				for (uint32_t f1 : kv.second) {
+					if (f0 == f1)
+						continue;
+					faces[f0].insert(f1);
+				}
+			}
+		} 
+
+		printf("edges: %lu\n", edges.size());
+		printf("faces: %lu\n", faces.size());
+	}
+
+	// Correctly orient the triangles (for proper normal computation)
+	torch::Tensor oriented_triangles() const {
+		std::vector <glm::ivec3> oriented;
+
+		std::queue <uint32_t> fqueue;
+		fqueue.push(0);
+
+		std::unordered_set <uint32_t> visited;
+		std::unordered_map <uint32_t, uint32_t> prev;
+		visited.insert(0);
+
+		while (!fqueue.empty()) {
+			uint32_t f = fqueue.front();
+			fqueue.pop();
+			// printf("processing face %d\n", f);
+
+			if (prev.count(f) == 0) {
+				// printf("  > first face\n");
+				// This means that this is the first triangle
+				// and we can use it as reference
+				const glm::ivec3 &tri = triangles[f];
+				oriented.push_back(tri);
+			} else {
+				// printf("  > not first face\n");
+				// We need to make sure of the consitency between the
+				// current triangle and the previous one
+				const glm::ivec3 &prev_tri = oriented[prev[f]];
+				glm::ivec3 tri = triangles[f];
+
+				// If any edges are shared, they must be in the same order
+				std::array <directed_pair, 3> prev_edges {
+					directed_pair(prev_tri[0], prev_tri[1]),
+					directed_pair(prev_tri[1], prev_tri[2]),
+					directed_pair(prev_tri[2], prev_tri[0])
+				};
+
+				for (int i = 0; i < 3; i++) {
+					const directed_pair &edge = prev_edges[i];
+
+					bool corrected = false;
+					for (int j = 0; j < 3; j++) {
+						uint32_t j0 = j;
+						uint32_t j1 = (j + 1) % 3;
+
+						bool swapped = tri[j0] == edge.second && tri[j1] == edge.first;
+						if (swapped) {
+							std::swap(tri[j0], tri[j1]);
+							corrected = true;
+							break;
+						}
+					}
+
+					// At most one edge is shared, therefore we can break
+					if (corrected)
+						break;
+				}
+
+				oriented.push_back(tri);
+			}
+
+			// Add unvisited faces to the queue
+			for (uint32_t fn : faces.at(f)) {
+				if (visited.count(fn))
+					continue;
+
+				fqueue.push(fn);
+				visited.insert(fn);
+				// printf("  > adding face %d\n", fn);
+				prev[fn] = oriented.size() - 1;
+			}
+		}
+
+		// assert(oriented.size() == triangles.size());
+
+		/* std::vector <glm::ivec3> oriented = triangles;
+		std::queue <directed_pair> queue;
+
+		// Use triangle 0 as reference
+		const glm::ivec3 &tri = oriented[0];
+
+		// This is the canonical/correct edge orientation
+		queue.push(directed_pair(tri[0], tri[1]));
+		queue.push(directed_pair(tri[1], tri[2]));
+		queue.push(directed_pair(tri[2], tri[0]));
+
+		std::unordered_set <directed_pair> edges_visited;
+		std::unordered_set <uint32_t> triangles_visited;
+		triangles_visited.insert(0);
+
+		while (!queue.empty()) {
+			const directed_pair &edge = queue.front();
+			queue.pop();
+
+			ordered_pair op(edge.first, edge.second);
+			const auto &fs = edges.at(op);
+
+			for (uint32_t f : fs) {
+				if (triangles_visited.count(f))
+					continue;
+
+				// Correct the orientation of the triangle
+				glm::ivec3 &tri = oriented[f];
+				for (int i = 0; i < 3; i++) {
+					uint32_t i0 = i;
+					uint32_t i1 = (i + 1) % 3;
+
+					bool swapped = tri[i0] == edge.second && tri[i1] == edge.first;
+					if (swapped) {
+						std::swap(tri[i0], tri[i1]);
+						break;
+					}
+				}
+
+				// Add unvisited edges to the queue
+				for (int i = 0; i < 3; i++) {
+					uint32_t i0 = i;
+					uint32_t i1 = (i + 1) % 3;
+
+					directed_pair e(tri[i0], tri[i1]);
+					if (edges_visited.count(e))
+						continue;
+
+					queue.push(e);
+					edges_visited.insert(e);
+				}
+			}
+		} */
+
+		torch::Tensor result = torch::zeros({ (signed long) triangles.size(), 3 }, torch::kInt32);
+		int32_t *result_ptr = result.data_ptr <int32_t> ();
+		std::memcpy(result_ptr, oriented.data(), triangles.size() * sizeof(glm::uvec3));
+		return result;
+	}
+};
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
@@ -1008,6 +1241,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 		.def(py::init <const torch::Tensor &> ())
 		.def("smooth", &vertex_graph::smooth)
 		.def("smooth_device", &vertex_graph::smooth_device);
+
+	py::class_ <dual_graph> (m, "dual_graph")
+		.def(py::init <const torch::Tensor &> ())
+		.def("oriented_triangles", &dual_graph::oriented_triangles);
 
 	m.def("barycentric_closest_points", &barycentric_closest_points);
 }

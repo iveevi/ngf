@@ -2,66 +2,6 @@ import torch
 import numpy as np
 import nvdiffrast.torch as dr
 
-def rotation_matrix(axis, angle):
-    """
-    Builds a homogeneous coordinate rotation matrix along an axis
-
-    Parameters
-    ----------
-
-    axis : str
-        Axis of rotation, x, y, or z
-    angle : float
-        Rotation angle, in degrees
-    """
-    assert axis in 'xyz', "Invalid axis, expected x, y or z"
-    mat = torch.eye(4, device='cuda')
-    theta = np.deg2rad(angle)
-    idx = 'xyz'.find(axis)
-    mat[(idx+1)%3, (idx+1)%3] = np.cos(theta)
-    mat[(idx+2)%3, (idx+2)%3] = np.cos(theta)
-    mat[(idx+1)%3, (idx+2)%3] = -np.sin(theta)
-    mat[(idx+2)%3, (idx+1)%3] = np.sin(theta)
-    return mat
-
-def translation_matrix(tr):
-    """
-    Builds a homogeneous coordinate translation matrix
-
-    Parameters
-    ----------
-
-    tr : numpy.array
-        translation value
-    """
-    mat = torch.eye(4, device='cuda')
-    mat[:3,3] = torch.tensor(tr, device='cuda')
-    return mat
-
-def persp_proj(fov_x=45, ar=1, near=0.1, far=100):
-    """
-    Build a perspective projection matrix.
-
-    Parameters
-    ----------
-    fov_x : float
-        Horizontal field of view (in degrees).
-    ar : float
-        Aspect ratio (w/h).
-    near : float
-        Depth of the near plane relative to the camera.
-    far : float
-        Depth of the far plane relative to the camera.
-    """
-    fov_rad = np.deg2rad(fov_x)
-    proj_mat = np.array([[-1.0 / np.tan(fov_rad / 2.0), 0, 0, 0],
-                      [0, np.float32(ar) / np.tan(fov_rad / 2.0), 0, 0],
-                      [0, 0, -(near + far) / (near-far), 2 * far * near / (near-far)],
-                      [0, 0, 1, 0]])
-    x = torch.tensor([[1,2,3,4]], device='cuda')
-    proj = torch.tensor(proj_mat, device='cuda', dtype=torch.float32)
-    return proj
-
 class SphericalHarmonics:
     """
     Environment map approximation using spherical harmonics.
@@ -146,6 +86,30 @@ class SphericalHarmonics:
         l = (h_n.t() * (self.M @ h_n.t())).sum(dim=1)
         return l.t().view(n.shape)
 
+def persp_proj(fov_x=45, ar=1, near=0.1, far=100):
+    """
+    Build a perspective projection matrix.
+
+    Parameters
+    ----------
+    fov_x : float
+        Horizontal field of view (in degrees).
+    ar : float
+        Aspect ratio (w/h).
+    near : float
+        Depth of the near plane relative to the camera.
+    far : float
+        Depth of the far plane relative to the camera.
+    """
+    fov_rad = np.deg2rad(fov_x)
+    proj_mat = np.array([[-1.0 / np.tan(fov_rad / 2.0), 0, 0, 0],
+                      [0, np.float32(ar) / np.tan(fov_rad / 2.0), 0, 0],
+                      [0, 0, -(near + far) / (near-far), 2 * far * near / (near-far)],
+                      [0, 0, 1, 0]])
+    x = torch.tensor([[1,2,3,4]], device='cuda')
+    proj = torch.tensor(proj_mat, device='cuda', dtype=torch.float32)
+    return proj
+
 class NVDRenderer:
     """
     Renderer using nvdiffrast.
@@ -154,48 +118,7 @@ class NVDRenderer:
     This class encapsulates the nvdiffrast renderer [Laine et al 2020] to render
     objects given a number of viewpoints and rendering parameters.
     """
-    # def __init__(self, scene_params, shading=True, boost=1.0):
-    #     """
-    #     Initialize the renderer.
-    #
-    #     Parameters
-    #     ----------
-    #     scene_params : dict
-    #         The scene parameters. Contains the envmap and camera info.
-    #     shading: bool
-    #         Use shading in the renderings, otherwise render silhouettes. (default True)
-    #     boost: float
-    #         Factor by which to multiply shading-related gradients. (default 1.0)
-    #     """
-    #     # We assume all cameras have the same parameters (fov, clipping planes)
-    #     near = scene_params["near_clip"]
-    #     far = scene_params["far_clip"]
-    #     self.fov_x = scene_params["fov"]
-    #     w = scene_params["res_x"]
-    #     h = scene_params["res_y"]
-    #     self.res = (h,w)
-    #     ar = w/h
-    #     x = torch.tensor([[1,2,3,4]], device='cuda')
-    #     self.proj_mat = persp_proj(self.fov_x, ar, near, far)
-    #
-    #     # Construct the Model-View-Projection matrices
-    #     self.view_mats = torch.stack(scene_params["view_mats"])
-    #     self.mvps = self.proj_mat @ self.view_mats
-    #
-    #     self.boost = boost
-    #     self.shading = shading
-    #
-    #     # Initialize rasterizing context
-    #     self.ctx = dr.RasterizeCudaContext()
-    #     # Load the environment map
-    #     w,h,_ = scene_params['envmap'].shape
-    #     envmap = scene_params['envmap_scale'] * scene_params['envmap']
-    #     # Precompute lighting
-    #     self.sh = SphericalHarmonics(envmap)
-    #     # Render background for all viewpoints once
-    #     self.render_backgrounds(envmap)
-
-    def __init__(self, views, environment):
+    def __init__(self, scene_params, shading=True, boost=1.0):
         """
         Initialize the renderer.
 
@@ -209,38 +132,31 @@ class NVDRenderer:
             Factor by which to multiply shading-related gradients. (default 1.0)
         """
         # We assume all cameras have the same parameters (fov, clipping planes)
-        # near = scene_params["near_clip"]
-        # far = scene_params["far_clip"]
-        # self.fov_x = scene_params["fov"]
-        # w = scene_params["res_x"]
-        # h = scene_params["res_y"]
-
-        near, far = 0.1, 10_000.0
-        self.fov_x = 45.0
-        w, h = 512, 512
-
-        self.res = (h, w)
+        near = scene_params["near_clip"]
+        far = scene_params["far_clip"]
+        self.fov_x = scene_params["fov"]
+        w = scene_params["res_x"]
+        h = scene_params["res_y"]
+        self.res = (h,w)
         ar = w/h
-        x = torch.tensor([[1,2,3,4]], device='cuda')
         self.proj_mat = persp_proj(self.fov_x, ar, near, far)
 
         # Construct the Model-View-Projection matrices
-        # self.view_mats = torch.stack(scene_params["view_mats"])
-        self.view_mats = torch.stack(views)
+        self.view_mats = torch.stack(scene_params["view_mats"])
         self.mvps = self.proj_mat @ self.view_mats
 
-        self.boost = 1.0
-        self.shading = True
+        self.boost = boost
+        self.shading = shading
 
         # Initialize rasterizing context
         self.ctx = dr.RasterizeCudaContext()
         # Load the environment map
-        # w,h,_ = scene_params['envmap'].shape
-        # envmap = scene_params['envmap_scale'] * scene_params['envmap']
+        #w,h,_ = scene_params['envmap'].shape
+        envmap = scene_params['envmap_scale'] * scene_params['envmap']
         # Precompute lighting
-        self.sh = SphericalHarmonics(environment)
+        self.sh = SphericalHarmonics(envmap)
         # Render background for all viewpoints once
-        self.render_backgrounds(environment)
+        self.render_backgrounds(envmap)
 
     def render_backgrounds(self, envmap):
         """
@@ -266,7 +182,7 @@ class NVDRenderer:
         self.bgs = dr.texture(envmap[None, ...], envmap_uvs, filter_mode='linear').flip(1)
         self.bgs[..., -1] = 0 # Set alpha to 0
 
-    def render(self, v, n, f):
+    def render(self, v, n, f, i, normals=False):
         """
         Render the scene in a differentiable way.
 
@@ -284,10 +200,19 @@ class NVDRenderer:
         result : torch.Tensor
             The array of renderings from all given viewpoints
         """
+
+        mvps = self.mvps[i]
+        bgs = self.bgs[i]
         v_hom = torch.nn.functional.pad(v, (0,1), 'constant', 1.0)
-        v_ndc = torch.matmul(v_hom, self.mvps.transpose(1,2))
+        v_ndc = torch.matmul(v_hom, mvps.transpose(1,2))
         rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
-        if self.shading:
+
+        if normals:
+            # v_cols = torch.ones_like(v)
+            v_cols = n * 0.5 + 0.5
+            col = dr.interpolate(v_cols[None, ...], rast, f)[0]
+            result = dr.antialias(col, rast, v_ndc, f, pos_gradient_boost=self.boost)
+        else:
             v_cols = torch.zeros_like(v)
 
             # Sample envmap at each vertex using the SH approximation
@@ -296,10 +221,5 @@ class NVDRenderer:
             light = dr.interpolate(vert_light[None, ...], rast, f)[0]
 
             col = torch.cat((light / np.pi, torch.ones((*light.shape[:-1],1), device='cuda')), dim=-1)
-            result = dr.antialias(torch.where(rast[..., -1:] != 0, col, self.bgs), rast, v_ndc, f, pos_gradient_boost=self.boost)
-        else:
-            # v_cols = torch.ones_like(v)
-            v_cols = torch.rand_like(v)
-            col = dr.interpolate(v_cols[None, ...], rast, f)[0]
-            result = dr.antialias(col, rast, v_ndc, f, pos_gradient_boost=self.boost)
+            result = dr.antialias(torch.where(rast[..., -1:] != 0, col, bgs), rast, v_ndc, f, pos_gradient_boost=self.boost)
         return result

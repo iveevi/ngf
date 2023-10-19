@@ -130,6 +130,16 @@ tch_target_triangles = torch.from_numpy(target.cells_dict['triangle']).int().cud
 cas = casdf.geometry(tch_target_vertices.cpu(), tch_target_triangles.cpu())
 cas = casdf.cas_grid(cas, 32)
 
+def triangle_areas(V, T):
+    v0 = V[T[:, 0], :]
+    v1 = V[T[:, 1], :]
+    v2 = V[T[:, 2], :]
+
+    v01 = v1 - v0
+    v02 = v2 - v0
+
+    return torch.norm(torch.cross(v01, v02, dim=1), dim=1)/2.0
+
 def make_cmap(complexes, LP, sample_rate):
     Cs = complexes.cpu().numpy()
     lp = LP.detach().cpu().numpy()
@@ -176,7 +186,7 @@ import polyscope as ps
 
 ps.init()
 
-for i in range(5):
+for i in range(1):
     LP, LE, UV = sample(complexes, points, features, args.resolution)
     V = m(points=LP, encodings=LE, uv=UV)
     Vinit = V.detach()
@@ -201,9 +211,9 @@ for i in range(5):
     dist        = torch.zeros(Tv.shape[0]).cuda()
     index       = torch.zeros(Tv.shape[0], dtype=torch.int32).cuda()
 
-    samples     = 10_000
-    sample_bary = torch.zeros((samples, 3), dtype=torch.float32).cuda()
-    sample_tris = torch.zeros(samples, dtype=torch.int32).cuda()
+    samples     = 5_000
+    sample_bary = torch.zeros((2 * samples, 3), dtype=torch.float32).cuda()
+    sample_tris = torch.zeros(2 * samples, dtype=torch.int32).cuda()
 
     history = {}
     for _ in trange(1_000):
@@ -213,30 +223,45 @@ for i in range(5):
         cas.precache_device()
         cas.query_device(Tv, closest, bary, dist, index)
 
-        direct_loss = torch.sum((closest - Tv).square())
+        direct_loss = (closest - Tv).square().mean()
 
         # Sampled loss computation
-        Vrandom = sample_surface(tch_target_vertices, tch_target_triangles, count=samples)
+        Vrandom = sample_surface(tch_target_vertices, tch_target_triangles, count=2 * samples)
         casdf.barycentric_closest_points(Tv, F, Vrandom, sample_bary, sample_tris)
         Ts = F[sample_tris]
         Vreconstructed = Tv[Ts[:, 0]] * sample_bary[:, 0].unsqueeze(-1) + \
                             Tv[Ts[:, 1]] * sample_bary[:, 1].unsqueeze(-1) + \
                             Tv[Ts[:, 2]] * sample_bary[:, 2].unsqueeze(-1)
 
-        sampled_loss = torch.sum((Vrandom - Vreconstructed).square())
+        sampled_loss = (Vrandom - Vreconstructed).square().mean()
+
+        samplesA = Vrandom[:samples]
+        samplesB = Vrandom[samples:]
+
+        sourceA = Vreconstructed[:samples]
+        sourceB = Vreconstructed[samples:]
+
+        dsamples = torch.norm(samplesA - samplesB, dim=1)
+        dsource = torch.norm(sourceA - sourceB, dim=1)
+
+        pairwise_loss = (dsamples - dsource).square().mean()
 
         # Laplacian loss
         Tv_smoothed = vgraph.smooth_device(Tv, 1.0)
-        laplacian_loss = torch.sum((Tv - Tv_smoothed).square())
+        laplacian_loss = (Tv - Tv_smoothed).square().mean()
 
         # TODO: match normal vectors?
 
         # TODO: tirangle area min/maxing...
-        loss = direct_loss + sampled_loss + laplacian_loss
+        areas = triangle_areas(Tv, F)
+        area_loss = areas.sum()
 
-        # history.setdefault('direct', []).append(direct_loss.item())
-        # history.setdefault('sampled', []).append(sampled_loss.item())
-        # history.setdefault('laplacian', []).append(laplacian_loss.item())
+        loss = direct_loss + 0.01 * sampled_loss + 0.1 * pairwise_loss + 0.1 * laplacian_loss + 0.1 * area_loss
+
+        history.setdefault('direct', []).append(direct_loss.item())
+        history.setdefault('sampled', []).append(sampled_loss.item())
+        history.setdefault('laplacian', []).append(laplacian_loss.item())
+        history.setdefault('area', []).append(area_loss.item())
 
         Tv_opt.zero_grad()
         loss.backward()
@@ -249,41 +274,41 @@ for i in range(5):
     Tvn = compute_vertex_normals(Tv, I_tch, Tvn)
     # Tvn = triangle_normls(Tv, I_tch)
 
-    history = {}
-    for _ in trange(args.iterations):
-        LP, LE, UV = sample(complexes, points, features, args.resolution, kernel=c)
-        V = m(points=LP, encodings=LE, uv=UV)
-
-        # Vn = triangle_normals(V, I)
-        # print('V NaNs:', torch.isnan(V).sum().item())
-        Fn = compute_face_normals(V, I_tch)
-        # print('Fn NaNs:', torch.isnan(Fn).sum().item())
-        Vn = compute_vertex_normals(V, I_tch, Fn)
-        # print('Vn NaNs:', torch.isnan(Vn).sum().item())
-        # Fn = triangle_normls(V, I_tch)
-        aell = average_edge_length(V, I)
-
-        vertex_loss = (V - Tv).square().mean()
-        # normal_loss = aell * (Vn - Tvn).square().mean()
-        normal_loss = (Vn - Tvn).square().mean()
-        feature_loss = torch.exp(-torch.cdist(features, features).mean())
-        loss = l(vertex_loss, normal_loss, feature_loss)
-
-        history.setdefault('vertex', []).append(vertex_loss.item())
-        history.setdefault('normal', []).append(normal_loss.item())
-        history.setdefault('feature', []).append(feature_loss.item())
-
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
+    # history = {}
+    # for _ in trange(args.iterations):
+    #     LP, LE, UV = sample(complexes, points, features, args.resolution, kernel=c)
+    #     V = m(points=LP, encodings=LE, uv=UV)
+    #
+    #     # Vn = triangle_normals(V, I)
+    #     # print('V NaNs:', torch.isnan(V).sum().item())
+    #     Fn = compute_face_normals(V, I_tch)
+    #     # print('Fn NaNs:', torch.isnan(Fn).sum().item())
+    #     Vn = compute_vertex_normals(V, I_tch, Fn)
+    #     # print('Vn NaNs:', torch.isnan(Vn).sum().item())
+    #     # Fn = triangle_normls(V, I_tch)
+    #     aell = average_edge_length(V, I)
+    #
+    #     vertex_loss = (V - Tv).square().mean()
+    #     normal_loss = aell * (Vn - Tvn).square().mean()
+    #     # normal_loss = (Vn - Tvn).square().mean()
+    #     feature_loss = torch.exp(-torch.cdist(features, features).mean())
+    #     loss = l(vertex_loss, normal_loss, feature_loss)
+    #
+    #     history.setdefault('vertex', []).append(vertex_loss.item())
+    #     history.setdefault('normal', []).append(normal_loss.item())
+    #     history.setdefault('feature', []).append(feature_loss.item())
+    #
+    #     opt.zero_grad()
+    #     loss.backward()
+    #     opt.step()
 
     C_colors = color_code_complexes(complexes, args.resolution)
     Tv_sI = shorted_indices(Tv.cpu(), complexes, args.resolution)
     ps.register_surface_mesh(f'Tv{i}', Tv.cpu(), Tv_sI).add_color_quantity('C', C_colors, defined_on='faces')
-    V_sI = shorted_indices(V.detach().cpu(), complexes, args.resolution)
-    ps.register_surface_mesh(f'V{i}', V.detach().cpu(), V_sI).add_color_quantity('C', C_colors, defined_on='faces')
+    # V_sI = shorted_indices(V.detach().cpu(), complexes, args.resolution)
+    # ps.register_surface_mesh(f'V{i}', V.detach().cpu(), V_sI).add_color_quantity('C', C_colors, defined_on='faces')
 
-    ps.show()
+    # ps.show()
 
 ps.show()
 

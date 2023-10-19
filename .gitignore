@@ -8,9 +8,10 @@ __pycache__/
 build/
 compile_commands.json
 data/
+experiments/meshes
+experiments/results
 imgui.ini
 measurements/
 output/
+runs/
 scenes/
-experiments/meshes
-experiments/results

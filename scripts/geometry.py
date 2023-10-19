@@ -99,6 +99,17 @@ def compute_face_normals(verts, faces):
     faces : torch.Tensor
         Triangle faces
     """
+
+    '''
+    v0 = verts[faces[:, 0]]
+    v1 = verts[faces[:, 1]]
+    v2 = verts[faces[:, 2]]
+
+    e0 = v1 - v0
+    e1 = v2 - v0
+
+    return torch.cross(e0, e1, dim=1)'''
+    
     fi = torch.transpose(faces, 0, 1).long()
     verts = torch.transpose(verts, 0, 1)
 
@@ -126,6 +137,16 @@ def compute_vertex_normals(verts, faces, face_normals):
     face_normals : torch.Tensor
         Per-face normals
     """
+
+    '''
+    normals = torch.zeros_like(verts)
+    for i in range(3):
+        normals.index_add_(0, faces[:, i], face_normals)
+
+    lengths = torch.linalg.norm(normals, dim=1)
+    lengths = torch.where(lengths == 0, torch.ones_like(lengths), lengths)
+    return normals / lengths[:, None]'''
+
     fi = torch.transpose(faces, 0, 1).long()
     verts = torch.transpose(verts, 0, 1)
     normals = torch.zeros_like(verts)
@@ -140,8 +161,13 @@ def compute_vertex_normals(verts, faces, face_normals):
         d1 = v[(i + 2) % 3] - v[i]
         d1 = d1 / torch.norm(d1)
         d = torch.sum(d0*d1, 0)
-        face_angle = safe_acos(torch.sum(d0*d1, 0))
+        face_angle = safe_acos(torch.sum(d0 * d1, 0))
+        # assert not torch.isnan(face_angle).any()
         nn =  face_normals * face_angle
         for j in range(3):
             normals[j].index_add_(0, fi[i], nn[j])
-    return (normals / torch.norm(normals, dim=0)).transpose(0, 1)
+
+    lengths = torch.linalg.norm(normals, dim=0)
+    lengths = torch.where(lengths == 0, torch.ones_like(lengths), lengths)
+    return (normals / lengths).transpose(0, 1)
+    #return (normals / torch.norm(normals, dim=0)).transpose(0, 1)
