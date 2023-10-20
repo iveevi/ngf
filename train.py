@@ -1,280 +1,207 @@
 import os
 import sys
-import seaborn as sns
 import torch
 
 from torch.utils.cpp_extension import load
+from tqdm import trange
 
-sns.set()
+from mlp import *
+from scripts.geometry import compute_face_normals, compute_vertex_normals
 
-filename = os.path.join('scenes', 'dragon', 'dragon.xml')
-print(f'Loading scene from {filename}')
-
-if not os.path.exists('scenes'):
-    print('Loading scenes...')
-    os.system('wget https://rgl.s3.eu-central-1.amazonaws.com/media/papers/Nicolet2021Large.zip')
-    os.system('unzip Nicolet2021Large.zip')
-    os.system('rm Nicolet2021Large.zip')
-
-print('Loading geometry library...')
-
+assert len(sys.argv) == 4, 'Usage: python train.py <directory> <model> <kernel>'
 if not os.path.exists('build'):
     os.makedirs('build')
 
 geom_cpp = load(name="geom_cpp",
         sources=[ "ext/geometry.cpp" ],
         extra_include_paths=[ "glm" ],
-        build_directory="build",
-)
-
-from scripts.load_xml import load_scene
-
-scene_parameters = load_scene(filename)
-
-v_ref = scene_parameters['mesh-target']['vertices']
-n_ref = scene_parameters['mesh-target']['normals']
-f_ref = scene_parameters['mesh-target']['faces']
-
-print('vertices:', v_ref.shape, 'faces:', f_ref.shape)
-
-from scripts.render import NVDRenderer
-
-renderer = NVDRenderer(scene_parameters, shading=True, boost=3)
-
-import matplotlib.pyplot as plt
-
-plt.figure(figsize=(20, 10))
-for i in range(min(len(renderer.bgs), 5)):
-    plt.subplot(1, min(len(renderer.bgs), 5), i + 1)
-    plt.imshow(renderer.bgs[i,...,:-1].cpu().numpy(), origin='lower')
-    plt.axis('off')
-
-plt.show()
-
-print('Renderer initialized')
-
-def preview(V, N, F, batch=5, title='Preview'):
-    imgs = renderer.render(V, N, F)
-    fig, axs = plt.subplots(1, batch, figsize=(40, 20))
-    for i, ax in enumerate(axs):
-        ax.set_title(title + f': {i}')
-        ax.imshow((imgs[i,...,:-1].clip(0,1).pow(1/2.2)).cpu().numpy(), origin='lower')
-        ax.axis('off')
-    plt.axis('off')
-    return imgs
-
-def preview_nsc(sample_rate, title='Preview (NSC)'):
-    LP, LE = sample(sample_rate)
-    V = nsc(LP, LE)
-
-    V = V.detach()
-    F = sample_rate_indices(sample_rate)
-    Fn = compute_face_normals(V, F)
-    N = compute_vertex_normals(V, F, Fn)
-
-    preview(V, N, F, title=title)
-
-# Light optimization phase
-from tqdm import trange
-
-from pytorch3d.loss import chamfer_distance, mesh_laplacian_smoothing
-from pytorch3d.structures import Meshes
-
-preview_nsc(4, title='Initialized')
-
-mref = Meshes(verts=[ v_ref ], faces=[ f_ref  ])
-optimizer = torch.optim.Adam(list(nsc.parameters()) + [ encodings ], lr=1e-4)
-
-losses = {}
-for sample_rate in [ 2, 4 ]:
-    # TODO: function
-    # F = sample_rate_indices(sample_rate)
-    
-    LP, LE = sample(sample_rate)
-    cmap = make_cmap(complexes, LP, sample_rate)
-    F, remap = geom_cpp.sdc_weld(complexes.cpu(), cmap, LP.shape[0], sample_rate)
-    F = F.cuda()
-
-    for i in trange(5000):
-        LP, LE = sample(sample_rate)
-        V = nsc(LP, LE)
-
-        mopt = Meshes(verts=[ V ], faces=[ F ])
-
-        vertex_loss, normal_loss = chamfer_distance(
-            x=mref.verts_padded(),
-            y=mopt.verts_padded(),
-            x_normals=mref.verts_normals_padded(),
-            y_normals=mopt.verts_normals_padded(),
-            abs_cosine=False)
-        
-        laplacian_loss = mesh_laplacian_smoothing(mopt, method="uniform")
-        
-        losses.setdefault('vertex', []).append(vertex_loss.item())
-        losses.setdefault('normal', []).append(normal_loss.item())
-        losses.setdefault('laplacian', []).append(laplacian_loss.item())
-
-        loss = vertex_loss + 1e-3 * laplacian_loss
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-preview(v_ref, n_ref, f_ref, title='Reference')
-preview_nsc(4, title='Optimized')
-
-fig = plt.figure(figsize=(20, 10))
-plt.plot(losses['vertex'], label='vertex')
-plt.plot(losses['normal'], label='normal')
-plt.plot(losses['laplacian'], label='laplacian')
-plt.yscale('log')
-plt.legend()
-
-from largesteps.parameterize import from_differential, to_differential
-from largesteps.geometry import compute_matrix, laplacian_uniform
-from largesteps.optimize import AdamUniform
-
-from scripts.geometry import remove_duplicates
-
-steps = 5000       # Number of optimization steps
-step_size = 1e-2   # Step size
-lambda_ = 200       # Hyperparameter lambda of our method, used to compute the matrix (I + lambda_ * L)
-
-def inverse_render(sample_rate):
-    print(f'Inverse rendering at sample rate {sample_rate}...')
-
-    # Get the reference images
-    ref_imgs = renderer.render(v_ref, n_ref, f_ref)
-    
-    # Compute the system matrix and parameterize
-    LP, LE = sample(sample_rate)
-    V = nsc(LP, LE).detach()
-
-    cmap = make_cmap(complexes, LP, sample_rate)
-    F, remap = geom_cpp.sdc_weld(complexes.cpu(), cmap, V.shape[0], sample_rate)
-    F = F.cuda()
-
-    M = compute_matrix(V, F, lambda_)
-    U = to_differential(M, V)
-
-    U.requires_grad = True
-    opt = AdamUniform([ U ], step_size)
-
-    # Optimization loop
-    losses =  {}
-    for it in trange(steps):
-
-        # Get cartesian coordinates for parameterization
-        V = from_differential(M, U, 'Cholesky')
-
-        # Recompute vertex normals
-        Fn = compute_face_normals(V, F)
-        N = compute_vertex_normals(V, F, Fn)
-
-        # Render images
-        opt_imgs = renderer.render(V, N, F)
-
-        # Compute losses
-        img_loss = (opt_imgs - ref_imgs).abs().mean()
-        loss = img_loss
-
-        losses.setdefault('img', []).append(img_loss.item())
-
-        # Backpropagate
-        opt.zero_grad()
-        loss.backward()
-        
-        # Update parameters
-        opt.step()
-
-    V = geom_cpp.sdc_separate(V.detach().cpu(), remap).cuda()
-
-    print('Restored faces shape:', F.shape)
-
-    preview(v_ref, n_ref, f_ref, title='Reference')
-    preview(V, N.detach(), F, title='Optimized')
-
-    fig = plt.figure(figsize=(20, 10))
-    plt.plot(losses['img'], label='img')
-    plt.yscale('log')
-    plt.legend()
-
-    return V, sample_rate
-
-from pytorch3d.loss import mesh_normal_consistency
-
-def train_nsc(V, sample_rate):
-    print(f'Training Neural Subdivision Complex at sample rate {sample_rate}...')
-    optimizer = torch.optim.Adam(list(nsc.parameters()) + [ encodings ], lr=1e-3)
-    F = sample_rate_indices(sample_rate)
-    aell = average_edge_length(V, F).detach()
-
-    history = {}
-    for it in trange(10000):
-        LP, LE = sample(sample_rate)
-        X = nsc(LP, LE)
-
-        mopt = Meshes(verts=[ X ], faces=[ F ])
-
-        vertex_loss = (X - V).square().mean()
-
-        XFn = compute_face_normals(X, F)
-        Fn = compute_face_normals(V, F)
-        normal_loss = (XFn - Fn).square().mean()
-        consistency_loss = mesh_normal_consistency(mopt)
-        
-        loss = vertex_loss + aell * normal_loss + aell * consistency_loss
-
-        # TODO: seam loss: compile once, apply everywhere
-
-        history.setdefault('loss', []).append(loss.item())
-        history.setdefault('vertex loss', []).append(vertex_loss.item())
-        history.setdefault('normal loss', []).append((aell * normal_loss).item())
-        # history.setdefault('consistency loss', []).append((1e-6 * consistency_loss).item())
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-    preview(v_ref, n_ref, f_ref, title='Reference')
-    preview_nsc(sample_rate, title='Optimized')
-
-    fig = plt.figure(figsize=(20, 10))
-    plt.plot(history['loss'], label='loss')
-    plt.plot(history['vertex loss'], label='vertex loss')
-    plt.plot(history['normal loss'], label='normal loss')
-    # plt.plot(history['consistency loss'], label='consistency loss')
-    plt.yscale('log')
-    plt.legend()
-
-    return X.detach(), sample_rate
-
-for sample_rate in [ 2, 4, 8, 16, 32 ]:
-    V, sample_rate = inverse_render(sample_rate)
-    X, sample_rate = train_nsc(V, sample_rate)
-
-import shutil
-
-# Save the results
-results = 'output'
-
-model_file = os.path.join(results, 'model.bin')
-complexes_file = os.path.join(results, 'complexes.bin')
-corner_points_file = os.path.join(results, 'points.bin')
-corner_encodings_file = os.path.join(results, 'encodings.bin')
-
-if os.path.exists(results):
-    shutil.rmtree(results)
-
-os.makedirs(results)
-
-torch.save(nsc, model_file)
-torch.save(complexes, complexes_file)
-torch.save(points, corner_points_file)
-torch.save(encodings, corner_encodings_file)
-
-nsc.serialize(complexes, points, encodings, results + '/serialized.nsc')
-
-shutil.copyfile('ref.obj', os.path.join(results, 'ref.obj'))
-
-# TODO: save graphs as well (and use a config file to run all the experiments)
+        build_directory="build")
+
+directory = sys.argv[1]
+data = torch.load(directory + '/proxy.pt')
+
+V = data['proxy']
+complexes = data['complexes']
+points = data['points']
+
+assert V.shape[0] == complexes.shape[0]
+sample_rate = V.shape[1]
+
+print('V', V.shape)
+print('complexes', complexes.shape)
+print('points', points.shape)
+
+print('V', sample_rate, 'complexes', complexes.shape[0], 'points', points.shape[0])
+
+features = torch.randn((points.shape[0], POINT_ENCODING_SIZE), dtype=torch.float32, device='cuda')
+print('features', features.shape)
+V = V.reshape(-1, 3)
+
+def lerp(X, U, V):
+    lp00 = X[:, 0, :].unsqueeze(1) * U.unsqueeze(-1) * V.unsqueeze(-1)
+    lp01 = X[:, 1, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * V.unsqueeze(-1)
+    lp10 = X[:, 3, :].unsqueeze(1) * U.unsqueeze(-1) * (1.0 - V.unsqueeze(-1))
+    lp11 = X[:, 2, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * (1.0 - V.unsqueeze(-1))
+    return lp00 + lp01 + lp10 + lp11
+
+def sample(sample_rate, kernel=lerp):
+    U = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
+    V = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
+    U, V = torch.meshgrid(U, V, indexing='ij')
+
+    corner_points = points[complexes, :]
+    corner_features = features[complexes, :]
+
+    U, V = U.reshape(-1), V.reshape(-1)
+    U = U.repeat((complexes.shape[0], 1))
+    V = V.repeat((complexes.shape[0], 1))
+
+    lerped_points = lerp(corner_points, U, V).reshape(-1, 3)
+    lerped_features = kernel(corner_features, U, V).reshape(-1, POINT_ENCODING_SIZE)
+
+    return lerped_points, lerped_features
+
+def indices(sample_rate):
+    triangles = []
+    for i in range(sample_rate - 1):
+        for j in range(sample_rate - 1):
+            a = i * sample_rate + j
+            c = (i + 1) * sample_rate + j
+            b, d = a + 1, c + 1
+            triangles.append([a, b, c])
+            triangles.append([b, d, c])
+
+    return np.array(triangles)
+
+def sample_rate_indices(sample_rate):
+    tri_indices = []
+    for i in range(complexes.shape[0]):
+        ind = indices(sample_rate)
+        ind += i * sample_rate ** 2
+        tri_indices.append(ind)
+
+    tri_indices = np.concatenate(tri_indices, axis=0)
+    tri_indices_tensor = torch.from_numpy(tri_indices).int().cuda()
+    return tri_indices_tensor
+
+def make_cmap(complexes, LP, sample_rate):
+    Cs = complexes.cpu().numpy()
+    lp = LP.detach().cpu().numpy()
+
+    cmap = dict()
+    for i in range(Cs.shape[0]):
+        for j in Cs[i]:
+            if cmap.get(j) is None:
+                cmap[j] = set()
+
+        corners = np.array([
+            0, sample_rate - 1,
+            sample_rate * (sample_rate - 1),
+            sample_rate ** 2 - 1
+        ]) + (i * sample_rate ** 2)
+
+        qvs = points[Cs[i]].cpu().numpy()
+        cvs = lp[corners]
+
+        for j in range(4):
+            # Find the closest corner
+            dists = np.linalg.norm(qvs[j] - cvs, axis=1)
+            closest = np.argmin(dists)
+            cmap[Cs[i][j]].add(corners[closest])
+
+    return cmap
+
+def average_edge_length(V, T):
+    v0 = V[T[:, 0], :]
+    v1 = V[T[:, 1], :]
+    v2 = V[T[:, 2], :]
+
+    v01 = v1 - v0
+    v02 = v2 - v0
+    v12 = v2 - v1
+
+    l01 = torch.norm(v01, dim=1)
+    l02 = torch.norm(v02, dim=1)
+    l12 = torch.norm(v12, dim=1)
+    return (l01 + l02 + l12).mean()/3.0
+
+def clerp(f=lambda x: x):
+    def ftn(X, U, V):
+        lp00 = X[:, 0, :].unsqueeze(1) * f(U.unsqueeze(-1)) * f(V.unsqueeze(-1))
+        lp01 = X[:, 1, :].unsqueeze(1) * f(1.0 - U.unsqueeze(-1)) * f(V.unsqueeze(-1))
+        lp10 = X[:, 3, :].unsqueeze(1) * f(U.unsqueeze(-1)) * f(1.0 - V.unsqueeze(-1))
+        lp11 = X[:, 2, :].unsqueeze(1) * f(1.0 - U.unsqueeze(-1)) * f(1.0 - V.unsqueeze(-1))
+        return lp00 + lp01 + lp10 + lp11
+    return ftn
+
+models = {
+        'pos'    : MLP_Positional_Encoding,
+        'onion'  : MLP_Positional_Onion_Encoding,
+        'morlet' : MLP_Positional_Morlet_Encoding,
+        'feat'   : MLP_Feature_Sinusoidal_Encoding,
+}
+
+lerps = {
+        'linear' : lambda x: x,
+        'sin'    : lambda x: torch.sin(32.0 * x * np.pi / 2.0),
+        'floor'  : lambda x: torch.floor(32 * x)/32.0,
+        'smooth' : lambda x: (32.0 * x - torch.sin(32.0 * 2.0 * x * np.pi)/(2.0 * np.pi)) / 32.0,
+        'cubic'  : lambda x: 25 * x ** 3/3.0 - 25 * x ** 2 + 31 * x/6.0,
+}
+
+m = models[sys.argv[2]]().cuda()
+c = clerp(lerps[sys.argv[3]])
+
+optimizer = torch.optim.Adam(list(m.parameters()) + [ features ], lr=1e-3)
+
+I = sample_rate_indices(sample_rate)
+
+base, _ = sample(sample_rate)
+cmap = make_cmap(complexes, base, sample_rate)
+F, remap = geom_cpp.sdc_weld(complexes.cpu(), cmap, base.shape[0], sample_rate)
+F = F.cuda()
+
+VFn = compute_face_normals(V, F)
+Vn = compute_vertex_normals(V, F, VFn)
+
+for _ in trange(10_000):
+    lerped_points, lerped_features = sample(sample_rate)
+    V_pred = m(points=lerped_points, features=lerped_features)
+
+    VF_n_pred = compute_face_normals(V_pred, F)
+    V_n_pred = compute_vertex_normals(V_pred, F, VF_n_pred)
+
+    vertex_loss = (V_pred - V).square().mean()
+    normal_loss = (V_n_pred - Vn).square().mean()
+    loss = vertex_loss + normal_loss
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+    # print(loss.item())
+
+import polyscope as ps
+
+V_pred = V_pred.detach().cpu().numpy()
+V = V.detach().cpu().numpy()
+
+ps.init()
+ps.register_surface_mesh('mesh', V_pred, F.cpu().numpy())
+ps.register_surface_mesh('target', V, F.cpu().numpy())
+ps.show()
+
+# TODO: write all data to the results/models-X...
+result = os.path.basename(sys.argv[1])
+result = os.path.splitext(result)[0]
+result = os.path.join('results', result, sys.argv[2] + '-' + sys.argv[3])
+os.makedirs(result, exist_ok=True)
+
+model = {
+    'model': m,
+    'features': features,
+    'complexes': complexes,
+    'points': points,
+}
+
+torch.save(model, os.path.join(result, 'model.pt'))

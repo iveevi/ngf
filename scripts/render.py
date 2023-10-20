@@ -183,7 +183,7 @@ class NVDRenderer:
         self.bgs = dr.texture(envmap[None, ...], envmap_uvs, filter_mode='linear').flip(1)
         self.bgs[..., -1] = 0 # Set alpha to 0
 
-    def render(self, v, n, f, normals=False):
+    def render(self, v, n, f):
         """
         Render the scene in a differentiable way.
 
@@ -204,7 +204,7 @@ class NVDRenderer:
         v_hom = torch.nn.functional.pad(v, (0,1), 'constant', 1.0)
         v_ndc = torch.matmul(v_hom, self.mvps.transpose(1,2))
         rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
-        if not normals:
+        if self.shading:
             v_cols = torch.zeros_like(v)
 
             # Sample envmap at each vertex using the SH approximation
@@ -215,8 +215,7 @@ class NVDRenderer:
             col = torch.cat((light / np.pi, torch.ones((*light.shape[:-1],1), device='cuda')), dim=-1)
             result = dr.antialias(torch.where(rast[..., -1:] != 0, col, self.bgs), rast, v_ndc, f, pos_gradient_boost=self.boost)
         else:
-            # v_cols = torch.ones_like(v)
-            v_cols = n * 0.5 + 0.5
+            v_cols = torch.ones_like(v)
             col = dr.interpolate(v_cols[None, ...], rast, f)[0]
             result = dr.antialias(col, rast, v_ndc, f, pos_gradient_boost=self.boost)
         return result

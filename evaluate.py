@@ -2,25 +2,28 @@ import argparse
 import json
 import meshio
 import os
+import sys
 import torch
 
 from torch.utils.cpp_extension import load
+from scripts.geometry import compute_face_normals, compute_vertex_normals
+
+from util import *
 
 # Arguments
-parser = argparse.ArgumentParser(description='neural subdivision complexes: measure results')
-parser.add_argument('--reference', type=str, help='reference mesh')
-parser.add_argument('--source', type=str, help='source mesh')
-parser.add_argument('--db', type=str, help='database file (json)')
+assert len(sys.argv) == 4, 'evaluate.py <reference> <directory> <db>'
 
-args = parser.parse_args()
+reference = sys.argv[1]
+directory = sys.argv[2]
+db = sys.argv[3]
 
-assert args.reference is not None
-assert args.source is not None
-assert args.db is not None
+assert reference is not None
+assert directory is not None
+assert db is not None
 
 # Expect specific naming conventions for reference and db
-assert os.path.basename(args.reference) == 'target.obj'
-assert os.path.splitext(args.db)[1] == '.json'
+assert os.path.basename(reference) == 'target.obj'
+assert os.path.splitext(db)[1] == '.json'
 
 # Load all necessary extensions
 casdf = load(name='casdf',
@@ -28,32 +31,12 @@ casdf = load(name='casdf',
         extra_include_paths=[ 'glm' ],
         build_directory='build')
 
-print('Loaded casdf extension')
+geom_cpp = load(name="geom_cpp",
+        sources=[ "ext/geometry.cpp" ],
+        extra_include_paths=[ "glm" ],
+        build_directory="build")
 
-# Load all meshes
-target_path = os.path.basename(args.reference)
-source_path = os.path.basename(args.source)
-
-print('Loaded target mesh: %s' % target_path)
-print('Loaded source meshes: %s' % source_path)
-
-target = meshio.read(args.reference)
-source = meshio.read(args.source)
-
-# Create acceleration structures for each
-convert = lambda M: (torch.from_numpy(M.points).float().cuda(), torch.from_numpy(M.cells_dict['triangle']).int().cuda())
-
-target = convert(target)
-source = convert(source)
-
-target = casdf.geometry(target[0].cpu(), target[1].cpu())
-source = casdf.geometry(source[0].cpu(), source[1].cpu())
-
-target_cas = casdf.cas_grid(target, 32)
-source_cas = casdf.cas_grid(source, 32)
-
-target = target.torched()
-source = source.torched()
+print('Loaded all extensions')
 
 # Method to evaluate error
 def sample_surface(V, N, T, count=1000):
@@ -139,58 +122,203 @@ def sampled_measurements(target, target_cas, source, source_cas):
 
     return dpm.item(), dnormal.item()
 
-# Perform measurements
-# TODO: also run with simplification...
-# TODO: handle globs...
-# TODO: also do size checks...
+# Writing to the database
+def write(catag, dpm, dnormal, size=0):
+    global db
 
-dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
-print('DPM: %f' % dpm)
-print('DNormal: %f' % dnormal)
+    # Open or create the database (json)
+    if not os.path.exists(db):
+        with open(db, 'w') as f:
+            json.dump({}, f)
 
-# Open or create the database (json)
-if not os.path.exists(args.db):
-    with open(args.db, 'w') as f:
+    with open(db, 'r') as f:
+        db_json = json.load(f)
+        # print('Loaded database with %d entries' % len(db_json))
+
+        # Determine the entry to write to
+
+        # get the directory of the reference
+        ref_dir = os.path.dirname(reference)
+        ref_tag = os.path.basename(ref_dir)
+        # print('Reference directory: %s' % ref_dir)
+        # print('Reference tag: %s' % ref_tag)
+
+        # Get information on the source
+        tags = catag.split('-')
+        print('Source tags: %s' % tags)
+
+        # Add the nested entry with all the source tags
+        ref_entry = {
+            'dpm': dpm,
+            'dnormal': dnormal,
+            'size': size
+        }
+
+        for tag in reversed(tags):
+            ref_entry = { tag: ref_entry }
+
+        # Write the entry back
+        print('Writing entry: %s' % ref_entry)
+        if ref_tag in db_json:
+            # print('existing: %s' % db_json[ref_tag])
+            # db_json[ref_tag].update(ref_entry)
+            db_tmp = db_json[ref_tag]
+            while True:
+                # print('  attempting to update: %s with %s' % (db_tmp, ref_entry))
+                key = list(ref_entry.keys())[0]
+                # print('  key: %s' % key)
+                if key in db_tmp:
+                    db_tmp = db_tmp[key]
+                    ref_entry = ref_entry[key]
+                else:
+                    db_tmp[key] = ref_entry[key]
+                    break
+        else:
+            db_json[ref_tag] = ref_entry
+
+        # print('Wrote database with %d entries' % len(db_json))
+        # print('Database: %s' % db_json)
+
+    # Write the database back
+    with open(db, 'w') as f:
+        json.dump(db_json, f, indent=4)
+
+# Converting meshio to torch
+convert = lambda M: (torch.from_numpy(M.points).float().cuda(), torch.from_numpy(M.cells_dict['triangle']).int().cuda())
+
+# Erase existing directory data from the database
+if not os.path.exists(db):
+    with open(db, 'w') as f:
         json.dump({}, f)
+else:
+    with open(db, 'r') as f:
+        db_json = json.load(f)
+        print('Loaded database with %d entries' % len(db_json))
 
-with open(args.db, 'r') as f:
-    db = json.load(f)
-    print('Loaded database with %d entries' % len(db))
+        # Determine the entry to write to
 
-    # Determine the entry to write to
+        # get the directory of the reference
+        ref_dir = os.path.dirname(reference)
+        ref_tag = os.path.basename(ref_dir)
+        print('Reference directory: %s' % ref_dir)
+        print('Reference tag: %s' % ref_tag)
 
-    # get the directory of the reference
-    ref_dir = os.path.dirname(args.reference)
-    ref_tag = os.path.basename(ref_dir)
-    print('Reference directory: %s' % ref_dir)
-    print('Reference tag: %s' % ref_tag)
+        if ref_tag in db_json:
+            print('Erasing existing entry: %s' % db_json[ref_tag])
+            del db_json[ref_tag]
 
-    # Get information on the source
-    source_info = os.path.basename(args.source).split('.')[0]
-    print('Source info: %s' % source_info)
+    # Write the database back
+    with open(db, 'w') as f:
+        json.dump(db_json, f, indent=4)
 
-    source_tags = source_info.split('-')
-    print('Source tags: %s' % source_tags)
+# Load target reference meshe
+print('Loading target mesh: %s' % reference)
 
-    # ref_entry = db.get(ref_tag, {})
+target_path = os.path.basename(reference)
+target = meshio.read(reference)
+target = convert(target)
 
-    # Add the nested entry with all the source tags
-    # for tag in source_tags:
-    #     ref_entry = ref_entry.get(tag, {})
-    ref_entry = {
-        'dpm': dpm,
-        'dnormal': dnormal
-    }
+target = casdf.geometry(target[0].cpu(), target[1].cpu())
+target_cas = casdf.cas_grid(target, 32)
+target = target.torched()
 
-    for tag in reversed(source_tags):
-        ref_entry = { tag: ref_entry }
+# Recursively find all simple meshes and model configurations
+for root, dirs, files in os.walk(directory):
+    for file in files:
+        if file.endswith('.obj'):
+            path = os.path.join(root, file)
+            print('Loading source mesh: %s' % path)
 
-    # Write the entry back
-    db[ref_tag] = ref_entry
-    print('Wrote entry: %s' % ref_entry)
-    print('Wrote database with %d entries' % len(db))
-    print('Database: %s' % db)
+            source = meshio.read(path)
+            source = convert(source)
 
-# Write the database back
-with open(args.db, 'w') as f:
-    json.dump(db, f, indent=4)
+            fn = compute_face_normals(source[0], source[1])
+            vn = compute_vertex_normals(source[0], source[1], fn)
+
+            source = casdf.geometry(source[0].cpu(), vn.cpu(), source[1].cpu())
+            source_cas = casdf.cas_grid(source, 32)
+            source = source.torched()
+
+            # Compute raw binary byte size
+            vertex_bytes = source[0].numel() * source[0].element_size()
+            index_bytes = source[2].numel() * source[2].element_size()
+            total = vertex_bytes + index_bytes
+
+            dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
+            print('  > DPM: %f' % dpm)
+            print('  > DNormal: %f' % dnormal)
+            print('  > Size: %d KB' % (total/1024))
+
+            catag = os.path.basename(file)
+            catag = os.path.splitext(catag)[0]
+            write(catag, dpm, dnormal, size=total) # TODO: compute the sizes...
+    for nsc in dirs:
+        print('Loading NSC representation: %s' % nsc)
+
+        data = torch.load(os.path.join(root, nsc, 'model.pt'))
+
+        m = data['model']
+        c = data['complexes']
+        p = data['points']
+        f = data['features']
+
+        print('  > c:', c.shape)
+        print('  > p:', p.shape)
+        print('  > f:', f.shape)
+
+        lerper = nsc.split('-')[1]
+        print('  > lerper: %s' % lerper)
+
+        ker = clerp(lerps[lerper])
+        print('  > clerp: %s' % ker)
+
+        # Compute byte size of the representation
+        feature_bytes = f.numel() * f.element_size()
+        index_bytes = c.numel() * c.element_size()
+        model_bytes = sum([ p.numel() * p.element_size() for p in m.parameters() ])
+        vertex_bytes = p.numel() * p.element_size()
+        total = feature_bytes + index_bytes + model_bytes + vertex_bytes
+
+        print('  > Size: %d KB' % (total/1024))
+
+        for rate in [ 2, 4, 8, 16 ]:
+            lerped_points, lerped_features = sample(c, p, f, rate, kernel=ker)
+            # print('    > lerped_points:', lerped_points.shape)
+            # print('    > lerped_features:', lerped_features.shape)
+
+            cmap = make_cmap(c, p, lerped_points, rate)
+            F, _ = geom_cpp.sdc_weld(c.cpu(), cmap, lerped_points.shape[0], rate)
+            F = F.cuda()
+
+            vertices = m(points=lerped_points, features=lerped_features)
+
+            # import polyscope as ps
+            # ps.init()
+            # ps.register_surface_mesh('mesh', lerped_points.detach().cpu().numpy(), F.cpu().numpy())
+            # ps.show()
+
+            fn = compute_face_normals(vertices, F)
+            vn = compute_vertex_normals(vertices, F, fn)
+
+            if torch.isnan(vertices).any():
+                print('  > vertices has nan')
+                continue
+            if torch.isnan(F).any():
+                print('  > F has nan')
+                continue
+            if torch.isnan(vn).any():
+                print('  > vn has nan')
+                continue
+
+            source = casdf.geometry(vertices.cpu(), vn.cpu(), F.cpu())
+            source_cas = casdf.cas_grid(source, 32)
+            source = source.torched()
+
+            dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
+
+            catag = nsc + '-r' + str(rate)
+            print('  > rate: %d, tag: %s' % (rate, catag))
+            print('    > DPM: %f' % dpm)
+            print('    > DNormal: %f' % dnormal)
+
+            write(catag, dpm, dnormal, size=total)

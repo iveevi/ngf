@@ -118,8 +118,9 @@ def compute_face_normals(verts, faces):
                  verts.index_select(1, fi[2])]
 
     c = torch.cross(v[1] - v[0], v[2] - v[0])
-    n = c / torch.norm(c, dim=0)
-    return n
+    l = torch.linalg.norm(c, dim=0)
+    l = torch.where(l == 0, torch.ones_like(l), l)
+    return (c / l)
 
 def safe_acos(x):
     return torch.acos(x.clamp(min=-1, max=1))
