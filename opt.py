@@ -29,7 +29,7 @@ from scripts.load_xml import load_scene
 directory = sys.argv[1]
 mesh = meshio.read(os.path.join(directory, 'target.obj'))
 
-environment = imageio.imread('experiments/environment.hdr', format='HDR-FI')
+environment = imageio.imread('images/environment.hdr', format='HDR-FI')
 environment = torch.tensor(environment, dtype=torch.float32, device='cuda')
 alpha = torch.ones((*environment.shape[:2], 1), dtype=torch.float32, device='cuda')
 environment = torch.cat((environment, alpha), dim=-1)
@@ -127,9 +127,7 @@ v = torch.from_numpy(v).float().cuda()
 print('Quadrangulated shape; vertices:', v.shape, 'faces:', f.shape)
 
 # Configure neural subdivision complex parameters
-from models import *
-
-nsc = NSubComplex().cuda()
+from mlp import *
 
 points = v
 complexes = torch.from_numpy(f).int().cuda()
