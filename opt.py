@@ -1,11 +1,24 @@
-import argparse
 import os
 import seaborn as sns
 import sys
 import torch
+import matplotlib.pyplot as plt
+import meshio
+import imageio
+
+from scripts.geometry import compute_vertex_normals, compute_face_normals
+from scripts.load_xml import load_scene
 
 from torch.utils.cpp_extension import load
 from tqdm import trange
+
+from largesteps.parameterize import from_differential, to_differential
+from largesteps.geometry import compute_matrix
+from largesteps.optimize import AdamUniform
+
+from scripts.render import NVDRenderer
+
+from mlp import *
 
 sns.set()
 
@@ -19,12 +32,6 @@ geom_cpp = load(name="geom_cpp",
         sources=[ "ext/geometry.cpp" ],
         extra_include_paths=[ "glm" ],
         build_directory="build")
-
-import meshio
-import imageio
-
-from scripts.geometry import compute_vertex_normals, compute_face_normals
-from scripts.load_xml import load_scene
 
 directory = sys.argv[1]
 mesh = meshio.read(os.path.join(directory, 'target.obj'))
@@ -115,8 +122,6 @@ if len(sys.argv) > 2:
     sp = load_scene(sys.argv[2])
     scene_parameters['view_mats'] = sp['view_mats']
 
-import meshio
-
 mesh = meshio.read(os.path.join(directory, 'source.obj'))
 
 v = mesh.points
@@ -127,8 +132,6 @@ v = torch.from_numpy(v).float().cuda()
 print('Quadrangulated shape; vertices:', v.shape, 'faces:', f.shape)
 
 # Configure neural subdivision complex parameters
-from mlp import *
-
 points = v
 complexes = torch.from_numpy(f).int().cuda()
 encodings = torch.zeros((points.shape[0], POINT_ENCODING_SIZE), requires_grad=True, device='cuda')
@@ -232,32 +235,28 @@ def triangle_areas(v, f):
     v02 = v2 - v0
     return 0.5 * torch.norm(torch.cross(v01, v02), dim=1)
 
-import matplotlib.pyplot as plt
-
-from scripts.render import NVDRenderer
-
 renderer = NVDRenderer(scene_parameters, shading=True, boost=3)
 
-def preview(V, N, F, size=5, title='Preview'):
-    imgs = renderer.render(V, N, F)
-    fig, axs = plt.subplots(size, 1, figsize=(40, 20))
-    for i, ax in enumerate(axs):
-        ax.set_title(title + f': {i}')
-        ax.imshow((imgs[i,...].clip(0,1)).cpu().numpy(), origin='lower')
-        ax.axis('off')
-    plt.axis('off')
-    return imgs
-
-def preview_nsc(sample_rate, title='Preview (NSC)'):
-    LP, LE = sample(sample_rate)
-    V = nsc(LP, LE)
-
-    V = V.detach()
-    F = sample_rate_indices(sample_rate)
-    Fn = compute_face_normals(V, F)
-    N = compute_vertex_normals(V, F, Fn)
-
-    preview(V, N, F, title=title)
+# def preview(V, N, F, size=5, title='Preview'):
+#     imgs = renderer.render(V, N, F)
+#     fig, axs = plt.subplots(size, 1, figsize=(40, 20))
+#     for i, ax in enumerate(axs):
+#         ax.set_title(title + f': {i}')
+#         ax.imshow((imgs[i,...].clip(0,1)).cpu().numpy(), origin='lower')
+#         ax.axis('off')
+#     plt.axis('off')
+#     return imgs
+#
+# def preview_nsc(sample_rate, title='Preview (NSC)'):
+#     LP, LE = sample(sample_rate)
+#     V = nsc(LP, LE)
+#
+#     V = V.detach()
+#     F = sample_rate_indices(sample_rate)
+#     Fn = compute_face_normals(V, F)
+#     N = compute_vertex_normals(V, F, Fn)
+#
+#     preview(V, N, F, title=title)
 
 def subdivide(V, complex_count, sample_rate):
     Vreshaped = V.reshape(complex_count, sample_rate, sample_rate, 3)
@@ -292,28 +291,22 @@ def subdivide(V, complex_count, sample_rate):
 
         Vcomplex_sub = torch.stack(Vcomplex_sub, dim=0)
         Vsub.append(Vcomplex_sub)
-    
+
     Vsub = torch.cat(Vsub, dim=0)
     print('Vsub', Vsub.shape)
 
     return Vsub.reshape(-1, 3)
 
-from largesteps.parameterize import from_differential, to_differential
-from largesteps.geometry import compute_matrix, laplacian_uniform
-from largesteps.optimize import AdamUniform
-
-from scripts.geometry import remove_duplicates
-
-steps = 2000       # Number of optimization steps
+steps     = 2000   # Number of optimization steps
 step_size = 1e-2   # Step size
-lambda_ = 10       # Hyperparameter lambda of our method, used to compute the matrix (I + lambda_ * L)
+lambda_   = 10     # Hyperparameter lambda of our method, used to compute the matrix (I + lambda_ * L)
 
 def inverse_render(V, base, sample_rate):
     print(f'Inverse rendering at sample rate {sample_rate}...')
 
     # Get the reference images
     ref_imgs = renderer.render(v_ref, n_ref, f_ref)
-    
+
     # Optimization setup
     cmap = make_cmap(complexes, base, sample_rate)
     F, remap = geom_cpp.sdc_weld(complexes.cpu(), cmap, base.shape[0], sample_rate)
@@ -340,6 +333,7 @@ def inverse_render(V, base, sample_rate):
         opt_imgs = renderer.render(V, N, F)
 
         # Compute losses
+        # TODO: tone mapping from NVIDIA paper
         render_loss = (opt_imgs - ref_imgs).abs().mean()
         area_loss = triangle_areas(V, F).var()
         loss = render_loss + 1e3 * area_loss
@@ -350,31 +344,34 @@ def inverse_render(V, base, sample_rate):
         # Backpropagate
         opt.zero_grad()
         loss.backward()
-        
+
         # Update parameters
         opt.step()
 
     V = geom_cpp.sdc_separate(V.detach().cpu(), remap).cuda()
 
-    preview(V, N.detach(), F, title='Optimized')
+    # preview(V, N.detach(), F, title='Optimized')
 
-    fig = plt.figure(figsize=(20, 10))
-    plt.plot(losses['render'], label='render')
-    plt.plot(losses['area'], label='area')
-    plt.yscale('log')
-    plt.legend()
+    # TODO: wholistic graph...
+    # fig = plt.figure(figsize=(20, 10))
+    # plt.plot(losses['render'], label='render')
+    # plt.plot(losses['area'], label='area')
+    # plt.yscale('log')
+    # plt.legend()
 
     return V
 
 base4, _ = sample(4)
 base8, _ = sample(8)
 base16, _ = sample(16)
+base32, _ = sample(32)
 
-_ = preview(v_ref, n_ref, f_ref, size=5, title='Preview (Ground Truth)')
+# _ = preview(v_ref, n_ref, f_ref, size=5, title='Preview (Ground Truth)')
 
 V4 = inverse_render(base4, base4, 4)
 V8 = inverse_render(subdivide(V4, complexes.shape[0], 4), base8, 8)
 V16 = inverse_render(subdivide(V8, complexes.shape[0], 8), base16, 16)
+V32 = inverse_render(subdivide(V16, complexes.shape[0], 16), base32, 32)
 
 import polyscope as ps
 
@@ -397,12 +394,12 @@ def color_code_complexes(C, sample_rate=16):
             np.array([0.700, 0.300, 0.600]),
             np.array([0.700, 0.300, 0.450])
     ]
-    
+
     complex_face_colors = []
     for i in range(C.shape[0]):
         color = color_wheel[i % len(color_wheel)]
         complex_face_colors.append(np.tile(color, (2 * (sample_rate - 1) ** 2, 1)))
-    
+
     return np.concatenate(complex_face_colors)
 
 def shorted_indices(V, C, sample_rate=16):
@@ -430,11 +427,11 @@ def shorted_indices(V, C, sample_rate=16):
 
 ps.init()
 
-shows = [ (4, V4), (8, V8), (16, V16) ]
+shows = [ (4, V4), (8, V8), (16, V16), (32, V32) ]
 
 for sample_rate, V in shows:
     colors = color_code_complexes(complexes, sample_rate=sample_rate)
-    
+
     VI = shorted_indices(V.detach().cpu().numpy(), complexes.cpu().numpy(), sample_rate=sample_rate)
     VI = torch.from_numpy(VI).int().cuda()
 

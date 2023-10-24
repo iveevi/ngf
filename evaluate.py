@@ -9,13 +9,15 @@ from torch.utils.cpp_extension import load
 from scripts.geometry import compute_face_normals, compute_vertex_normals
 
 from util import *
+from configurations import *
 
 # Arguments
-assert len(sys.argv) == 4, 'evaluate.py <reference> <directory> <db>'
+assert len(sys.argv) == 5, 'evaluate.py <reference> <directory> <cameras> <db>'
 
 reference = sys.argv[1]
 directory = sys.argv[2]
-db = sys.argv[3]
+cameras = sys.argv[3]
+db = sys.argv[4]
 
 assert reference is not None
 assert directory is not None
@@ -37,6 +39,23 @@ geom_cpp = load(name="geom_cpp",
         build_directory="build")
 
 print('Loaded all extensions')
+
+# Load scene cameras
+from scripts.load_xml import load_scene
+from scripts.render import NVDRenderer
+
+scene = load_scene(cameras)
+print('Loaded scene with %d cameras' % len(scene['view_mats']))
+
+scene['res_x'] = 1024
+scene['res_y'] = 640
+scene['fov'] = 45.0
+scene['near_clip'] = 0.1
+scene['far_clip'] = 1000.0
+# scene['envmap'] = environment
+# scene['envmap_scale'] = 1.0
+
+renderer = NVDRenderer(scene)
 
 # Method to evaluate error
 def sample_surface(V, N, T, count=1000):
@@ -79,7 +98,7 @@ def sampled_measurements(target, target_cas, source, source_cas):
     dpm = 0
     dnormal = 0
 
-    batch = 10_000
+    batch = 100_000
     total = 1_000_000
 
     closest = torch.zeros((batch, 3)).cuda()
@@ -122,8 +141,25 @@ def sampled_measurements(target, target_cas, source, source_cas):
 
     return dpm.item(), dnormal.item()
 
+def render_loss(target, source, alt=None):
+    tV, tN, tF = target[0], target[1].cuda(), target[2].cuda()
+    sV, sN, sF = source[0], source[1].cuda(), source[2].cuda()
+
+    t_imgs = renderer.render(tV, tN, tF)
+    s_imgs = renderer.render(sV, sN, sF if alt is None else alt)
+
+    # from matplotlib import pyplot as plt
+    # fig, ax = plt.subplots(1, 2, figsize=(10, 10))
+    # ax[0].imshow(t_imgs[0].detach().cpu().numpy())
+    # ax[1].imshow(s_imgs[0].detach().cpu().numpy())
+    # plt.show()
+
+    loss = torch.mean(torch.abs(t_imgs - s_imgs))
+
+    return loss.item()
+
 # Writing to the database
-def write(catag, dpm, dnormal, size=0):
+def write(catag, dpm, dnormal, render, size=0):
     global db
 
     # Open or create the database (json)
@@ -133,15 +169,10 @@ def write(catag, dpm, dnormal, size=0):
 
     with open(db, 'r') as f:
         db_json = json.load(f)
-        # print('Loaded database with %d entries' % len(db_json))
 
-        # Determine the entry to write to
-
-        # get the directory of the reference
+        # Get the directory of the reference
         ref_dir = os.path.dirname(reference)
         ref_tag = os.path.basename(ref_dir)
-        # print('Reference directory: %s' % ref_dir)
-        # print('Reference tag: %s' % ref_tag)
 
         # Get information on the source
         tags = catag.split('-')
@@ -151,6 +182,7 @@ def write(catag, dpm, dnormal, size=0):
         ref_entry = {
             'dpm': dpm,
             'dnormal': dnormal,
+            'render': render,
             'size': size
         }
 
@@ -160,13 +192,9 @@ def write(catag, dpm, dnormal, size=0):
         # Write the entry back
         print('Writing entry: %s' % ref_entry)
         if ref_tag in db_json:
-            # print('existing: %s' % db_json[ref_tag])
-            # db_json[ref_tag].update(ref_entry)
             db_tmp = db_json[ref_tag]
             while True:
-                # print('  attempting to update: %s with %s' % (db_tmp, ref_entry))
                 key = list(ref_entry.keys())[0]
-                # print('  key: %s' % key)
                 if key in db_tmp:
                     db_tmp = db_tmp[key]
                     ref_entry = ref_entry[key]
@@ -175,9 +203,6 @@ def write(catag, dpm, dnormal, size=0):
                     break
         else:
             db_json[ref_tag] = ref_entry
-
-        # print('Wrote database with %d entries' % len(db_json))
-        # print('Database: %s' % db_json)
 
     # Write the database back
     with open(db, 'w') as f:
@@ -225,8 +250,11 @@ target = target.torched()
 # Recursively find all simple meshes and model configurations
 for root, dirs, files in os.walk(directory):
     for file in files:
+        path = os.path.join(root, file)
+        if 'unpacked' in path:
+            continue
+
         if file.endswith('.obj'):
-            path = os.path.join(root, file)
             print('Loading source mesh: %s' % path)
 
             source = meshio.read(path)
@@ -245,14 +273,20 @@ for root, dirs, files in os.walk(directory):
             total = vertex_bytes + index_bytes
 
             dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
+            render = render_loss(target, source)
+
             print('  > DPM: %f' % dpm)
             print('  > DNormal: %f' % dnormal)
+            print('  > Render: %f' % render)
             print('  > Size: %d KB' % (total/1024))
 
             catag = os.path.basename(file)
             catag = os.path.splitext(catag)[0]
-            write(catag, dpm, dnormal, size=total) # TODO: compute the sizes...
+            write(catag, dpm, dnormal, render, size=total) # TODO: compute the sizes...
     for nsc in dirs:
+        if nsc in [ 'unpacked' ]:
+            continue
+
         print('Loading NSC representation: %s' % nsc)
 
         data = torch.load(os.path.join(root, nsc, 'model.pt'))
@@ -290,7 +324,7 @@ for root, dirs, files in os.walk(directory):
             F, _ = geom_cpp.sdc_weld(c.cpu(), cmap, lerped_points.shape[0], rate)
             F = F.cuda()
 
-            vertices = m(points=lerped_points, features=lerped_features)
+            vertices = m(points=lerped_points, features=lerped_features).detach()
 
             # import polyscope as ps
             # ps.init()
@@ -303,22 +337,27 @@ for root, dirs, files in os.walk(directory):
             if torch.isnan(vertices).any():
                 print('  > vertices has nan')
                 continue
-            if torch.isnan(F).any():
+            if torch.isnan(fn).any():
                 print('  > F has nan')
                 continue
             if torch.isnan(vn).any():
                 print('  > vn has nan')
                 continue
 
-            source = casdf.geometry(vertices.cpu(), vn.cpu(), F.cpu())
+            I = shorted_indices(vertices.cpu().numpy(), c, rate)
+            I = torch.from_numpy(I).int()
+
+            source = casdf.geometry(vertices.cpu(), vn.cpu(), I)
             source_cas = casdf.cas_grid(source, 32)
             source = source.torched()
 
             dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
+            render = render_loss(target, source, alt=F)
 
             catag = nsc + '-r' + str(rate)
             print('  > rate: %d, tag: %s' % (rate, catag))
             print('    > DPM: %f' % dpm)
             print('    > DNormal: %f' % dnormal)
+            print('    > Render: %f' % render)
 
-            write(catag, dpm, dnormal, size=total)
+            write(catag, dpm, dnormal, render, size=total)

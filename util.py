@@ -39,9 +39,9 @@ def indices(sample_rate):
 
     return np.array(triangles)
 
-def sample_rate_indices(complexes, sample_rate):
+def sample_rate_indices(C, sample_rate):
     tri_indices = []
-    for i in range(complexes.shape[0]):
+    for i in range(C.shape[0]):
         ind = indices(sample_rate)
         ind += i * sample_rate ** 2
         tri_indices.append(ind)
@@ -49,6 +49,29 @@ def sample_rate_indices(complexes, sample_rate):
     tri_indices = np.concatenate(tri_indices, axis=0)
     tri_indices_tensor = torch.from_numpy(tri_indices).int().cuda()
     return tri_indices_tensor
+
+def shorted_indices(V, C, sample_rate=16):
+    triangles = []
+    for c in range(C.shape[0]):
+        offset = c * sample_rate * sample_rate
+        for i in range(sample_rate - 1):
+            for j in range(sample_rate - 1):
+                a = offset + i * sample_rate + j
+                c = offset + (i + 1) * sample_rate + j
+                b, d = a + 1, c + 1
+
+                vs = V[[a, b, c, d]]
+                d0 = np.linalg.norm(vs[0] - vs[3])
+                d1 = np.linalg.norm(vs[1] - vs[2])
+
+                if d0 < d1:
+                    triangles.append([a, d, b])
+                    triangles.append([a, c, d])
+                else:
+                    triangles.append([a, c, b])
+                    triangles.append([b, c, d])
+
+    return np.array(triangles)
 
 def make_cmap(complexes, points, LP, sample_rate):
     Cs = complexes.cpu().numpy()
@@ -100,17 +123,17 @@ def clerp(f=lambda x: x):
         return lp00 + lp01 + lp10 + lp11
     return ftn
 
-models = {
-        'pos'    : MLP_Positional_Encoding,
-        'onion'  : MLP_Positional_Onion_Encoding,
-        'morlet' : MLP_Positional_Morlet_Encoding,
-        'feat'   : MLP_Feature_Sinusoidal_Encoding,
-}
-
-lerps = {
-        'linear' : lambda x: x,
-        'sin'    : lambda x: torch.sin(32.0 * x * np.pi / 2.0),
-        'floor'  : lambda x: torch.floor(32 * x)/32.0,
-        'smooth' : lambda x: (32.0 * x - torch.sin(32.0 * 2.0 * x * np.pi)/(2.0 * np.pi)) / 32.0,
-        'cubic'  : lambda x: 25 * x ** 3/3.0 - 25 * x ** 2 + 31 * x/6.0,
-}
+# models = {
+#         'pos'    : MLP_Positional_Encoding,
+#         'onion'  : MLP_Positional_Onion_Encoding,
+#         'morlet' : MLP_Positional_Morlet_Encoding,
+#         'feat'   : MLP_Feature_Sinusoidal_Encoding,
+# }
+#
+# lerps = {
+#         'linear' : lambda x: x,
+#         'sin'    : lambda x: torch.sin(32.0 * x * np.pi / 2.0),
+#         'floor'  : lambda x: torch.floor(32 * x)/32.0,
+#         'smooth' : lambda x: (32.0 * x - torch.sin(32.0 * 2.0 * x * np.pi)/(2.0 * np.pi)) / 32.0,
+#         'cubic'  : lambda x: 25 * x ** 3/3.0 - 25 * x ** 2 + 31 * x/6.0,
+# }

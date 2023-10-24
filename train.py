@@ -1,4 +1,6 @@
+import matplotlib.pyplot as plt
 import os
+import seaborn as sns
 import sys
 import torch
 
@@ -6,9 +8,11 @@ from torch.utils.cpp_extension import load
 from tqdm import trange
 
 from mlp import *
+from util import *
+from configurations import *
 from scripts.geometry import compute_face_normals, compute_vertex_normals
 
-assert len(sys.argv) == 4, 'Usage: python train.py <directory> <model> <kernel>'
+assert len(sys.argv) >= 5, 'Usage: python train.py <directory> <model> <kernel> <iterations> <display=no>'
 if not os.path.exists('build'):
     os.makedirs('build')
 
@@ -17,12 +21,14 @@ geom_cpp = load(name="geom_cpp",
         extra_include_paths=[ "glm" ],
         build_directory="build")
 
-directory = sys.argv[1]
-data = torch.load(directory + '/proxy.pt')
+directory  = sys.argv[1]
+data       = torch.load(directory + '/proxy.pt')
+iterations = int(sys.argv[4])
+display    = len(sys.argv) == 6 and sys.argv[5] == 'yes'
 
-V = data['proxy']
+V         = data['proxy']
 complexes = data['complexes']
-points = data['points']
+points    = data['points']
 
 assert V.shape[0] == complexes.shape[0]
 sample_rate = V.shape[1]
@@ -134,21 +140,6 @@ def clerp(f=lambda x: x):
         return lp00 + lp01 + lp10 + lp11
     return ftn
 
-models = {
-        'pos'    : MLP_Positional_Encoding,
-        'onion'  : MLP_Positional_Onion_Encoding,
-        'morlet' : MLP_Positional_Morlet_Encoding,
-        'feat'   : MLP_Feature_Sinusoidal_Encoding,
-}
-
-lerps = {
-        'linear' : lambda x: x,
-        'sin'    : lambda x: torch.sin(32.0 * x * np.pi / 2.0),
-        'floor'  : lambda x: torch.floor(32 * x)/32.0,
-        'smooth' : lambda x: (32.0 * x - torch.sin(32.0 * 2.0 * x * np.pi)/(2.0 * np.pi)) / 32.0,
-        'cubic'  : lambda x: 25 * x ** 3/3.0 - 25 * x ** 2 + 31 * x/6.0,
-}
-
 m = models[sys.argv[2]]().cuda()
 c = clerp(lerps[sys.argv[3]])
 
@@ -156,15 +147,18 @@ optimizer = torch.optim.Adam(list(m.parameters()) + [ features ], lr=1e-3)
 
 I = sample_rate_indices(sample_rate)
 
-base, _ = sample(sample_rate)
-cmap = make_cmap(complexes, base, sample_rate)
+base, _  = sample(sample_rate)
+cmap     = make_cmap(complexes, base, sample_rate)
 F, remap = geom_cpp.sdc_weld(complexes.cpu(), cmap, base.shape[0], sample_rate)
-F = F.cuda()
+F        = F.cuda()
 
 VFn = compute_face_normals(V, F)
 Vn = compute_vertex_normals(V, F, VFn)
+aell = average_edge_length(V, F).item()
+print('average edge length', aell)
 
-for _ in trange(10_000):
+history = {}
+for _ in trange(iterations):
     lerped_points, lerped_features = sample(sample_rate)
     V_pred = m(points=lerped_points, features=lerped_features)
 
@@ -173,23 +167,38 @@ for _ in trange(10_000):
 
     vertex_loss = (V_pred - V).square().mean()
     normal_loss = (V_n_pred - Vn).square().mean()
-    loss = vertex_loss + normal_loss
+    loss = vertex_loss + aell * normal_loss
 
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
 
-    # print(loss.item())
+    history.setdefault('vertex loss', []).append(vertex_loss.item())
+    history.setdefault('normal loss', []).append(normal_loss.item())
+    history.setdefault('loss', []).append(loss.item())
 
-import polyscope as ps
+if display:
+    import polyscope as ps
 
-V_pred = V_pred.detach().cpu().numpy()
-V = V.detach().cpu().numpy()
+    V_pred = V_pred.detach().cpu().numpy()
+    V = V.detach().cpu().numpy()
 
-ps.init()
-ps.register_surface_mesh('mesh', V_pred, F.cpu().numpy())
-ps.register_surface_mesh('target', V, F.cpu().numpy())
-ps.show()
+    I_pred = shorted_indices(V_pred, complexes, sample_rate)
+    I = shorted_indices(V, complexes, sample_rate)
+
+    ps.init()
+    ps.register_surface_mesh('mesh', V_pred, I_pred)
+    ps.register_surface_mesh('target', V, I)
+    ps.show()
+
+# Plot losses
+sns.set_style('darkgrid')
+plt.plot(history['vertex loss'], label='vertex loss')
+plt.plot(history['normal loss'], label='normal loss')
+plt.plot(history['loss'], label='loss')
+plt.yscale('log')
+plt.legend()
+# plt.show()
 
 # TODO: write all data to the results/models-X...
 result = os.path.basename(sys.argv[1])
@@ -205,3 +214,4 @@ model = {
 }
 
 torch.save(model, os.path.join(result, 'model.pt'))
+plt.savefig(os.path.join(result, 'loss.png'))
