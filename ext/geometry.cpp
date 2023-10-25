@@ -42,53 +42,6 @@ static geometry translate(const torch::Tensor &vertices, const torch::Tensor &tr
 	return g;
 }
 
-static auto vertex_graph(const geometry &ref)
-{
-	std::unordered_map <uint32_t, std::unordered_set <uint32_t>> graph;
-
-	for (const glm::ivec3 &t : ref.triangles) {
-		graph[t.x].insert(t.y);
-		graph[t.x].insert(t.z);
-
-		graph[t.y].insert(t.x);
-		graph[t.y].insert(t.z);
-
-		graph[t.z].insert(t.x);
-		graph[t.z].insert(t.y);
-	}
-
-	return graph;
-}
-
-static geometry laplacian_smooth(const geometry &ref, float factor)
-{
-	geometry out = ref;
-	auto graph = vertex_graph(ref);
-	for (int i = 0; i < ref.vertices.size(); i++) {
-		glm::vec3 v = ref.vertices[i];
-		glm::vec3 sum = glm::vec3(0.0f);
-		for (uint32_t j : graph[i])
-			sum += ref.vertices[j];
-		float n = (float) graph[i].size();
-		glm::vec3 avg = n > 0.0f ? sum / n : v;
-		out.vertices[i] = v + factor * (avg - v);
-	}
-
-	return out;
-}
-
-torch::Tensor torch_laplacian_smooth(const torch::Tensor &vertices, const torch::Tensor &triangles, float factor)
-{
-	geometry g = translate(vertices, triangles);
-	g = laplacian_smooth(g, factor);
-
-	torch::Tensor out_vertices = torch::zeros_like(vertices);
-	float *out_ptr = out_vertices.data_ptr <float> ();
-	std::memcpy(out_ptr, g.vertices.data(), sizeof(glm::vec3) * g.vertices.size());
-
-	return out_vertices;
-}
-
 struct ordered_pair {
 	int32_t a, b;
 
@@ -116,7 +69,47 @@ struct ordered_pair {
 	};
 };
 
-auto torch_sdc_weld(const torch::Tensor &complexes,
+struct remapper : std::unordered_map <int32_t, int32_t> {
+	using std::unordered_map <int32_t, int32_t> ::unordered_map;
+
+	torch::Tensor remap(const torch::Tensor &indices) const {
+		assert(indices.dtype() == torch::kInt32);
+		assert(indices.dim() == 2);
+		assert(indices.is_cpu());
+
+		torch::Tensor out = torch::zeros_like(indices);
+		int32_t *out_ptr = out.data_ptr <int32_t> ();
+		int32_t *indices_ptr = indices.data_ptr <int32_t> ();
+
+		for (int32_t i = 0; i < indices.numel(); i++) {
+			auto it = this->find(indices_ptr[i]);
+			assert(it != this->end());
+			out_ptr[i] = it->second;
+		}
+
+		return out;
+	}
+
+	torch::Tensor scatter(const torch::Tensor &vertices) const {
+		assert(vertices.dtype() == torch::kFloat32);
+		assert(vertices.dim() == 2 && vertices.size(1) == 3);
+		assert(vertices.is_cpu());
+
+		torch::Tensor out = torch::zeros_like(vertices);
+		glm::vec3 *out_ptr = (glm::vec3 *) out.data_ptr <float> ();
+		glm::vec3 *vertices_ptr = (glm::vec3 *) vertices.data_ptr <float> ();
+
+		for (int32_t i = 0; i < vertices.size(0); i++) {
+			auto it = this->find(i);
+			assert(it != this->end());
+			out_ptr[i] = vertices_ptr[it->second];
+		}
+
+		return out;
+	}
+};
+
+auto generate_remapper(const torch::Tensor &complexes,
 		std::unordered_map <int32_t, std::set <int32_t>> &cmap,
 		int64_t vertex_count,
 		int64_t sample_rate)
@@ -137,7 +130,8 @@ auto torch_sdc_weld(const torch::Tensor &complexes,
 			rcmap[i] = k;
 	}
 
-	std::unordered_map <int32_t, int32_t> remap;
+	// std::unordered_map <int32_t, int32_t> remap;
+	remapper remap;
 	for (size_t i = 0; i < vertex_count; i++)
 		remap[i] = i;
 
@@ -226,68 +220,15 @@ auto torch_sdc_weld(const torch::Tensor &complexes,
 		}
 	}
 
-	std::vector <glm::ivec3> faces;
-	for (int32_t i = 0; i < cs.size(); i++) {
-		int32_t voffset = i * sample_rate * sample_rate;
-		for (int32_t x = 0; x < sample_rate - 1; x++) {
-			for (int32_t y = 0; y < sample_rate - 1; y++) {
-				int32_t i00 = x * sample_rate + y;
-				int32_t i10 = i00 + 1;
-				int32_t i01 = (x + 1) * sample_rate + y;
-				int32_t i11 = i01 + 1;
-
-				assert(remap.find(i00 + voffset) != remap.end());
-				assert(remap.find(i10 + voffset) != remap.end());
-				assert(remap.find(i01 + voffset) != remap.end());
-				assert(remap.find(i11 + voffset) != remap.end());
-
-				i00 = remap[i00 + voffset];
-				i10 = remap[i10 + voffset];
-				i01 = remap[i01 + voffset];
-				i11 = remap[i11 + voffset];
-
-				faces.push_back(glm::ivec3(i00, i11, i10));
-				faces.push_back(glm::ivec3(i00, i01, i11));
-				// faces.push_back(glm::ivec4(i00, i10, i11, i01));
-			}
-		}
-	}
-
-	// TODO: fix and align the normals (different function)
-
-	torch::Tensor indices = torch::zeros({ (long) faces.size(), 3 }, torch::kInt32);
-	ptr = indices.data_ptr <int32_t> ();
-	std::memcpy(ptr, faces.data(), faces.size() * sizeof(glm::ivec3));
-
-	return std::make_tuple(indices, remap);
-}
-
-auto torch_sdc_separate(const torch::Tensor &vertices, const std::unordered_map <int32_t, int32_t> &remap)
-{
-	assert(vertices.dtype() == torch::kFloat32);
-	assert(vertices.dim() == 2 && vertices.size(1) == 3);
-	assert(vertices.is_cpu());
-
-	torch::Tensor expanded = torch::zeros_like(vertices);
-
-	int32_t vsize = vertices.size(0);
-	glm::vec3 *ptr = (glm::vec3 *) expanded.data_ptr <float> ();
-	glm::vec3 *src = (glm::vec3 *) vertices.data_ptr <float> ();
-
-	for (int32_t i = 0; i < vsize; i++) {
-		auto it = remap.find(i);
-		assert(it != remap.end());
-		int32_t j = it->second;
-		assert(j < vsize);
-		ptr[i] = src[j];
-	}
-
-	return expanded;
+	return remap;
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
-	m.def("laplacian_smooth", &torch_laplacian_smooth, "Laplacian smoothing");
-	m.def("sdc_weld", &torch_sdc_weld, "SDC welding");
-	m.def("sdc_separate", &torch_sdc_separate, "SDC separating");
+	m.def("generate_remapper", &generate_remapper, "Generate remapper");
+
+	py::class_ <remapper> (m, "Remapper")
+		.def(py::init <> ())
+		.def("remap", &remapper::remap, "Remap indices")
+		.def("scatter", &remapper::scatter, "Scatter vertices");
 }

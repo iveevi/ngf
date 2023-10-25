@@ -320,11 +320,14 @@ for root, dirs, files in os.walk(directory):
             # print('    > lerped_points:', lerped_points.shape)
             # print('    > lerped_features:', lerped_features.shape)
 
-            cmap = make_cmap(c, p, lerped_points, rate)
-            F, _ = geom_cpp.sdc_weld(c.cpu(), cmap, lerped_points.shape[0], rate)
-            F = F.cuda()
-
             vertices = m(points=lerped_points, features=lerped_features).detach()
+
+            I = shorted_indices(vertices.cpu().numpy(), c, rate)
+            I = torch.from_numpy(I).int()
+
+            cmap = make_cmap(c, p, lerped_points, rate)
+            remap = geom_cpp.generate_remapper(c.cpu(), cmap, lerped_points.shape[0], rate)
+            F = remap.remap(I).cuda()
 
             # import polyscope as ps
             # ps.init()
@@ -343,9 +346,6 @@ for root, dirs, files in os.walk(directory):
             if torch.isnan(vn).any():
                 print('  > vn has nan')
                 continue
-
-            I = shorted_indices(vertices.cpu().numpy(), c, rate)
-            I = torch.from_numpy(I).int()
 
             source = casdf.geometry(vertices.cpu(), vn.cpu(), I)
             source_cas = casdf.cas_grid(source, 32)

@@ -114,6 +114,14 @@ def average_edge_length(V, T):
     l12 = torch.norm(v12, dim=1)
     return (l01 + l02 + l12).mean()/3.0
 
+def triangle_areas(v, f):
+    v0 = v[f[:, 0], :]
+    v1 = v[f[:, 1], :]
+    v2 = v[f[:, 2], :]
+    v01 = v1 - v0
+    v02 = v2 - v0
+    return 0.5 * torch.norm(torch.cross(v01, v02), dim=1)
+
 def clerp(f=lambda x: x):
     def ftn(X, U, V):
         lp00 = X[:, 0, :].unsqueeze(1) * f(U.unsqueeze(-1)) * f(V.unsqueeze(-1))
@@ -122,18 +130,3 @@ def clerp(f=lambda x: x):
         lp11 = X[:, 2, :].unsqueeze(1) * f(1.0 - U.unsqueeze(-1)) * f(1.0 - V.unsqueeze(-1))
         return lp00 + lp01 + lp10 + lp11
     return ftn
-
-# models = {
-#         'pos'    : MLP_Positional_Encoding,
-#         'onion'  : MLP_Positional_Onion_Encoding,
-#         'morlet' : MLP_Positional_Morlet_Encoding,
-#         'feat'   : MLP_Feature_Sinusoidal_Encoding,
-# }
-#
-# lerps = {
-#         'linear' : lambda x: x,
-#         'sin'    : lambda x: torch.sin(32.0 * x * np.pi / 2.0),
-#         'floor'  : lambda x: torch.floor(32 * x)/32.0,
-#         'smooth' : lambda x: (32.0 * x - torch.sin(32.0 * 2.0 * x * np.pi)/(2.0 * np.pi)) / 32.0,
-#         'cubic'  : lambda x: 25 * x ** 3/3.0 - 25 * x ** 2 + 31 * x/6.0,
-# }

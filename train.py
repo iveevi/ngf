@@ -16,7 +16,7 @@ assert len(sys.argv) >= 5, 'Usage: python train.py <directory> <model> <kernel> 
 if not os.path.exists('build'):
     os.makedirs('build')
 
-geom_cpp = load(name="geom_cpp",
+geometry = load(name="geom_cpp",
         sources=[ "ext/geometry.cpp" ],
         extra_include_paths=[ "glm" ],
         build_directory="build")
@@ -147,10 +147,10 @@ optimizer = torch.optim.Adam(list(m.parameters()) + [ features ], lr=1e-3)
 
 I = sample_rate_indices(sample_rate)
 
-base, _  = sample(sample_rate)
-cmap     = make_cmap(complexes, base, sample_rate)
-F, remap = geom_cpp.sdc_weld(complexes.cpu(), cmap, base.shape[0], sample_rate)
-F        = F.cuda()
+base, _ = sample(sample_rate)
+cmap    = make_cmap(complexes, base, sample_rate)
+remap   = geometry.generate_remapper(complexes.cpu(), cmap, base.shape[0], sample_rate)
+F       = remap.remap(I.cpu()).cuda()
 
 VFn = compute_face_normals(V, F)
 Vn = compute_vertex_normals(V, F, VFn)

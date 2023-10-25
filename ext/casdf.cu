@@ -989,235 +989,305 @@ struct vertex_graph {
 		return result;
 	}
 };
-	
-/* struct ordered_pair {
-	uint32_t a;
-	uint32_t b;
 
-	ordered_pair(uint32_t a_, uint32_t b_) {
-		a = std::min(a_, b_);
-		b = std::max(a_, b_);
+__global__
+void triangulate_shorted_kernel(const glm::vec3 *__restrict__ vertices, glm::ivec3 *__restrict__ triangles, size_t sample_rate)
+{
+	size_t i = blockIdx.x;
+	size_t j = threadIdx.x;
+	size_t k = threadIdx.y;
+
+	size_t offset = i * sample_rate * sample_rate;
+
+	size_t a = offset + j * sample_rate + k;
+	size_t b = a + 1;
+	size_t c = offset + (j + 1) * sample_rate + k;
+	size_t d = c + 1;
+
+	const glm::vec3 &va = vertices[a];
+	const glm::vec3 &vb = vertices[b];
+	const glm::vec3 &vc = vertices[c];
+	const glm::vec3 &vd = vertices[d];
+
+	float d0 = glm::distance(va, vd);
+	float d1 = glm::distance(vb, vc);
+
+	size_t toffset = 2 * i * (sample_rate - 1) * (sample_rate - 1);
+	size_t tindex = toffset + 2 * (j * (sample_rate - 1) + k);
+	if (d0 < d1) {
+		triangles[tindex] = glm::ivec3(a, d, b);
+		triangles[tindex + 1] = glm::ivec3(a, c, d);
+	} else {
+		triangles[tindex] = glm::ivec3(a, c, b);
+		triangles[tindex + 1] = glm::ivec3(b, c, d);
 	}
-
-	bool operator==(const ordered_pair &other) const {
-		return a == other.a && b == other.b;
-	}
-
-	static size_t hash(const ordered_pair &p) {
-		return std::hash <uint32_t> ()(p.a) ^ std::hash <uint32_t> ()(p.b);
-	}
-}; */
-
-struct ordered_pair {
-	uint32_t a;
-	uint32_t b;
-
-	ordered_pair(uint32_t a_, uint32_t b_) : a(a_), b(b_) {
-		if (a > b)
-			std::swap(a, b);
-	}
-
-	bool operator==(const ordered_pair &other) const {
-		return a == other.a && b == other.b;
-	}
-
-	static size_t hash(const ordered_pair &p) {
-		return std::hash <uint32_t> ()(p.a) ^ std::hash <uint32_t> ()(p.b);
-	}
-};
-
-template <typename T>
-using ordered_pair_map = std::unordered_map <ordered_pair, T, decltype(&ordered_pair::hash)>;
-
-using directed_pair = std::pair <uint32_t, uint32_t>;
-
-namespace std {
-
-template <>
-struct hash <directed_pair> {
-	size_t operator()(const directed_pair &p) const {
-		return std::hash <uint32_t> ()(p.first) ^ std::hash <uint32_t> ()(p.second);
-	}
-};
-
 }
 
-struct dual_graph {
-	ordered_pair_map <std::unordered_set <uint32_t>> edges;
-	std::unordered_map <uint32_t, std::unordered_set <uint32_t>> faces;
-	std::vector <glm::ivec3> triangles;
+torch::Tensor triangulate_shorted(const torch::Tensor &vertices, size_t complex_count, size_t sample_rate)
+{
+	assert(vertices.dtype() == torch::kFloat32);
+	assert(vertices.dim() == 2 && vertices.size(1) == 3);
+	assert(vertices.is_cuda());
 
-	dual_graph(const torch::Tensor &triangles) : edges(0, ordered_pair::hash) {
-		assert(triangles.dim() == 2 && triangles.size(1) == 3);
-		assert(triangles.dtype() == torch::kInt32);
-		assert(triangles.device().is_cpu());
+	long triangle_count = 2 * complex_count * (sample_rate - 1) * (sample_rate - 1);
 
-		uint32_t triangle_count = triangles.size(0);
+	auto options = torch::TensorOptions()
+		.dtype(torch::kInt32)
+		.device(torch::kCUDA, 0);
 
-		for (uint32_t i = 0; i < triangle_count; i++) {
-			int32_t v0 = triangles[i][0].item().to <int32_t> ();
-			int32_t v1 = triangles[i][1].item().to <int32_t> ();
-			int32_t v2 = triangles[i][2].item().to <int32_t> ();
+	torch::Tensor out = torch::zeros({ triangle_count, 3 }, options);
 
-			ordered_pair e0(v0, v1);
-			ordered_pair e1(v1, v2);
-			ordered_pair e2(v2, v0);
+	glm::vec3 *vertices_ptr = (glm::vec3 *) vertices.data_ptr <float> ();
+	glm::ivec3 *out_ptr = (glm::ivec3 *) out.data_ptr <int32_t> ();
 
-			edges[e0].insert(i);
-			edges[e1].insert(i);
-			edges[e2].insert(i);
+	dim3 block(sample_rate - 1, sample_rate - 1);
+	dim3 grid(complex_count);
 
-			this->triangles.push_back(glm::ivec3(v0, v1, v2));
-		}
+	triangulate_shorted_kernel <<< grid, block >>> (vertices_ptr, out_ptr, sample_rate);
 
-		for (auto &kv : edges) {
-			for (uint32_t f0 : kv.second) {
-				for (uint32_t f1 : kv.second) {
-					if (f0 == f1)
-						continue;
-					faces[f0].insert(f1);
-				}
-			}
-		} 
-
-		printf("edges: %lu\n", edges.size());
-		printf("faces: %lu\n", faces.size());
+	cudaDeviceSynchronize();
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
+		exit(1);
 	}
 
-	// Correctly orient the triangles (for proper normal computation)
-	torch::Tensor oriented_triangles() const {
-		std::vector <glm::ivec3> oriented;
+	return out;
+}
 
-		std::queue <uint32_t> fqueue;
-		fqueue.push(0);
+struct ordered_pair {
+	int32_t a, b;
 
-		std::unordered_set <uint32_t> visited;
-		std::unordered_map <uint32_t, uint32_t> prev;
-		visited.insert(0);
-
-		while (!fqueue.empty()) {
-			uint32_t f = fqueue.front();
-			fqueue.pop();
-			// printf("processing face %d\n", f);
-
-			if (prev.count(f) == 0) {
-				// printf("  > first face\n");
-				// This means that this is the first triangle
-				// and we can use it as reference
-				const glm::ivec3 &tri = triangles[f];
-				oriented.push_back(tri);
-			} else {
-				// printf("  > not first face\n");
-				// We need to make sure of the consitency between the
-				// current triangle and the previous one
-				const glm::ivec3 &prev_tri = oriented[prev[f]];
-				glm::ivec3 tri = triangles[f];
-
-				// If any edges are shared, they must be in the same order
-				std::array <directed_pair, 3> prev_edges {
-					directed_pair(prev_tri[0], prev_tri[1]),
-					directed_pair(prev_tri[1], prev_tri[2]),
-					directed_pair(prev_tri[2], prev_tri[0])
-				};
-
-				for (int i = 0; i < 3; i++) {
-					const directed_pair &edge = prev_edges[i];
-
-					bool corrected = false;
-					for (int j = 0; j < 3; j++) {
-						uint32_t j0 = j;
-						uint32_t j1 = (j + 1) % 3;
-
-						bool swapped = tri[j0] == edge.second && tri[j1] == edge.first;
-						if (swapped) {
-							std::swap(tri[j0], tri[j1]);
-							corrected = true;
-							break;
-						}
-					}
-
-					// At most one edge is shared, therefore we can break
-					if (corrected)
-						break;
-				}
-
-				oriented.push_back(tri);
-			}
-
-			// Add unvisited faces to the queue
-			for (uint32_t fn : faces.at(f)) {
-				if (visited.count(fn))
-					continue;
-
-				fqueue.push(fn);
-				visited.insert(fn);
-				// printf("  > adding face %d\n", fn);
-				prev[fn] = oriented.size() - 1;
-			}
+	bool from(int32_t a_, uint32_t b_) {
+		if (a_ > b_) {
+			a = b_;
+			b = a_;
+			return true;
 		}
 
-		// assert(oriented.size() == triangles.size());
+		a = a_;
+		b = b_;
+		return false;
+	}
 
-		/* std::vector <glm::ivec3> oriented = triangles;
-		std::queue <directed_pair> queue;
+	bool operator==(const ordered_pair &other) const {
+		return a == other.a && b == other.b;
+	}
 
-		// Use triangle 0 as reference
-		const glm::ivec3 &tri = oriented[0];
+	struct hash {
+		size_t operator()(const ordered_pair &p) const {
+			std::hash <int32_t> h;
+			return h(p.a) ^ h(p.b);
+		}
+	};
+};
 
-		// This is the canonical/correct edge orientation
-		queue.push(directed_pair(tri[0], tri[1]));
-		queue.push(directed_pair(tri[1], tri[2]));
-		queue.push(directed_pair(tri[2], tri[0]));
+__global__
+void remapper_kernel(int32_t *map, glm::ivec3 *__restrict__ triangles, size_t size)
+{
+	size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+	size_t stride = blockDim.x * gridDim.x;
 
-		std::unordered_set <directed_pair> edges_visited;
-		std::unordered_set <uint32_t> triangles_visited;
-		triangles_visited.insert(0);
+	for (size_t i = tid; i < size; i += stride) {
+		triangles[i].x = map[triangles[i].x];
+		triangles[i].y = map[triangles[i].y];
+		triangles[i].z = map[triangles[i].z];
+	}
+}
 
-		while (!queue.empty()) {
-			const directed_pair &edge = queue.front();
-			queue.pop();
+struct remapper : std::unordered_map <int32_t, int32_t> {
+	// CUDA map
+	int32_t *dev_map = nullptr; // index -> value
 
-			ordered_pair op(edge.first, edge.second);
-			const auto &fs = edges.at(op);
+	explicit remapper(const std::unordered_map <int32_t, int32_t> &map)
+			: std::unordered_map <int32_t, int32_t> (map) {
+		// Make sure that all values are present
+		// i.e. from 1 to map size
+		for (int32_t i = 0; i < map.size(); i++)
+			assert(this->find(i) != this->end());
 
-			for (uint32_t f : fs) {
-				if (triangles_visited.count(f))
-					continue;
+		// Allocate a device map
+		std::vector <int32_t> host_map(map.size());
+		for (auto &kv : map)
+			host_map[kv.first] = kv.second;
 
-				// Correct the orientation of the triangle
-				glm::ivec3 &tri = oriented[f];
-				for (int i = 0; i < 3; i++) {
-					uint32_t i0 = i;
-					uint32_t i1 = (i + 1) % 3;
+		cudaMalloc(&dev_map, map.size() * sizeof(int32_t));
+		cudaMemcpy(dev_map, host_map.data(), map.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+	}
 
-					bool swapped = tri[i0] == edge.second && tri[i1] == edge.first;
-					if (swapped) {
-						std::swap(tri[i0], tri[i1]);
-						break;
-					}
-				}
+	torch::Tensor remap(const torch::Tensor &indices) const {
+		assert(indices.dtype() == torch::kInt32);
+		assert(indices.dim() == 2 && indices.size(1) == 3);
+		assert(indices.is_cpu());
 
-				// Add unvisited edges to the queue
-				for (int i = 0; i < 3; i++) {
-					uint32_t i0 = i;
-					uint32_t i1 = (i + 1) % 3;
+		torch::Tensor out = torch::zeros_like(indices);
+		int32_t *out_ptr = out.data_ptr <int32_t> ();
+		int32_t *indices_ptr = indices.data_ptr <int32_t> ();
 
-					directed_pair e(tri[i0], tri[i1]);
-					if (edges_visited.count(e))
-						continue;
+		for (int32_t i = 0; i < indices.numel(); i++) {
+			auto it = this->find(indices_ptr[i]);
+			assert(it != this->end());
+			out_ptr[i] = it->second;
+		}
 
-					queue.push(e);
-					edges_visited.insert(e);
-				}
-			}
-		} */
+		return out;
+	}
 
-		torch::Tensor result = torch::zeros({ (signed long) triangles.size(), 3 }, torch::kInt32);
-		int32_t *result_ptr = result.data_ptr <int32_t> ();
-		std::memcpy(result_ptr, oriented.data(), triangles.size() * sizeof(glm::uvec3));
-		return result;
+	torch::Tensor remap_device(const torch::Tensor &indices) const {
+		assert(indices.dtype() == torch::kInt32);
+		assert(indices.dim() == 2 && indices.size(1) == 3);
+		assert(indices.is_cuda());
+
+		torch::Tensor out = indices.clone();
+		glm::ivec3 *out_ptr = (glm::ivec3 *) out.data_ptr <int32_t> ();
+
+		dim3 block(256);
+		dim3 grid((indices.size(0) + block.x - 1) / block.x);
+
+		remapper_kernel <<< grid, block >>> (dev_map, out_ptr, indices.size(0));
+
+		cudaDeviceSynchronize();
+		cudaError_t err = cudaGetLastError();
+		if (err != cudaSuccess) {
+			std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
+			exit(1);
+		}
+
+		return out;
+	}
+
+	torch::Tensor scatter(const torch::Tensor &vertices) const {
+		assert(vertices.dtype() == torch::kFloat32);
+		assert(vertices.dim() == 2 && vertices.size(1) == 3);
+		assert(vertices.is_cpu());
+
+		torch::Tensor out = torch::zeros_like(vertices);
+		glm::vec3 *out_ptr = (glm::vec3 *) out.data_ptr <float> ();
+		glm::vec3 *vertices_ptr = (glm::vec3 *) vertices.data_ptr <float> ();
+
+		for (int32_t i = 0; i < vertices.size(0); i++) {
+			auto it = this->find(i);
+			assert(it != this->end());
+			out_ptr[i] = vertices_ptr[it->second];
+		}
+
+		return out;
 	}
 };
+
+remapper generate_remapper(const torch::Tensor &complexes,
+		std::unordered_map <int32_t, std::set <int32_t>> &cmap,
+		int64_t vertex_count,
+		int64_t sample_rate)
+{
+	assert(complexes.is_cpu());
+	assert(complexes.dtype() == torch::kInt32);
+	assert(complexes.dim() == 2 && complexes.size(1) == 4);
+
+	std::vector <glm::ivec4> cs(complexes.size(0));
+	// printf("cs: %lu\n", cs.size());
+	int32_t *ptr = complexes.data_ptr <int32_t> ();
+	std::memcpy(cs.data(), ptr, complexes.size(0) * sizeof(glm::ivec4));
+
+	// Mappings
+	std::unordered_map <int32_t, int32_t> rcmap;
+	for (const auto &[k, v] : cmap) {
+		for (const auto &i : v)
+			rcmap[i] = k;
+	}
+
+	std::unordered_map <int32_t, int32_t> remap;
+	// remapper remap;
+	for (size_t i = 0; i < vertex_count; i++)
+		remap[i] = i;
+
+	for (const auto &[_, s] : cmap) {
+		int32_t new_vertex = *s.begin();
+		for (const auto &v : s)
+			remap[v] = new_vertex;
+	}
+
+	std::unordered_map <ordered_pair, std::set <std::pair <int32_t, std::vector <int32_t>>>, ordered_pair::hash> bmap;
+
+	for (int32_t i = 0; i < cs.size(); i++) {
+		int32_t i00 = i * sample_rate * sample_rate;
+		int32_t i10 = i00 + (sample_rate - 1);
+		int32_t i01 = i00 + (sample_rate - 1) * sample_rate;
+		int32_t i11 = i00 + (sample_rate * sample_rate - 1);
+
+		int32_t c00 = rcmap[i00];
+		int32_t c10 = rcmap[i10];
+		int32_t c01 = rcmap[i01];
+		int32_t c11 = rcmap[i11];
+
+		ordered_pair p;
+		bool reversed;
+
+		std::vector <int32_t> b00_10;
+		std::vector <int32_t> b00_01;
+		std::vector <int32_t> b10_11;
+		std::vector <int32_t> b01_11;
+
+		// 00 -> 10
+		reversed = p.from(c00, c10);
+		if (reversed) {
+			for (int32_t i = sample_rate - 2; i >= 1; i--)
+				b00_10.push_back(i + i00);
+		} else {
+			for (int32_t i = 1; i <= sample_rate - 2; i++)
+				b00_10.push_back(i + i00);
+		}
+
+		bmap[p].insert({ i, b00_10 });
+
+		// 00 -> 01
+		reversed = p.from(c00, c01);
+		if (reversed) {
+			for (int32_t i = sample_rate * (sample_rate - 2); i >= sample_rate; i -= sample_rate)
+				b00_01.push_back(i + i00);
+		} else {
+			for (int32_t i = sample_rate; i <= sample_rate * (sample_rate - 2); i += sample_rate)
+				b00_01.push_back(i + i00);
+		}
+
+		bmap[p].insert({ i, b00_01 });
+
+		// 10 -> 11
+		reversed = p.from(c10, c11);
+		if (reversed) {
+			for (int32_t i = sample_rate - 2; i >= 1; i--)
+				b10_11.push_back(i * sample_rate + sample_rate - 1 + i00);
+		} else {
+			for (int32_t i = 1; i <= sample_rate - 2; i++)
+				b10_11.push_back(i * sample_rate + sample_rate - 1 + i00);
+		}
+
+		bmap[p].insert({ i, b10_11 });
+
+		// 01 -> 11
+		reversed = p.from(c01, c11);
+		if (reversed) {
+			for (int32_t i = sample_rate - 2; i >= 1; i--)
+				b01_11.push_back((sample_rate - 1) * sample_rate + i + i00);
+		} else {
+			for (int32_t i = 1; i <= sample_rate - 2; i++)
+				b01_11.push_back((sample_rate - 1) * sample_rate + i + i00);
+		}
+
+		bmap[p].insert({ i, b01_11 });
+	}
+
+	for (const auto &[p, bs] : bmap) {
+		const auto &ref = *bs.begin();
+		for (const auto &b : bs) {
+			for (int32_t i = 0; i < b.second.size(); i++) {
+				remap[b.second[i]] = ref.second[i];
+			}
+		}
+	}
+
+	return remapper(remap);
+}
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
@@ -1242,9 +1312,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 		.def("smooth", &vertex_graph::smooth)
 		.def("smooth_device", &vertex_graph::smooth_device);
 
-	py::class_ <dual_graph> (m, "dual_graph")
-		.def(py::init <const torch::Tensor &> ())
-		.def("oriented_triangles", &dual_graph::oriented_triangles);
+	py::class_ <remapper> (m, "remapper")
+		.def("remap", &remapper::remap, "Remap indices")
+		.def("remap_device", &remapper::remap_device, "Remap indices")
+		.def("scatter", &remapper::scatter, "Scatter vertices");
 
 	m.def("barycentric_closest_points", &barycentric_closest_points);
+	m.def("triangulate_shorted", &triangulate_shorted);
+	m.def("generate_remapper", &generate_remapper, "Generate remapper");
 }
