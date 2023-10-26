@@ -29,7 +29,12 @@ assert len(sys.argv) > 1
 if not os.path.exists('build'):
     os.makedirs('build')
 
-optext = load(name='optext', sources=[ 'ext/casdf.cu' ], extra_include_paths=[ 'glm' ], build_directory='build')
+optext = load(name='optext',
+        sources=[ 'optext.cu' ],
+        extra_include_paths=[ 'glm' ],
+        build_directory='build',
+        extra_cflags=[ '-O3' ],
+        extra_cuda_cflags=[ '-O3' ])
 
 directory = sys.argv[1]
 mesh = meshio.read(os.path.join(directory, 'target.obj'))
@@ -75,44 +80,90 @@ def lookat(eye, center, up):
         [0, 0, 0, 1]
     ], device='cuda', dtype=torch.float32)
 
-def sample_cameras(batch):
-    # TODO: pass an offset to the camera
-    triangles = torch.randint(0, f_ref.shape[0], (batch,), device='cuda')
-    barys = torch.rand((batch, 2), device='cuda')
-    barys = torch.where(barys.sum(dim=1, keepdim=True) > 1.0, 1.0 - barys, barys)
-    barys = torch.cat((barys, 1.0 - barys.sum(dim=1, keepdim=True)), dim=1)
+# def sample_cameras(batch):
+#     # TODO: pass an offset to the camera
+#     triangles = torch.randint(0, f_ref.shape[0], (batch,), device='cuda')
+#     barys = torch.rand((batch, 2), device='cuda')
+#     barys = torch.where(barys.sum(dim=1, keepdim=True) > 1.0, 1.0 - barys, barys)
+#     barys = torch.cat((barys, 1.0 - barys.sum(dim=1, keepdim=True)), dim=1)
+#
+#     v0 = v_ref[f_ref[triangles, 0]]
+#     v1 = v_ref[f_ref[triangles, 1]]
+#     v2 = v_ref[f_ref[triangles, 2]]
+#
+#     n0 = n_ref[f_ref[triangles, 0]]
+#     n1 = n_ref[f_ref[triangles, 1]]
+#     n2 = n_ref[f_ref[triangles, 2]]
+#
+#     view_points = barys[:, 0].unsqueeze(1) * v0 + barys[:, 1].unsqueeze(1) * v1 + barys[:, 2].unsqueeze(1) * v2
+#     view_normals = barys[:, 0].unsqueeze(1) * n0 + barys[:, 1].unsqueeze(1) * n1 + barys[:, 2].unsqueeze(1) * n2
+#     view_normals = view_normals / torch.norm(view_normals, dim=1, keepdim=True)
+#
+#     eye_offsets = view_normals * 1.0
+#     eyes = view_points + eye_offsets
+#
+#     canonical_up = torch.tensor([0.0, 1.0, 0.0], device='cuda')
+#     canonical_up = torch.stack(batch * [canonical_up], dim=0)
+#
+#     rights = torch.cross(view_normals, canonical_up)
+#     ups = torch.cross(rights, view_normals)
+#
+#     views = [ lookat(eye, view_point, up) for eye, view_point, up in zip(eyes, view_points, ups) ]
+#     return torch.stack(views, dim=0), eyes, view_normals
+#
+# all_views, eyes, forwards = sample_cameras(100)
 
-    v0 = v_ref[f_ref[triangles, 0]]
-    v1 = v_ref[f_ref[triangles, 1]]
-    v2 = v_ref[f_ref[triangles, 2]]
+target_geometry = optext.geometry(v_ref.cpu(), n_ref.cpu(), f_ref.cpu())
+seeds = list(torch.randint(0, f_ref.shape[0], (100,)).numpy())
+print('Seeds:', seeds)
+clusters = optext.cluster_geometry(target_geometry, seeds, 3)
+# print('Clusters:', clusters)
 
-    n0 = n_ref[f_ref[triangles, 0]]
-    n1 = n_ref[f_ref[triangles, 1]]
-    n2 = n_ref[f_ref[triangles, 2]]
+# Compute the centroid and normal for each cluster
+cluster_centroids = []
+cluster_normals = []
 
-    view_points = barys[:, 0].unsqueeze(1) * v0 + barys[:, 1].unsqueeze(1) * v1 + barys[:, 2].unsqueeze(1) * v2
-    view_normals = barys[:, 0].unsqueeze(1) * n0 + barys[:, 1].unsqueeze(1) * n1 + barys[:, 2].unsqueeze(1) * n2
-    view_normals = view_normals / torch.norm(view_normals, dim=1, keepdim=True)
+for cluster in clusters:
+    faces = f_ref[cluster]
+    
+    v0 = v_ref[faces[:, 0]]
+    v1 = v_ref[faces[:, 1]]
+    v2 = v_ref[faces[:, 2]]
+    centroids = (v0 + v1 + v2) / 3.0
+    centroids = centroids.mean(dim=0)
 
-    eye_offsets = view_normals * 1.0
-    eyes = view_points + eye_offsets
+    n0 = n_ref[faces[:, 0]]
+    n1 = n_ref[faces[:, 1]]
+    n2 = n_ref[faces[:, 2]]
+    normals = n0 + n1 + n2
+    normals = normals.mean(dim=0)
+    normals = normals / torch.norm(normals)
 
-    canonical_up = torch.tensor([0.0, 1.0, 0.0], device='cuda')
-    canonical_up = torch.stack(batch * [canonical_up], dim=0)
+    cluster_centroids.append(centroids)
+    cluster_normals.append(normals)
 
-    rights = torch.cross(view_normals, canonical_up)
-    ups = torch.cross(rights, view_normals)
+cluster_centroids = torch.stack(cluster_centroids, dim=0)
+cluster_normals = torch.stack(cluster_normals, dim=0)
 
-    views = [ lookat(eye, view_point, up) for eye, view_point, up in zip(eyes, view_points, ups) ]
-    return torch.stack(views, dim=0), eyes, view_normals
+canonical_up = torch.tensor([0.0, 1.0, 0.0], device='cuda')
+cluster_eyes = cluster_centroids + cluster_normals * 2.0
+cluster_ups = torch.stack(len(clusters) * [ canonical_up ], dim=0)
+cluster_rights = torch.cross(cluster_normals, cluster_ups)
+cluster_ups = torch.cross(cluster_rights, cluster_normals)
 
-all_views, eyes, forwards = sample_cameras(100)
-import polyscope as ps
-ps.init()
-ps.register_surface_mesh('mesh', v_ref.cpu().numpy(), f_ref.cpu().numpy())
-ps.register_point_cloud('views', eyes.cpu().numpy()) \
-        .add_vector_quantity('forwards', -forwards.cpu().numpy(), enabled=True)
-ps.show()
+all_views = [ lookat(eye, view_point, up) for eye, view_point, up in zip(cluster_eyes, cluster_centroids, cluster_ups) ]
+all_views = torch.stack(all_views, dim=0)
+
+# import polyscope as ps
+# ps.init()
+# ps.register_surface_mesh('mesh', v_ref.cpu().numpy(), f_ref.cpu().numpy())
+# # ps.register_point_cloud('views', eyes.cpu().numpy()) \
+# #         .add_vector_quantity('forwards', -forwards.cpu().numpy(), enabled=True)
+# ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
+#         .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
+# for i, c in enumerate(clusters):
+#     ps.register_surface_mesh('cluster_{}'.format(i), v_ref.cpu().numpy(), f_ref.cpu().numpy()[c])
+# ps.show()
 
 mesh = meshio.read(os.path.join(directory, 'source.obj'))
 
@@ -224,7 +275,9 @@ ps.register_surface_mesh('base', base.cpu().numpy(), base_indices)
 V = V.detach()
 indices = shorted_indices(V.cpu().numpy(), complexes.cpu().numpy(), 4)
 ps.register_surface_mesh('model-phase1', V.cpu().numpy(), indices)
-ps.show()
+ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
+        .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
+# ps.show()
 
 # Inverse rendering from here...
 

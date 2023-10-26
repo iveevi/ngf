@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <set>
 #include <stdio.h>
 #include <unordered_map>
@@ -12,11 +13,53 @@
 
 #include <torch/extension.h>
 
-// TODO: rename to surface opt
+struct ordered_pair {
+	int32_t a, b;
+
+	ordered_pair(int32_t a_ = 0, int32_t b_ = 0)
+			: a(a_), b(b_) {
+		if (a > b) {
+			a = b_;
+			b = a_;
+		}
+	}
+
+	// TODO: remove?
+	bool from(int32_t a_, uint32_t b_) {
+		a = a_;
+		b = b_;
+
+		if (a > b) {
+			a = b_;
+			b = a_;
+			return true;
+		}
+
+		// a = a_;
+		// b = b_;
+		return false;
+	}
+
+	bool operator==(const ordered_pair &other) const {
+		return a == other.a && b == other.b;
+	}
+
+	bool operator<(const ordered_pair &other) const {
+		return a < other.a || (a == other.a && b < other.b);
+	}
+
+	struct hash {
+		size_t operator()(const ordered_pair &p) const {
+			std::hash <int32_t> h;
+			return h(p.a) ^ h(p.b);
+		}
+	};
+};
+
 struct geometry {
 	std::vector <glm::vec3> vertices;
         std::vector <glm::vec3> normals;
-	std::vector <glm::uvec3> triangles;
+	std::vector <glm::ivec3> triangles;
 
 	geometry(const torch::Tensor &torch_vertices, const torch::Tensor &torch_triangles) {
 		// Expects:
@@ -108,10 +151,261 @@ struct geometry {
 
 		return std::make_tuple(torch_vertices.cuda(), torch_normals.cuda(), torch_triangles.cuda());
 	}
+
+	// Helper methods
+	float area(size_t index) const {
+		assert(index < triangles.size());
+		const glm::ivec3 &triangle = triangles[index];
+		const glm::vec3 &v0 = vertices[triangle[0]];
+		const glm::vec3 &v1 = vertices[triangle[1]];
+		const glm::vec3 &v2 = vertices[triangle[2]];
+		return 0.5 * glm::length(glm::cross(v1 - v0, v2 - v0));
+	}
+
+	glm::vec3 centroid(size_t index) const {
+		assert(index < triangles.size());
+		const glm::ivec3 &triangle = triangles[index];
+		const glm::vec3 &v0 = vertices[triangle[0]];
+		const glm::vec3 &v1 = vertices[triangle[1]];
+		const glm::vec3 &v2 = vertices[triangle[2]];
+		return (v0 + v1 + v2) / 3.0f;
+	}
+
+	glm::vec3 face_normal(size_t index) const {
+		assert(index < triangles.size());
+		const glm::ivec3 &triangle = triangles[index];
+		const glm::vec3 &v0 = vertices[triangle[0]];
+		const glm::vec3 &v1 = vertices[triangle[1]];
+		const glm::vec3 &v2 = vertices[triangle[2]];
+		return glm::normalize(glm::cross(v1 - v0, v2 - v0));
+	}
+
+	// Graph structures
+	using edge_graph = std::map <ordered_pair, std::unordered_set <int32_t>>;
+	using dual_graph = std::unordered_map <int32_t, std::unordered_set <int32_t>>;
+
+	edge_graph make_edge_graph() const {
+		edge_graph egraph;
+
+		auto add_edge = [&](int32_t a, int32_t  b, int32_t f) {
+			if (a > b)
+				std::swap(a, b);
+
+			ordered_pair e { a, b };
+			egraph[e].insert(f);
+		};
+
+		for (int32_t i = 0; i < triangles.size(); i++) {
+			int32_t i0 = triangles[i][0];
+			int32_t i1 = triangles[i][1];
+			int32_t i2 = triangles[i][2];
+
+			add_edge(i0, i1, i);
+			add_edge(i1, i2, i);
+			add_edge(i2, i0, i);
+		}
+
+		return egraph;
+	}
+
+	dual_graph make_dual_graph(const edge_graph &egraph) const {
+		dual_graph dgraph;
+
+		auto add_dual = [&](int32_t a, int32_t b, int32_t f) {
+			if (a > b)
+				std::swap(a, b);
+
+			ordered_pair e { a, b };
+
+			auto &set = dgraph[f];
+			auto adj = egraph.at(e);
+			adj.erase(f);
+
+			set.merge(adj);
+		};
+
+		for (int32_t i = 0; i < triangles.size(); i++) {
+			int32_t i0 = triangles[i][0];
+			int32_t i1 = triangles[i][1];
+			int32_t i2 = triangles[i][2];
+
+			add_dual(i0, i1, i);
+			add_dual(i1, i2, i);
+			add_dual(i2, i0, i);
+		}
+
+		return dgraph;
+	}
 };
 
+// Chartifying geometry into N clusters
+std::vector <std::vector <int32_t>> cluster_once(const geometry &g, const geometry::dual_graph &dgraph, const std::vector <int32_t> &seeds)
+{
+	// Data structures
+	struct face {
+		int32_t i;
+		float *costs = nullptr;
+
+		bool operator<(const face &f) const {
+			return (costs[i] < costs[f.i]) ||
+				((std::abs(costs[i] - costs[f.i]) < 1e-6f) && (i < f.i));
+		}
+
+		bool operator>(const face &f) const {
+			return (costs[i] > costs[f.i]) ||
+				((std::abs(costs[i] - costs[f.i]) < 1e-6f) && (i > f.i));
+		}
+
+		bool operator==(const face &f) const {
+			return i == f.i;
+		}
+	};
+
+	struct : public std::priority_queue <face, std::vector <face>, std::greater <face>> {
+		void rebuild() {
+			std::make_heap(this->c.begin(), this->c.end(), this->comp);
+		}
+	} queue;
+
+	// Initialization
+	using cluster = std::vector <int32_t>;
+
+	std::unordered_map <int32_t, int32_t> face_to_cluster;
+	std::vector <cluster>                 clusters;
+	std::vector <glm::vec3>               cluster_normals;
+	std::vector <float>                   costs;
+
+	for (int32_t s : seeds) {
+		assert(s < g.triangles.size());
+		face_to_cluster[s] = clusters.size();
+		clusters.push_back(cluster { s });
+		cluster_normals.push_back(g.face_normal(s));
+	}
+
+	costs.resize(g.triangles.size(), FLT_MAX);
+	for (int32_t i = 0; i < g.triangles.size(); i++) {
+		face face;
+		face.i = i;
+		face.costs = costs.data();
+
+		if (std::find(seeds.begin(), seeds.end(), i) != seeds.end())
+			costs[i] = 0.0;
+
+		queue.push(face);
+	}
+
+	// Precompute centroids and normals
+	std::vector <glm::vec3> centroids;
+	std::vector <glm::vec3> normals;
+
+	for (int32_t i = 0; i < g.triangles.size(); i++) {
+		centroids.push_back(g.centroid(i));
+		normals.push_back(g.face_normal(i));
+	}
+
+	// Grow the charts
+	std::unordered_set <int32_t> visited;
+	while (queue.size() > 0) {
+		face face = queue.top();
+		queue.pop();
+
+		// printf("Remaining: %zu; current is %d with %f\n", queue.size(), face.i, costs[face.i]);
+
+		if (std::isinf(costs[face.i]))
+			break;
+
+		int32_t c_index     = face_to_cluster[face.i];
+
+		cluster &c          = clusters[c_index];
+		glm::vec3 &c_normal = cluster_normals[c_index];
+
+		for (int32_t neighbor : dgraph.at(face.i)) {
+			if (visited.count(neighbor) > 0)
+				continue;
+
+			glm::vec3 n_normal = normals[neighbor];
+			float dc           = glm::length(centroids[face.i] - centroids[neighbor]);
+			float dn           = std::max(1 - glm::dot(c_normal, n_normal), 0.0f);
+			float new_cost     = costs[face.i] + dn * dc;
+
+			if (new_cost < costs[neighbor]) {
+				float size = c.size();
+				glm::vec3 new_normal = (c_normal * size + n_normal)/(size + 1.0f);
+
+				face_to_cluster[neighbor] = c_index;
+				cluster_normals[c_index]  = new_normal;
+				costs[neighbor]           = new_cost;
+				clusters[c_index].push_back(neighbor);
+
+				queue.rebuild();
+				// TODO: should be done after the loop... (any visited updates, that is)
+				// visited.insert(neighbor);
+			}
+		}
+
+		visited.insert(face.i);
+	}
+
+	return clusters;
+}
+
+std::vector <std::vector <int32_t>> cluster_geometry(const geometry &g, const std::vector <int32_t> &seeds, int32_t iterations)
+{
+	// Make the dual graph
+	auto egraph = g.make_edge_graph();
+	auto dgraph = g.make_dual_graph(egraph);
+
+	std::vector <std::vector <int32_t>> clusters;
+	std::vector <int32_t> next_seeds = seeds;
+
+	for (int32_t i = 0; i < iterations; i++) {
+		clusters = cluster_once(g, dgraph, next_seeds);
+		printf("Iteration %d: %zu clusters\n", i, clusters.size());
+		if (i == iterations - 1)
+			break;
+
+		// Find the central faces for each cluster,
+		// i.e. the face closest to the centroid
+		std::vector <glm::vec3> centroids;
+		for (const auto &c : clusters) {
+			glm::vec3 centroid(0.0f);
+			float wsum = 0.0f;
+			for (int32_t f : c) {
+				float w = g.area(f);
+				centroid += g.centroid(f) * w;
+				wsum += w;
+			}
+
+			centroid /= wsum;
+			centroids.push_back(centroid);
+		}
+
+		// For each cluster, find the closest face
+		next_seeds.clear();
+		for (int32_t i = 0; i < clusters.size(); i++) {
+			const auto &c = clusters[i];
+			const auto &centroid = centroids[i];
+
+			float min_dist = FLT_MAX;
+			int32_t min_face = -1;
+
+			for (int32_t f : c) {
+				float dist = glm::length(centroid - g.centroid(f));
+				if (dist < min_dist) {
+					min_dist = dist;
+					min_face = f;
+				}
+			}
+
+			next_seeds.push_back(min_face);
+		}
+	}
+
+	return clusters;
+}
+
 // Closest point caching acceleration structure and arguments
-struct dev_cas_grid {
+struct dev_cached_grid {
 	glm::vec3 min;
 	glm::vec3 max;
 	glm::vec3 bin_size;
@@ -128,7 +422,7 @@ struct dev_cas_grid {
 	uint32_t resolution;
 };
 
-struct cas_grid {
+struct cached_grid {
 	geometry ref;
 
 	glm::vec3 min;
@@ -141,10 +435,10 @@ struct cas_grid {
 	std::vector <query_bin> overlapping_triangles;
 	std::vector <query_bin> query_triangles;
 
-	dev_cas_grid dev_cas;
+	dev_cached_grid dev_cas;
 
 	// Construct from mesh
-	cas_grid(const geometry &, uint32_t);
+	cached_grid(const geometry &, uint32_t);
 
 	uint32_t to_index(const glm::ivec3 &bin) const;
 	uint32_t to_index(const glm::vec3 &p) const;
@@ -267,7 +561,7 @@ static void triangle_closest_point(const glm::vec3 &v0, const glm::vec3 &v1, con
 }
 
 // Cached acceleration structure
-cas_grid::cas_grid(const geometry &ref_, uint32_t resolution_)
+cached_grid::cached_grid(const geometry &ref_, uint32_t resolution_)
 		: ref(ref_), resolution(resolution_)
 {
 	uint32_t size = resolution * resolution * resolution;
@@ -304,12 +598,12 @@ cas_grid::cas_grid(const geometry &ref_, uint32_t resolution_)
 	}
 }
 
-uint32_t cas_grid::to_index(const glm::ivec3 &bin) const
+uint32_t cached_grid::to_index(const glm::ivec3 &bin) const
 {
 	return bin.x + bin.y * resolution + bin.z * resolution * resolution;
 }
 
-uint32_t cas_grid::to_index(const glm::vec3 &p) const
+uint32_t cached_grid::to_index(const glm::vec3 &p) const
 {
 	glm::vec3 bin_flt = glm::clamp((p - min) / bin_size, glm::vec3(0), glm::vec3(resolution - 1));
 	glm::ivec3 bin = glm::ivec3(bin_flt);
@@ -317,7 +611,7 @@ uint32_t cas_grid::to_index(const glm::vec3 &p) const
 }
 
 // Find the complete set of query triangles for a point
-std::unordered_set <uint32_t> cas_grid::closest_triangles(const glm::vec3 &p) const
+std::unordered_set <uint32_t> cached_grid::closest_triangles(const glm::vec3 &p) const
 {
 	// Get the current bin
 	glm::vec3 bin_flt = glm::clamp((p - min) / bin_size, glm::vec3(0), glm::vec3(resolution - 1));
@@ -433,7 +727,7 @@ std::unordered_set <uint32_t> cas_grid::closest_triangles(const glm::vec3 &p) co
 }
 
 // Load the cached query triangles if not already loaded
-bool cas_grid::precache_query(const glm::vec3 &p)
+bool cached_grid::precache_query(const glm::vec3 &p)
 {
 	// Check if the bin is already cached
 	uint32_t bin_index = to_index(p);
@@ -446,7 +740,7 @@ bool cas_grid::precache_query(const glm::vec3 &p)
 	return true;
 }
 
-float cas_grid::precache_query_vector(const torch::Tensor &sources)
+float cached_grid::precache_query_vector(const torch::Tensor &sources)
 {
 	// Ensure device and type and size
 	assert(sources.dim() == 2 && sources.size(1) == 3);
@@ -466,7 +760,7 @@ float cas_grid::precache_query_vector(const torch::Tensor &sources)
 	return (float) any_count / (float) size;
 }
 
-float cas_grid::precache_query_vector_device(const torch::Tensor &sources)
+float cached_grid::precache_query_vector_device(const torch::Tensor &sources)
 {
 	// Ensure device and type and size
 	assert(sources.dim() == 2 && sources.size(1) == 3);
@@ -498,7 +792,7 @@ float cas_grid::precache_query_vector_device(const torch::Tensor &sources)
 }
 
 // Single point query
-std::tuple <glm::vec3, glm::vec3, float, uint32_t> cas_grid::query(const glm::vec3 &p) const
+std::tuple <glm::vec3, glm::vec3, float, uint32_t> cached_grid::query(const glm::vec3 &p) const
 {
 	// Assuming the point is precached already
 	uint32_t bin_index = to_index(p);
@@ -534,7 +828,7 @@ std::tuple <glm::vec3, glm::vec3, float, uint32_t> cas_grid::query(const glm::ve
 	return std::make_tuple(closest, barycentric, distance, triangle_index);
 }
 
-void cas_grid::query_vector(const torch::Tensor &sources,
+void cached_grid::query_vector(const torch::Tensor &sources,
 		torch::Tensor &closest,
 		torch::Tensor &bary,
 		torch::Tensor &distance,
@@ -597,7 +891,7 @@ struct closest_point_kinfo {
 };
 
 __global__
-static void closest_point_kernel(dev_cas_grid cas, closest_point_kinfo kinfo)
+static void closest_point_kernel(dev_cached_grid cas, closest_point_kinfo kinfo)
 {
 	uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 	uint32_t stride = blockDim.x * gridDim.x;
@@ -650,7 +944,7 @@ static void closest_point_kernel(dev_cas_grid cas, closest_point_kinfo kinfo)
 	}
 }
 
-void cas_grid::query_vector_device(const torch::Tensor &sources,
+void cached_grid::query_vector_device(const torch::Tensor &sources,
 		torch::Tensor &closest,
 		torch::Tensor &bary,
 		torch::Tensor &distance,
@@ -705,7 +999,7 @@ void cas_grid::query_vector_device(const torch::Tensor &sources,
 	}
 }
 
-void cas_grid::precache_device()
+void cached_grid::precache_device()
 {
 	dev_cas.min = min;
 	dev_cas.max = max;
@@ -1055,33 +1349,6 @@ torch::Tensor triangulate_shorted(const torch::Tensor &vertices, size_t complex_
 	return out;
 }
 
-struct ordered_pair {
-	int32_t a, b;
-
-	bool from(int32_t a_, uint32_t b_) {
-		if (a_ > b_) {
-			a = b_;
-			b = a_;
-			return true;
-		}
-
-		a = a_;
-		b = b_;
-		return false;
-	}
-
-	bool operator==(const ordered_pair &other) const {
-		return a == other.a && b == other.b;
-	}
-
-	struct hash {
-		size_t operator()(const ordered_pair &p) const {
-			std::hash <int32_t> h;
-			return h(p.a) ^ h(p.b);
-		}
-	};
-};
-
 __global__
 void remapper_kernel(int32_t *map, glm::ivec3 *__restrict__ triangles, size_t size)
 {
@@ -1299,13 +1566,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 		.def_readonly("normals", &geometry::normals)
 		.def_readonly("triangles", &geometry::triangles);
 
-	py::class_ <cas_grid> (m, "cas_grid")
+	py::class_ <cached_grid> (m, "cached_grid")
 		.def(py::init <const geometry &, uint32_t> ())
-		.def("precache_query", &cas_grid::precache_query_vector)
-		.def("precache_query_device", &cas_grid::precache_query_vector_device)
-		.def("precache_device", &cas_grid::precache_device)
-		.def("query", &cas_grid::query_vector)
-		.def("query_device", &cas_grid::query_vector_device);
+		.def("precache_query", &cached_grid::precache_query_vector)
+		.def("precache_query_device", &cached_grid::precache_query_vector_device)
+		.def("precache_device", &cached_grid::precache_device)
+		.def("query", &cached_grid::query_vector)
+		.def("query_device", &cached_grid::query_vector_device);
 
 	py::class_ <vertex_graph> (m, "vertex_graph")
 		.def(py::init <const torch::Tensor &> ())
@@ -1317,6 +1584,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 		.def("remap_device", &remapper::remap_device, "Remap indices")
 		.def("scatter", &remapper::scatter, "Scatter vertices");
 
+	m.def("cluster_geometry", &cluster_geometry);
 	m.def("barycentric_closest_points", &barycentric_closest_points);
 	m.def("triangulate_shorted", &triangulate_shorted);
 	m.def("generate_remapper", &generate_remapper, "Generate remapper");

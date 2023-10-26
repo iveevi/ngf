@@ -142,27 +142,16 @@ class NVDRenderer:
         x = torch.tensor([[1,2,3,4]], device='cuda')
         self.proj_mat = persp_proj(self.fov_x, ar, near, far)
 
-        # Construct the Model-View-Projection matrices
-        # self.view_mats = torch.stack(scene_params["view_mats"])
-        # self.mvps = self.proj_mat @ self.view_mats
-
         self.boost = boost
         self.shading = shading
 
         # Initialize rasterizing context
         self.ctx = dr.RasterizeCudaContext()
         # Load the environment map
-        w,h,_ = scene_params['envmap'].shape
         self.envmap = scene_params['envmap_scale'] * scene_params['envmap']
-        import matplotlib.pyplot as plt
-        plt.imshow(self.envmap.cpu().numpy())
-        plt.show()
-        # Precompute lighting
         self.sh = SphericalHarmonics(self.envmap)
-        # Render background for all viewpoints once
-        # self.render_backgrounds(envmap)
 
-    def render_backgrounds(self, envmap, view_mats):
+    def render_backgrounds(self, view_mats):
         """
         Precompute the background of each input viewpoint with the envmap.
 
@@ -188,16 +177,9 @@ class NVDRenderer:
         phi_rot = phi_rot % (2*np.pi)
         theta_rot = theta_rot % (np.pi)
         envmap_uvs = torch.stack([0.75-phi_rot/(2*np.pi), theta_rot/ np.pi], dim=-1)
-        bgs = dr.texture(envmap[None, ...], envmap_uvs, filter_mode='linear').flip(1)
+        bgs = dr.texture(self.envmap[None, ...], envmap_uvs, filter_mode='linear').flip(1)
         bgs[..., -1] = 0 # Set alpha to 0
-        # import matplotlib.pyplot as plt
-        # # plt.imshow(bgs[0].cpu().numpy())
-        # plt.imshow(bgs[0].square().sum(dim=-1).cpu().numpy(), cmap='inferno')
-        # plt.show()
         return bgs
-
-        # self.bgs = dr.texture(envmap[None, ...], envmap_uvs, filter_mode='linear').flip(1)
-        # self.bgs[..., -1] = 0 # Set alpha to 0
 
     def render(self, v, n, f, view_mats):
         """
@@ -220,7 +202,7 @@ class NVDRenderer:
 
         # TODO: pass rotational offset on background...
         mvps = self.proj_mat @ view_mats
-        bgs = self.render_backgrounds(self.envmap, view_mats)
+        bgs = self.render_backgrounds(view_mats)
         v_hom = torch.nn.functional.pad(v, (0,1), 'constant', 1.0)
         v_ndc = torch.matmul(v_hom, mvps.transpose(1,2))
         rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
