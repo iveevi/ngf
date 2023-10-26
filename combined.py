@@ -29,11 +29,6 @@ assert len(sys.argv) > 1
 if not os.path.exists('build'):
     os.makedirs('build')
 
-# optext = load(name='geom_cpp',
-#         sources=[ 'ext/optext.cpp' ],
-#         extra_include_paths=[ 'glm' ],
-#         build_directory='build')
-
 optext = load(name='optext', sources=[ 'ext/casdf.cu' ], extra_include_paths=[ 'glm' ], build_directory='build')
 
 directory = sys.argv[1]
@@ -53,16 +48,14 @@ scene_parameters['far_clip'] = 1000.0
 scene_parameters['envmap'] = environment
 scene_parameters['envmap_scale'] = 1.0
 
-v_ref = torch.from_numpy(mesh.points).float().cuda()
-f_ref = torch.from_numpy(mesh.cells_dict['triangle']).int().cuda()
+v_ref  = torch.from_numpy(mesh.points).float().cuda()
+f_ref  = torch.from_numpy(mesh.cells_dict['triangle']).int().cuda()
 fn_ref = compute_face_normals(v_ref, f_ref)
-n_ref = compute_vertex_normals(v_ref, f_ref, fn_ref)
+n_ref  = compute_vertex_normals(v_ref, f_ref, fn_ref)
 
 print('vertices:', v_ref.shape, 'faces:', f_ref.shape)
 
 # Generate camera views
-import numpy as np
-
 def lookat(eye, center, up):
     normalize = lambda x: x / torch.norm(x)
 
@@ -82,48 +75,44 @@ def lookat(eye, center, up):
         [0, 0, 0, 1]
     ], device='cuda', dtype=torch.float32)
 
-if len(sys.argv) > 2:
-    sp = load_scene(sys.argv[2])
-    scene_parameters['view_mats'] = sp['view_mats']
-else:
-    views = []
+def sample_cameras(batch):
+    # TODO: pass an offset to the camera
+    triangles = torch.randint(0, f_ref.shape[0], (batch,), device='cuda')
+    barys = torch.rand((batch, 2), device='cuda')
+    barys = torch.where(barys.sum(dim=1, keepdim=True) > 1.0, 1.0 - barys, barys)
+    barys = torch.cat((barys, 1.0 - barys.sum(dim=1, keepdim=True)), dim=1)
 
-    # TODO: cluster the faces and then use normal offset...
+    v0 = v_ref[f_ref[triangles, 0]]
+    v1 = v_ref[f_ref[triangles, 1]]
+    v2 = v_ref[f_ref[triangles, 2]]
 
-    # Try smaller radius...
-    # radius = 5.0
-    splitsTheta = 5
-    splitsPhi = 5
+    n0 = n_ref[f_ref[triangles, 0]]
+    n1 = n_ref[f_ref[triangles, 1]]
+    n2 = n_ref[f_ref[triangles, 2]]
 
-    center = v_ref.mean(axis=0)
-    radius = 2 * torch.norm(v_ref - center, dim=1).max()
+    view_points = barys[:, 0].unsqueeze(1) * v0 + barys[:, 1].unsqueeze(1) * v1 + barys[:, 2].unsqueeze(1) * v2
+    view_normals = barys[:, 0].unsqueeze(1) * n0 + barys[:, 1].unsqueeze(1) * n1 + barys[:, 2].unsqueeze(1) * n2
+    view_normals = view_normals / torch.norm(view_normals, dim=1, keepdim=True)
 
-    for theta in np.linspace(0, 2 * np.pi, splitsTheta, endpoint=False):
-        for i, phi in enumerate(np.linspace(np.pi * 0.1, np.pi * 0.9, splitsPhi, endpoint=True)):
-            # Spiral as a function of phi
-            ptheta = (2 * np.pi / splitsTheta) * i/splitsPhi
-            theta += ptheta
+    eye_offsets = view_normals * 1.0
+    eyes = view_points + eye_offsets
 
-            eye_offset = torch.tensor([
-                radius * np.sin(theta) * np.sin(phi),
-                radius * np.cos(phi),
-                radius * np.cos(theta) * np.sin(phi)
-            ], device='cuda', dtype=torch.float32)
+    canonical_up = torch.tensor([0.0, 1.0, 0.0], device='cuda')
+    canonical_up = torch.stack(batch * [canonical_up], dim=0)
 
-            # TODO: random perturbations to the angles
+    rights = torch.cross(view_normals, canonical_up)
+    ups = torch.cross(rights, view_normals)
 
-            normalized_eye_offset = eye_offset / torch.norm(eye_offset)
+    views = [ lookat(eye, view_point, up) for eye, view_point, up in zip(eyes, view_points, ups) ]
+    return torch.stack(views, dim=0), eyes, view_normals
 
-            canonical_up = torch.tensor([0.0, 1.0, 0.0], device='cuda')
-            right = torch.cross(normalized_eye_offset, canonical_up)
-            up = torch.cross(right, normalized_eye_offset)
-
-            view = lookat(center + eye_offset, center, canonical_up)
-            views.append(view)
-
-    # TODO: use lookat?
-    print('Generated %d views' % len(views))
-    scene_parameters['view_mats'] = views
+all_views, eyes, forwards = sample_cameras(100)
+import polyscope as ps
+ps.init()
+ps.register_surface_mesh('mesh', v_ref.cpu().numpy(), f_ref.cpu().numpy())
+ps.register_point_cloud('views', eyes.cpu().numpy()) \
+        .add_vector_quantity('forwards', -forwards.cpu().numpy(), enabled=True)
+ps.show()
 
 mesh = meshio.read(os.path.join(directory, 'source.obj'))
 
@@ -159,14 +148,17 @@ ps.init()
 ps.register_surface_mesh('reference', v_ref.cpu().numpy(), f_ref.cpu().numpy())
 ps.register_surface_mesh('base-original', base.cpu().numpy(), Fi.cpu().numpy())
 
+# TODO: tone mapping
+
 def inverse_render(V, F):
-    steps     = 1000   # Number of optimization steps
+    steps     = 1_000  # Number of optimization steps
     step_size = 1e-2   # Step size
     lambda_   = 10     # Hyperparameter lambda of our method, used to compute the matrix (I + lambda_ * L)
 
     # Get the reference images
-    ref_imgs = renderer.render(v_ref, n_ref, f_ref)
-    ref_imgs = ref_imgs
+    # ref_imgs = renderer.render(v_ref, n_ref, f_ref)
+    # ref_imgs = ref_imgs
+    batch = 10
 
     # Optimization setup
     M = compute_matrix(V, F, lambda_)
@@ -177,24 +169,38 @@ def inverse_render(V, F):
 
     # Optimization loop
     for it in trange(steps):
-        V = from_differential(M, U, 'Cholesky')
+        # Batch the views into disjoint sets
+        assert len(all_views) % batch == 0
+        views = torch.split(all_views, batch, dim=0)
+        # print('Batched into', views)
+        # views = [ all_views[i:i + batch] for i in range(0, len(all_views), batch) ]
 
-        Fn = compute_face_normals(V, F)
-        N = compute_vertex_normals(V, F, Fn)
+        for i, view_mats in enumerate(views):
+            V = from_differential(M, U, 'Cholesky')
 
-        opt_imgs = renderer.render(V, N, F)
-        opt_imgs = opt_imgs
+            Fn = compute_face_normals(V, F)
+            N = compute_vertex_normals(V, F, Fn)
 
-        # Compute losses
-        # TODO: tone mapping from NVIDIA paper
-        render_loss = (opt_imgs - ref_imgs).abs().mean()
-        area_loss = triangle_areas(V, F).var()
-        loss = render_loss + 1e3 * area_loss
+            opt_imgs = renderer.render(V, N, F, view_mats)
+            ref_imgs = renderer.render(v_ref, n_ref, f_ref, view_mats)
 
-        # Optimization step
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
+            # Show render
+            # if i == 0:
+            #     fig, ax = plt.subplots(1, 2)
+            #     ax[0].imshow(ref_imgs[0].pow(1/2.2).cpu().numpy())
+            #     ax[1].imshow(opt_imgs[0].pow(1/2.2).detach().cpu().numpy())
+            #     plt.show()
+
+            # Compute losses
+            # TODO: tone mapping from NVIDIA paper
+            render_loss = (opt_imgs - ref_imgs).abs().mean()
+            area_loss = triangle_areas(V, F).var()
+            loss = render_loss + 1e3 * area_loss
+
+            # Optimization step
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
 
     return V
 
@@ -218,46 +224,55 @@ ps.register_surface_mesh('base', base.cpu().numpy(), base_indices)
 V = V.detach()
 indices = shorted_indices(V.cpu().numpy(), complexes.cpu().numpy(), 4)
 ps.register_surface_mesh('model-phase1', V.cpu().numpy(), indices)
+ps.show()
 
 # Inverse rendering from here...
 
 # Get the reference images
 def inverse_render_nsc(sample_rate, losses, lr):
-    ref_imgs = renderer.render(v_ref, n_ref, f_ref)
+    # ref_imgs = renderer.render(v_ref, n_ref, f_ref)
     opt      = torch.optim.Adam(list(m.parameters()) + [ features ], lr)
 
     base, _  = sample(complexes, points, features, sample_rate)
     cmap     = make_cmap(complexes, points, base, sample_rate)
     remap    = optext.generate_remapper(complexes.cpu(), cmap, base.shape[0], sample_rate)
+    batch    = 10
 
-    for _ in trange(5_000):
-        lerped_points, lerped_features = sample(complexes, points, features, sample_rate)
-        V = m(points=lerped_points, features=lerped_features)
+    for _ in trange(1_000):
+        # Batch the views into disjoint sets
+        assert len(all_views) % batch == 0
+        views = torch.split(all_views, batch, dim=0)
 
-        indices = optext.triangulate_shorted(V, complexes.shape[0], sample_rate)
-        F = remap.remap_device(indices)
-        Fn = compute_face_normals(V, F)
-        N = compute_vertex_normals(V, F, Fn)
+        for view_mats in views:
+            lerped_points, lerped_features = sample(complexes, points, features, sample_rate)
+            V = m(points=lerped_points, features=lerped_features)
 
-        opt_imgs = renderer.render(V, N, F)
+            indices = optext.triangulate_shorted(V, complexes.shape[0], sample_rate)
+            F = remap.remap_device(indices)
+            Fn = compute_face_normals(V, F)
+            N = compute_vertex_normals(V, F, Fn)
 
-        # Compute losses
-        render_loss = (opt_imgs - ref_imgs).abs().mean()
-        area_loss = triangle_areas(V, F).var()
-        loss = render_loss + 1e3 * area_loss
+            opt_imgs = renderer.render(V, N, F, view_mats)
+            ref_imgs = renderer.render(v_ref, n_ref, f_ref, view_mats)
 
-        # Optimization step
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
+            # Compute losses
+            # TODO: tone mapping from NVIDIA paper
+            render_loss = (opt_imgs - ref_imgs).abs().mean()
+            area_loss = triangle_areas(V, F).var()
+            loss = render_loss + 1e3 * area_loss
 
-        losses.setdefault('render', []).append(render_loss.item())
-        losses.setdefault('area', []).append(area_loss.item())
+            # Optimization step
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+
+            losses.setdefault('render', []).append(render_loss.item())
+            losses.setdefault('area', []).append(area_loss.item())
 
     return V.detach(), F, losses
 
-V, F, losses = inverse_render_nsc(4, {}, 1e-2)
-V, F, losses = inverse_render_nsc(8, losses, 5e-3)
+V, F, losses = inverse_render_nsc(4, {}, 1e-3)
+V, F, losses = inverse_render_nsc(8, losses, 1e-3)
 V, F, losses = inverse_render_nsc(16, losses, 1e-3)
 
 import matplotlib.pyplot as plt

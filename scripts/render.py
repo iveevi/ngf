@@ -143,8 +143,8 @@ class NVDRenderer:
         self.proj_mat = persp_proj(self.fov_x, ar, near, far)
 
         # Construct the Model-View-Projection matrices
-        self.view_mats = torch.stack(scene_params["view_mats"])
-        self.mvps = self.proj_mat @ self.view_mats
+        # self.view_mats = torch.stack(scene_params["view_mats"])
+        # self.mvps = self.proj_mat @ self.view_mats
 
         self.boost = boost
         self.shading = shading
@@ -153,13 +153,16 @@ class NVDRenderer:
         self.ctx = dr.RasterizeCudaContext()
         # Load the environment map
         w,h,_ = scene_params['envmap'].shape
-        envmap = scene_params['envmap_scale'] * scene_params['envmap']
+        self.envmap = scene_params['envmap_scale'] * scene_params['envmap']
+        import matplotlib.pyplot as plt
+        plt.imshow(self.envmap.cpu().numpy())
+        plt.show()
         # Precompute lighting
-        self.sh = SphericalHarmonics(envmap)
+        self.sh = SphericalHarmonics(self.envmap)
         # Render background for all viewpoints once
-        self.render_backgrounds(envmap)
+        # self.render_backgrounds(envmap)
 
-    def render_backgrounds(self, envmap):
+    def render_backgrounds(self, envmap, view_mats):
         """
         Precompute the background of each input viewpoint with the envmap.
 
@@ -176,14 +179,27 @@ class NVDRenderer:
         f = torch.tensor((2*np.tan(a),  2*np.tan(a)/r), device='cuda', dtype=torch.float32)
         rays = torch.cat((pos*f, torch.ones((w*h,1), device='cuda'), torch.zeros((w*h,1), device='cuda')), dim=1)
         rays_norm = (rays.transpose(0,1) / torch.norm(rays, dim=1)).transpose(0,1)
-        rays_view = torch.matmul(rays_norm, self.view_mats.inverse().transpose(1,2)).reshape((self.view_mats.shape[0],h,w,-1))
+        rays_view = torch.matmul(rays_norm, view_mats.inverse().transpose(1,2)).reshape((view_mats.shape[0],h,w,-1))
         theta = torch.acos(rays_view[..., 1])
         phi = torch.atan2(rays_view[..., 0], rays_view[..., 2])
-        envmap_uvs = torch.stack([0.75-phi/(2*np.pi), theta / np.pi], dim=-1)
-        self.bgs = dr.texture(envmap[None, ...], envmap_uvs, filter_mode='linear').flip(1)
-        self.bgs[..., -1] = 0 # Set alpha to 0
+        # offset by random angles
+        phi_rot = phi + torch.rand_like(phi) * 2 * np.pi
+        theta_rot = theta + torch.rand_like(theta) * np.pi
+        phi_rot = phi_rot % (2*np.pi)
+        theta_rot = theta_rot % (np.pi)
+        envmap_uvs = torch.stack([0.75-phi_rot/(2*np.pi), theta_rot/ np.pi], dim=-1)
+        bgs = dr.texture(envmap[None, ...], envmap_uvs, filter_mode='linear').flip(1)
+        bgs[..., -1] = 0 # Set alpha to 0
+        # import matplotlib.pyplot as plt
+        # # plt.imshow(bgs[0].cpu().numpy())
+        # plt.imshow(bgs[0].square().sum(dim=-1).cpu().numpy(), cmap='inferno')
+        # plt.show()
+        return bgs
 
-    def render(self, v, n, f):
+        # self.bgs = dr.texture(envmap[None, ...], envmap_uvs, filter_mode='linear').flip(1)
+        # self.bgs[..., -1] = 0 # Set alpha to 0
+
+    def render(self, v, n, f, view_mats):
         """
         Render the scene in a differentiable way.
 
@@ -201,21 +217,19 @@ class NVDRenderer:
         result : torch.Tensor
             The array of renderings from all given viewpoints
         """
+
+        # TODO: pass rotational offset on background...
+        mvps = self.proj_mat @ view_mats
+        bgs = self.render_backgrounds(self.envmap, view_mats)
         v_hom = torch.nn.functional.pad(v, (0,1), 'constant', 1.0)
-        v_ndc = torch.matmul(v_hom, self.mvps.transpose(1,2))
+        v_ndc = torch.matmul(v_hom, mvps.transpose(1,2))
         rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
-        if self.shading:
-            v_cols = torch.zeros_like(v)
 
-            # Sample envmap at each vertex using the SH approximation
-            vert_light = self.sh.eval(n).contiguous()
-            # Sample incoming radiance
-            light = dr.interpolate(vert_light[None, ...], rast, f)[0]
+        # Sample envmap at each vertex using the SH approximation
+        vert_light = self.sh.eval(n).contiguous()
+        # Sample incoming radiance
+        light = dr.interpolate(vert_light[None, ...], rast, f)[0]
+        col = torch.cat((light / np.pi, torch.ones((*light.shape[:-1],1), device='cuda')), dim=-1)
+        result = dr.antialias(torch.where(rast[..., -1:] != 0, col, bgs), rast, v_ndc, f, pos_gradient_boost=self.boost)
 
-            col = torch.cat((light / np.pi, torch.ones((*light.shape[:-1],1), device='cuda')), dim=-1)
-            result = dr.antialias(torch.where(rast[..., -1:] != 0, col, self.bgs), rast, v_ndc, f, pos_gradient_boost=self.boost)
-        else:
-            v_cols = torch.ones_like(v)
-            col = dr.interpolate(v_cols[None, ...], rast, f)[0]
-            result = dr.antialias(col, rast, v_ndc, f, pos_gradient_boost=self.boost)
         return result
