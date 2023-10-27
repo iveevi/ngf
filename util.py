@@ -130,3 +130,22 @@ def clerp(f=lambda x: x):
         lp11 = X[:, 2, :].unsqueeze(1) * f(1.0 - U.unsqueeze(-1)) * f(1.0 - V.unsqueeze(-1))
         return lp00 + lp01 + lp10 + lp11
     return ftn
+
+def lookat(eye, center, up):
+    normalize = lambda x: x / torch.norm(x)
+
+    f = normalize(eye - center)
+    u = normalize(up)
+    s = normalize(torch.cross(f, u))
+    u = torch.cross(s, f)
+
+    dot_f = torch.dot(f, eye)
+    dot_u = torch.dot(u, eye)
+    dot_s = torch.dot(s, eye)
+
+    return torch.tensor([
+        [s[0], u[0], -f[0], -dot_s],
+        [s[1], u[1], -f[1], -dot_u],
+        [s[2], u[2], -f[2], dot_f],
+        [0, 0, 0, 1]
+    ], device='cuda', dtype=torch.float32)

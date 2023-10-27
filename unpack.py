@@ -10,6 +10,7 @@ from torch.utils.cpp_extension import load
 from scripts.geometry import compute_face_normals, compute_vertex_normals
 
 from util import *
+from configurations import *
 
 # Arguments
 assert len(sys.argv) == 3, 'evaluate.py <reference> <directory>'
@@ -21,12 +22,17 @@ assert reference is not None
 assert directory is not None
 
 # Load all necessary extensions
-geom_cpp = load(name="geom_cpp",
-        sources=[ "ext/geometry.cpp" ],
-        extra_include_paths=[ "glm" ],
-        build_directory="build")
+if not os.path.exists('build'):
+    os.makedirs('build')
 
-print('Loaded all extensions')
+optext = load(name='optext',
+        sources=[ 'optext.cu' ],
+        extra_include_paths=[ 'glm' ],
+        build_directory='build',
+        extra_cflags=[ '-O3' ],
+        extra_cuda_cflags=[ '-O3' ])
+
+print('Loaded optimization extension')
 
 # Create a directory specifically for the unpacked meshes
 new_directory = os.path.join(directory, 'unpacked')
@@ -74,16 +80,25 @@ for root, dirs, files in os.walk(directory):
         print('    > lerped_points:', lerped_points.shape)
         print('    > lerped_features:', lerped_features.shape)
 
-        cmap = make_cmap(c, p, lerped_points, rate)
-        F, _ = geom_cpp.sdc_weld(c.cpu(), cmap, lerped_points.shape[0], rate)
-        F = F.cuda()
+        # TODO: construct the quad mesh..
+        # cmap = make_cmap(c, p, lerped_points, rate)
+        # F, _ = optext.sdc_weld(c.cpu(), cmap, lerped_points.shape[0], rate)
+        # F = F.cuda()
 
         # TODO: use shorted indices...
-        vertices = m(points=lerped_points, features=lerped_features)
+        vertices = m(points=lerped_points, features=lerped_features).detach()
+
+        I = shorted_indices(vertices.cpu().numpy(), c, rate)
+        I = torch.from_numpy(I).int()
+
+        cmap = make_cmap(c, p, lerped_points, rate)
+        remap = optext.generate_remapper(c.cpu(), cmap, lerped_points.shape[0], rate)
+        F = remap.remap(I).cuda()
+
+        m = meshio.Mesh(vertices.detach().cpu().numpy(), [ ('triangle', F.cpu().numpy()) ])
+
         print('    > vertices:', vertices.shape)
         print('    > faces:', F.shape)
-
-        m = meshio.Mesh(vertices.detach().cpu().numpy(), [ ('triangle', F.detach().cpu().numpy()) ])
 
         # Save using the same name as the NSC representation
         meshio.write(os.path.join(new_directory, nsc + '.obj'), m)

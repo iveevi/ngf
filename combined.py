@@ -62,26 +62,6 @@ n_ref  = compute_vertex_normals(v_ref, f_ref, fn_ref)
 
 print('vertices:', v_ref.shape, 'faces:', f_ref.shape)
 
-# Generate camera views
-def lookat(eye, center, up):
-    normalize = lambda x: x / torch.norm(x)
-
-    f = normalize(eye - center)
-    u = normalize(up)
-    s = normalize(torch.cross(f, u))
-    u = torch.cross(s, f)
-
-    dot_f = torch.dot(f, eye)
-    dot_u = torch.dot(u, eye)
-    dot_s = torch.dot(s, eye)
-
-    return torch.tensor([
-        [s[0], u[0], -f[0], -dot_s],
-        [s[1], u[1], -f[1], -dot_u],
-        [s[2], u[2], -f[2], dot_f],
-        [0, 0, 0, 1]
-    ], device='cuda', dtype=torch.float32)
-
 # Simplify the target mesh for simplification
 simplify_binary = './build/simplify'
 reduction       = 10_000/f_ref.shape[0]
@@ -103,6 +83,12 @@ seeds           = list(torch.randint(0, f_simplified.shape[0], (cameras,)).numpy
 target_geometry = optext.geometry(v_simplified.cpu(), n_simplified.cpu(), f_simplified.cpu())
 target_geometry = target_geometry.deduplicate()
 clusters        = optext.cluster_geometry(target_geometry, seeds, 10)
+
+# Compute scene extents for camera placement
+min = v_ref.min(dim=0)[0]
+max = v_ref.max(dim=0)[0]
+extent = (max - min).square().sum().sqrt().item()
+print('Extent:', extent)
 
 # Compute the centroid and normal for each cluster
 cluster_centroids = []
@@ -127,8 +113,9 @@ for cluster in clusters:
 cluster_centroids = torch.stack(cluster_centroids, dim=0)
 cluster_normals = torch.stack(cluster_normals, dim=0)
 
+# Generate camera views
 canonical_up = torch.tensor([0.0, 1.0, 0.0], device='cuda')
-cluster_eyes = cluster_centroids + cluster_normals * 1.5
+cluster_eyes = cluster_centroids + cluster_normals * 0.1 * extent
 cluster_ups = torch.stack(len(clusters) * [ canonical_up ], dim=0)
 cluster_rights = torch.cross(cluster_normals, cluster_ups)
 cluster_ups = torch.cross(cluster_rights, cluster_normals)
@@ -136,16 +123,16 @@ cluster_ups = torch.cross(cluster_rights, cluster_normals)
 all_views = [ lookat(eye, view_point, up) for eye, view_point, up in zip(cluster_eyes, cluster_centroids, cluster_ups) ]
 all_views = torch.stack(all_views, dim=0)
 
-# import polyscope as ps
-# ps.init()
-# ps.register_surface_mesh('mesh', v_ref.cpu().numpy(), f_ref.cpu().numpy())
-# # ps.register_point_cloud('views', eyes.cpu().numpy()) \
-# #         .add_vector_quantity('forwards', -forwards.cpu().numpy(), enabled=True)
-# ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
-#         .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
-# for i, c in enumerate(clusters):
-#     ps.register_surface_mesh('cluster_{}'.format(i), v_simplified.cpu().numpy(), f_simplified.cpu().numpy()[c])
-# ps.show()
+import polyscope as ps
+ps.init()
+ps.register_surface_mesh('mesh', v_ref.cpu().numpy(), f_ref.cpu().numpy())
+# ps.register_point_cloud('views', eyes.cpu().numpy()) \
+#         .add_vector_quantity('forwards', -forwards.cpu().numpy(), enabled=True)
+ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
+        .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
+for i, c in enumerate(clusters):
+    ps.register_surface_mesh('cluster_{}'.format(i), v_simplified.cpu().numpy(), f_simplified.cpu().numpy()[c])
+ps.show()
 
 mesh = meshio.read(os.path.join(directory, 'source.obj'))
 

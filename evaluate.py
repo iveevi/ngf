@@ -4,6 +4,7 @@ import meshio
 import os
 import sys
 import torch
+import imageio
 
 from torch.utils.cpp_extension import load
 from scripts.geometry import compute_face_normals, compute_vertex_normals
@@ -41,7 +42,65 @@ print('Loaded optimization extension')
 from scripts.load_xml import load_scene
 from scripts.render import NVDRenderer
 
-scene = load_scene(cameras)
+scene = load_scene(cameras) if cameras != 'None' else {}
+if len(scene) == 0:
+    print('No cameras loaded, using randomly generated ones')
+    ref_directory   = os.path.dirname(reference)
+    simplified      = os.path.join(ref_directory, 'simplified.obj')
+
+    simplified_mesh = meshio.read(simplified)
+    v_simplified    = torch.from_numpy(simplified_mesh.points).float().cuda()
+    f_simplified    = torch.from_numpy(simplified_mesh.cells_dict['triangle']).int().cuda()
+    fn_simplified   = compute_face_normals(v_simplified, f_simplified)
+    n_simplified    = compute_vertex_normals(v_simplified, f_simplified, fn_simplified)
+
+    cameras         = 25
+    seeds           = list(torch.randint(0, f_simplified.shape[0], (cameras,)).numpy())
+    target_geometry = optext.geometry(v_simplified.cpu(), n_simplified.cpu(), f_simplified.cpu())
+    target_geometry = target_geometry.deduplicate()
+    clusters        = optext.cluster_geometry(target_geometry, seeds, 10)
+
+    # Compute the centroid and normal for each cluster
+    cluster_centroids = []
+    cluster_normals = []
+
+    for cluster in clusters:
+        faces = f_simplified[cluster]
+
+        v0 = v_simplified[faces[:, 0]]
+        v1 = v_simplified[faces[:, 1]]
+        v2 = v_simplified[faces[:, 2]]
+        centroids = (v0 + v1 + v2) / 3.0
+        centroids = centroids.mean(dim=0)
+
+        normals = torch.cross(v1 - v0, v2 - v0)
+        normals = normals.mean(dim=0)
+        normals = normals / torch.norm(normals)
+
+        cluster_centroids.append(centroids)
+        cluster_normals.append(normals)
+
+    cluster_centroids = torch.stack(cluster_centroids, dim=0)
+    cluster_normals = torch.stack(cluster_normals, dim=0)
+
+    canonical_up = torch.tensor([0.0, 1.0, 0.0], device='cuda')
+    cluster_eyes = cluster_centroids + cluster_normals * 1.5
+    cluster_ups = torch.stack(len(clusters) * [ canonical_up ], dim=0)
+    cluster_rights = torch.cross(cluster_normals, cluster_ups)
+    cluster_ups = torch.cross(cluster_rights, cluster_normals)
+
+    all_views = [ lookat(eye, view_point, up) for eye, view_point, up in zip(cluster_eyes, cluster_centroids, cluster_ups) ]
+    scene['view_mats'] = all_views
+
+    # Also load an environment map
+    environment = imageio.imread('images/environment.hdr', format='HDR-FI')
+    environment = torch.tensor(environment, dtype=torch.float32, device='cuda')
+    alpha       = torch.ones((*environment.shape[:2], 1), dtype=torch.float32, device='cuda')
+    environment = torch.cat((environment, alpha), dim=-1)
+
+    scene['envmap']       = environment
+    scene['envmap_scale'] = 1.0
+
 print('Loaded scene with %d cameras' % len(scene['view_mats']))
 
 scene['res_x'] = 1024
@@ -50,8 +109,6 @@ scene['fov'] = 45.0
 scene['near_clip'] = 0.1
 scene['far_clip'] = 1000.0
 scene['view_mats'] = torch.stack(scene['view_mats'], dim=0)
-# scene['envmap'] = environment
-# scene['envmap_scale'] = 1.0
 
 renderer = NVDRenderer(scene)
 

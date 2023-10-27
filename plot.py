@@ -58,7 +58,9 @@ with open(db) as f:
     print(second_level_parents)
 
     sns.set()
-    fig, ax = plt.subplots(2, 2, figsize=(30, 20))
+    fig, ax = plt.subplots(2, 2, figsize=(20, 15))
+
+    fig.suptitle(key + ' metrics')
 
     # Plot dpm vs size
     # TODO: white list certain catags...
@@ -77,7 +79,8 @@ with open(db) as f:
         x, y = zip(*l)
         ax[0][0].plot(x, y, label=catag, marker='o')
 
-    ax[0][0].set_ylabel('dpm')
+    ax[0][0].set_title('dpm vs size')
+    # ax[0][0].set_ylabel('dpm')
     ax[0][0].set_xlabel('size (KB)')
     ax[0][0].set_xscale('log')
     ax[0][0].legend()
@@ -98,7 +101,8 @@ with open(db) as f:
         x, y = zip(*l)
         ax[0][1].plot(x, y, label=catag, marker='o')
 
-    ax[0][1].set_ylabel('dnormal')
+    ax[0][1].set_title('dnormal vs size')
+    # ax[0][1].set_ylabel('dnormal')
     ax[0][1].set_xlabel('size (KB)')
     ax[0][1].set_xscale('log')
     ax[0][1].legend()
@@ -119,7 +123,8 @@ with open(db) as f:
         x, y = zip(*l)
         ax[1][0].plot(x, y, label=catag, marker='o')
 
-    ax[1][0].set_ylabel('render')
+    ax[1][0].set_title('render vs size')
+    # ax[1][0].set_ylabel('render')
     ax[1][0].set_xlabel('size (KB)')
     ax[1][0].set_xscale('log')
     ax[1][0].legend()
@@ -140,10 +145,12 @@ with open(db) as f:
         x, y = zip(*l)
         ax[1][1].plot(x, y, label=catag, marker='o')
 
-    ax[1][1].set_ylabel('chamfer')
+    ax[1][1].set_title('chamfer vs size')
+    # ax[1][1].set_ylabel('chamfer')
     ax[1][1].set_xlabel('size (KB)')
     ax[1][1].set_xscale('log')
     ax[1][1].legend()
 
     fig.tight_layout()
+    plt.savefig(key + '_metrics.png')
     plt.show()
