@@ -28,17 +28,14 @@ assert os.path.basename(reference) == 'target.obj'
 assert os.path.splitext(db)[1] == '.json'
 
 # Load all necessary extensions
-casdf = load(name='casdf',
-        sources=[ 'ext/casdf.cu' ],
+optext = load(name='optext',
+        sources=[ 'optext.cu' ],
         extra_include_paths=[ 'glm' ],
-        build_directory='build')
+        build_directory='build',
+        extra_cflags=[ '-O3' ],
+        extra_cuda_cflags=[ '-O3' ])
 
-geom_cpp = load(name="geom_cpp",
-        sources=[ "ext/geometry.cpp" ],
-        extra_include_paths=[ "glm" ],
-        build_directory="build")
-
-print('Loaded all extensions')
+print('Loaded optimization extension')
 
 # Load scene cameras
 from scripts.load_xml import load_scene
@@ -52,6 +49,7 @@ scene['res_y'] = 640
 scene['fov'] = 45.0
 scene['near_clip'] = 0.1
 scene['far_clip'] = 1000.0
+scene['view_mats'] = torch.stack(scene['view_mats'], dim=0)
 # scene['envmap'] = environment
 # scene['envmap_scale'] = 1.0
 
@@ -145,8 +143,8 @@ def render_loss(target, source, alt=None):
     tV, tN, tF = target[0], target[1].cuda(), target[2].cuda()
     sV, sN, sF = source[0], source[1].cuda(), source[2].cuda()
 
-    t_imgs = renderer.render(tV, tN, tF)
-    s_imgs = renderer.render(sV, sN, sF if alt is None else alt)
+    t_imgs = renderer.render(tV, tN, tF, scene['view_mats'])
+    s_imgs = renderer.render(sV, sN, sF if alt is None else alt, scene['view_mats'])
 
     # from matplotlib import pyplot as plt
     # fig, ax = plt.subplots(1, 2, figsize=(10, 10))
@@ -158,8 +156,29 @@ def render_loss(target, source, alt=None):
 
     return loss.item()
 
+def chamfer_loss(target, source):
+    from tqdm import trange
+
+    sV, _, _ = source[0], source[1].cuda(), source[2].cuda()
+    tV, _, _ = target[0], target[1].cuda(), target[2].cuda()
+
+    # First term
+    sum_S1 = 0
+    for i in trange(sV.shape[0]):
+        # TODO: batch and use cdist
+        sum_S1 += torch.min(torch.linalg.norm(sV[i] - tV, dim=1))
+    sum_S1 /= sV.shape[0]
+
+    # Second term
+    sum_S2 = 0
+    for i in trange(tV.shape[0]):
+        sum_S2 += torch.min(torch.linalg.norm(tV[i] - sV, dim=1))
+    sum_S2 /= tV.shape[0]
+
+    return (sum_S1 + sum_S2).item()
+
 # Writing to the database
-def write(catag, dpm, dnormal, render, size=0):
+def write(catag, dpm, dnormal, render, chamfer, size=0):
     global db
 
     # Open or create the database (json)
@@ -183,6 +202,7 @@ def write(catag, dpm, dnormal, render, size=0):
             'dpm': dpm,
             'dnormal': dnormal,
             'render': render,
+            'chamfer': chamfer,
             'size': size
         }
 
@@ -243,8 +263,8 @@ target_path = os.path.basename(reference)
 target = meshio.read(reference)
 target = convert(target)
 
-target = casdf.geometry(target[0].cpu(), target[1].cpu())
-target_cas = casdf.cas_grid(target, 32)
+target = optext.geometry(target[0].cpu(), target[1].cpu())
+target_cas = optext.cached_grid(target, 32)
 target = target.torched()
 
 # Recursively find all simple meshes and model configurations
@@ -263,8 +283,8 @@ for root, dirs, files in os.walk(directory):
             fn = compute_face_normals(source[0], source[1])
             vn = compute_vertex_normals(source[0], source[1], fn)
 
-            source = casdf.geometry(source[0].cpu(), vn.cpu(), source[1].cpu())
-            source_cas = casdf.cas_grid(source, 32)
+            source = optext.geometry(source[0].cpu(), vn.cpu(), source[1].cpu())
+            source_cas = optext.cached_grid(source, 32)
             source = source.torched()
 
             # Compute raw binary byte size
@@ -273,16 +293,18 @@ for root, dirs, files in os.walk(directory):
             total = vertex_bytes + index_bytes
 
             dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
-            render = render_loss(target, source)
+            render       = render_loss(target, source)
+            chamfer      = chamfer_loss(target, source)
 
             print('  > DPM: %f' % dpm)
             print('  > DNormal: %f' % dnormal)
             print('  > Render: %f' % render)
+            print('  > Chamfer: %f' % chamfer)
             print('  > Size: %d KB' % (total/1024))
 
             catag = os.path.basename(file)
             catag = os.path.splitext(catag)[0]
-            write(catag, dpm, dnormal, render, size=total) # TODO: compute the sizes...
+            write(catag, dpm, dnormal, render, chamfer, size=total)
     for nsc in dirs:
         if nsc in [ 'unpacked' ]:
             continue
@@ -326,7 +348,7 @@ for root, dirs, files in os.walk(directory):
             I = torch.from_numpy(I).int()
 
             cmap = make_cmap(c, p, lerped_points, rate)
-            remap = geom_cpp.generate_remapper(c.cpu(), cmap, lerped_points.shape[0], rate)
+            remap = optext.generate_remapper(c.cpu(), cmap, lerped_points.shape[0], rate)
             F = remap.remap(I).cuda()
 
             # import polyscope as ps
@@ -347,17 +369,19 @@ for root, dirs, files in os.walk(directory):
                 print('  > vn has nan')
                 continue
 
-            source = casdf.geometry(vertices.cpu(), vn.cpu(), I)
-            source_cas = casdf.cas_grid(source, 32)
+            source = optext.geometry(vertices.cpu(), vn.cpu(), I)
+            source_cas = optext.cached_grid(source, 32)
             source = source.torched()
 
             dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
-            render = render_loss(target, source, alt=F)
+            render       = render_loss(target, source, alt=F)
+            chamfer      = chamfer_loss(target, source)
 
             catag = nsc + '-r' + str(rate)
             print('  > rate: %d, tag: %s' % (rate, catag))
             print('    > DPM: %f' % dpm)
             print('    > DNormal: %f' % dnormal)
             print('    > Render: %f' % render)
+            print('    > Chamfer: %f' % chamfer)
 
-            write(catag, dpm, dnormal, render, size=total)
+            write(catag, dpm, dnormal, render, chamfer, size=total)

@@ -61,6 +61,8 @@ struct geometry {
         std::vector <glm::vec3> normals;
 	std::vector <glm::ivec3> triangles;
 
+	geometry() = default;
+
 	geometry(const torch::Tensor &torch_vertices, const torch::Tensor &torch_triangles) {
 		// Expects:
 		//   2D tensor of shape (N, 3) for vertices
@@ -133,6 +135,36 @@ struct geometry {
 		memcpy(vertices.data(), vertices_ptr, sizeof(glm::vec3) * vertices.size());
 		memcpy(normals.data(), normals_ptr, sizeof(glm::vec3) * normals.size());
 		memcpy(triangles.data(), triangles_ptr, sizeof(glm::ivec3) * triangles.size());
+	}
+
+	geometry deduplicate() const {
+		std::unordered_map <glm::vec3, int32_t> existing;
+
+		geometry fixed;
+
+		auto add_uniquely = [&](int32_t i) -> int32_t {
+			glm::vec3 v = vertices[i];
+			if (existing.find(v) == existing.end()) {
+				int32_t csize = fixed.vertices.size();
+				fixed.vertices.push_back(v);
+				fixed.normals.push_back(normals[i]);
+
+				existing[v] = csize;
+				return csize;
+			}
+
+			return existing[v];
+		};
+
+		for (const glm::ivec3 &t : triangles) {
+			fixed.triangles.push_back(glm::ivec3 {
+				add_uniquely(t.x),
+				add_uniquely(t.y),
+				add_uniquely(t.z)
+			});
+		}
+
+		return fixed;
 	}
 
 	std::tuple <torch::Tensor, torch::Tensor, torch::Tensor> torched() const {
@@ -309,6 +341,9 @@ std::vector <std::vector <int32_t>> cluster_once(const geometry &g, const geomet
 		face face = queue.top();
 		queue.pop();
 
+		// clear line
+		// printf("\r");
+		// printf("\033[K");
 		// printf("Remaining: %zu; current is %d with %f\n", queue.size(), face.i, costs[face.i]);
 
 		if (std::isinf(costs[face.i]))
@@ -326,7 +361,8 @@ std::vector <std::vector <int32_t>> cluster_once(const geometry &g, const geomet
 			glm::vec3 n_normal = normals[neighbor];
 			float dc           = glm::length(centroids[face.i] - centroids[neighbor]);
 			float dn           = std::max(1 - glm::dot(c_normal, n_normal), 0.0f);
-			float new_cost     = costs[face.i] + dn * dc;
+			// float new_cost     = costs[face.i] + dn * dc;
+			float new_cost     = costs[face.i] + dc;
 
 			if (new_cost < costs[neighbor]) {
 				float size = c.size();
@@ -371,7 +407,7 @@ std::vector <std::vector <int32_t>> cluster_geometry(const geometry &g, const st
 			glm::vec3 centroid(0.0f);
 			float wsum = 0.0f;
 			for (int32_t f : c) {
-				float w = g.area(f);
+				float w = 1.0f; // g.area(f);
 				centroid += g.centroid(f) * w;
 				wsum += w;
 			}
@@ -1556,11 +1592,19 @@ remapper generate_remapper(const torch::Tensor &complexes,
 	return remapper(remap);
 }
 
+// CUDA Symmetric chamfer distance
+// __global__
+// void chamfer_distance_kernel(const glm::vec3 *__restrict__ A, const glm::vec3 *__restrict__ B, size_t size_A, size_t size_B)
+// {
+// 	// Compute the vector min_{b in B} ||a - b||^2
+// }
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
         py::class_ <geometry> (m, "geometry")
                 .def(py::init <const torch::Tensor &, const torch::Tensor &> ())
                 .def(py::init <const torch::Tensor &, const torch::Tensor &, const torch::Tensor &> ())
+		.def("deduplicate", &geometry::deduplicate)
 		.def("torched", &geometry::torched)
 		.def_readonly("vertices", &geometry::vertices)
 		.def_readonly("normals", &geometry::normals)

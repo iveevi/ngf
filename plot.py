@@ -8,8 +8,8 @@ import sys
 # TODO: pass catags with argparse
 assert len(sys.argv) >= 3, 'Usage: python plot.py <database> <key>'
 
-db = sys.argv[1]
-key = sys.argv[2]
+db       = sys.argv[1]
+key      = sys.argv[2]
 patterns = sys.argv[3:]
 
 regexes = []
@@ -58,7 +58,7 @@ with open(db) as f:
     print(second_level_parents)
 
     sns.set()
-    fig, ax = plt.subplots(1, 3, figsize=(10, 10))
+    fig, ax = plt.subplots(2, 2, figsize=(30, 20))
 
     # Plot dpm vs size
     # TODO: white list certain catags...
@@ -70,17 +70,17 @@ with open(db) as f:
         for k, v in resolutions.items():
             dpm = v['dpm']
             size = v['size']/1024
-            # l.append((size, -np.log10(dpm)))
-            l.append((size, dpm))
+            l.append((size, -np.log10(dpm)))
+            # l.append((size, dpm))
 
         l.sort(key=lambda x: x[0])
         x, y = zip(*l)
-        ax[0].plot(x, y, label=catag, marker='o')
+        ax[0][0].plot(x, y, label=catag, marker='o')
 
-    ax[0].set_ylabel('-log10(dpm)')
-    ax[0].set_xlabel('size (KB)')
-    ax[0].set_xscale('log')
-    ax[0].legend()
+    ax[0][0].set_ylabel('dpm')
+    ax[0][0].set_xlabel('size (KB)')
+    ax[0][0].set_xscale('log')
+    ax[0][0].legend()
 
     # Plot the atomic elements (dnormal vs size)
     for catag, resolutions in second_level_parents:
@@ -91,17 +91,17 @@ with open(db) as f:
         for k, v in resolutions.items():
             dnormal = v['dnormal']
             size = v['size']/1024
-            # l.append((size, -np.log10(dnormal)))
-            l.append((size, dnormal))
+            l.append((size, -np.log10(dnormal)))
+            # l.append((size, dnormal))
 
         l.sort(key=lambda x: x[0])
         x, y = zip(*l)
-        ax[1].plot(x, y, label=catag, marker='o')
+        ax[0][1].plot(x, y, label=catag, marker='o')
 
-    ax[1].set_ylabel('-log10(dnormal)')
-    ax[1].set_xlabel('size (KB)')
-    ax[1].set_xscale('log')
-    ax[1].legend()
+    ax[0][1].set_ylabel('dnormal')
+    ax[0][1].set_xlabel('size (KB)')
+    ax[0][1].set_xscale('log')
+    ax[0][1].legend()
 
     # Plot the atomic elements (render vs size)
     for catag, resolutions in second_level_parents:
@@ -117,11 +117,33 @@ with open(db) as f:
 
         l.sort(key=lambda x: x[0])
         x, y = zip(*l)
-        ax[2].plot(x, y, label=catag, marker='o')
+        ax[1][0].plot(x, y, label=catag, marker='o')
 
-    ax[2].set_ylabel('render')
-    ax[2].set_xlabel('size (KB)')
-    ax[2].set_xscale('log')
-    ax[2].legend()
+    ax[1][0].set_ylabel('render')
+    ax[1][0].set_xlabel('size (KB)')
+    ax[1][0].set_xscale('log')
+    ax[1][0].legend()
 
+    # Plot the atomic elements (chamfer vs size)
+    for catag, resolutions in second_level_parents:
+        if not any(regex.match(catag) for regex in regexes):
+            continue
+
+        l = []
+        for k, v in resolutions.items():
+            chamfer = v['chamfer']
+            size = v['size']/1024
+            l.append((size, -np.log10(chamfer)))
+            # l.append((size, chamfer))
+
+        l.sort(key=lambda x: x[0])
+        x, y = zip(*l)
+        ax[1][1].plot(x, y, label=catag, marker='o')
+
+    ax[1][1].set_ylabel('chamfer')
+    ax[1][1].set_xlabel('size (KB)')
+    ax[1][1].set_xscale('log')
+    ax[1][1].legend()
+
+    fig.tight_layout()
     plt.show()
