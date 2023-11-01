@@ -2,17 +2,17 @@ import subprocess
 import argparse
 
 cmds = [
-        'python combined.py meshes/nefertiti pos linear 200',
-        'python combined.py meshes/nefertiti onion linear 200',
+        'python combined.py meshes/nefertiti pos linear 250',
+        'python combined.py meshes/nefertiti onion linear 250',
         
-        'python combined.py meshes/chinese pos linear 200',
-        'python combined.py meshes/chinese onion linear 200',
+        'python combined.py meshes/chinese pos linear 250',
+        'python combined.py meshes/chinese onion linear 250',
         
-        'python combined.py meshes/lucy pos linear 200',
-        'python combined.py meshes/lucy onion linear 200',
+        'python combined.py meshes/lucy pos linear 250',
+        'python combined.py meshes/lucy onion linear 250',
         
-        'python combined.py meshes/armadillo pos linear 200',
-        'python combined.py meshes/armadillo onion linear 200',
+        'python combined.py meshes/armadillo pos linear 250',
+        'python combined.py meshes/armadillo onion linear 250',
 ]
 
 for cmd in cmds:

@@ -73,6 +73,19 @@ def shorted_indices(V, C, sample_rate=16):
 
     return np.array(triangles)
 
+def quadify(C, sample_rate=16):
+    quads = []
+    for c in range(C.shape[0]):
+        offset = c * sample_rate * sample_rate
+        for i in range(sample_rate - 1):
+            for j in range(sample_rate - 1):
+                a = offset + i * sample_rate + j
+                c = offset + (i + 1) * sample_rate + j
+                b, d = a + 1, c + 1
+                quads.append([a, b, d, c])
+
+    return np.array(quads)
+
 def make_cmap(complexes, points, LP, sample_rate):
     Cs = complexes.cpu().numpy()
     lp = LP.detach().cpu().numpy()

@@ -43,6 +43,19 @@ os.makedirs(new_directory)
 # Copy the reference mesh to the new directory
 shutil.copyfile(reference, os.path.join(new_directory, 'ref.obj'))
 
+def shorted_quads(V, C, sample_rate=16):
+    quads = []
+    for c in range(C.shape[0]):
+        offset = c * sample_rate * sample_rate
+        for i in range(sample_rate - 1):
+            for j in range(sample_rate - 1):
+                a = offset + i * sample_rate + j
+                c = offset + (i + 1) * sample_rate + j
+                b, d = a + 1, c + 1
+                quads.append([a, b, d, c])
+
+    return np.array(quads)
+
 # Recursively find all simple meshes and model configurations
 for root, dirs, files in os.walk(directory):
     for nsc in dirs:
@@ -88,14 +101,14 @@ for root, dirs, files in os.walk(directory):
         # TODO: use shorted indices...
         vertices = m(points=lerped_points, features=lerped_features).detach()
 
-        I = shorted_indices(vertices.cpu().numpy(), c, rate)
+        I = shorted_quads(vertices.cpu().numpy(), c, rate)
         I = torch.from_numpy(I).int()
 
         cmap = make_cmap(c, p, lerped_points, rate)
         remap = optext.generate_remapper(c.cpu(), cmap, lerped_points.shape[0], rate)
         F = remap.remap(I).cuda()
 
-        m = meshio.Mesh(vertices.detach().cpu().numpy(), [ ('triangle', F.cpu().numpy()) ])
+        m = meshio.Mesh(vertices.detach().cpu().numpy(), [ ('quad', F.cpu().numpy()) ])
 
         print('    > vertices:', vertices.shape)
         print('    > faces:', F.shape)

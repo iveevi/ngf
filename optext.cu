@@ -1220,13 +1220,25 @@ void laplacian_smooth_kernel(glm::vec3 *result, glm::vec3 *vertices, uint32_t *g
 
 struct vertex_graph {
 	std::unordered_map <uint32_t, std::unordered_set <uint32_t>> graph;
-	uint32_t *dev_graph;
+	uint32_t *dev_graph = nullptr;
 
 	int32_t max;
 	int32_t max_adj;
 
-	// TODO: CUDA version...
-	vertex_graph(const torch::Tensor &triangles) {
+	vertex_graph(const torch::Tensor &primitives) {
+		assert(primitives.dim() == 2);
+		assert(primitives.dtype() == torch::kInt32);
+		assert(primitives.device().is_cpu());
+
+		if (primitives.size(1) == 3)
+			initialize_from_triangles(primitives);
+		else if (primitives.size(1) == 4)
+			initialize_from_quads(primitives);
+		else
+			assert(false);
+	}
+
+	void initialize_from_triangles(const torch::Tensor &triangles) {
 		assert(triangles.dim() == 2 && triangles.size(1) == 3);
 		assert(triangles.dtype() == torch::kInt32);
 		assert(triangles.device().is_cpu());
@@ -1272,6 +1284,65 @@ struct vertex_graph {
 		}
 
 		cudaMemcpy(dev_graph, host_graph.data(), graph_size * sizeof(uint32_t), cudaMemcpyHostToDevice);
+	}
+
+	void initialize_from_quads(const torch::Tensor &quads) {
+		assert(quads.dim() == 2 && quads.size(1) == 4);
+		assert(quads.dtype() == torch::kInt32);
+		assert(quads.device().is_cpu());
+
+		uint32_t quad_count = quads.size(0);
+
+		max = 0;
+		for (uint32_t i = 0; i < quad_count; i++) {
+			int32_t v0 = quads[i][0].item().to <int32_t> ();
+			int32_t v1 = quads[i][1].item().to <int32_t> ();
+			int32_t v2 = quads[i][2].item().to <int32_t> ();
+			int32_t v3 = quads[i][3].item().to <int32_t> ();
+
+			graph[v0].insert(v1);
+			graph[v0].insert(v3);
+
+			graph[v1].insert(v0);
+			graph[v1].insert(v2);
+
+			graph[v2].insert(v1);
+			graph[v2].insert(v3);
+
+			graph[v3].insert(v0);
+			graph[v3].insert(v2);
+
+			int32_t max01 = std::max(v0, v1);
+			int32_t max23 = std::max(v2, v3);
+			max = std::max(max, std::max(max01, max23));
+		}
+
+		max_adj = 0;
+		for (auto &kv : graph)
+			max_adj = std::max(max_adj, (int32_t) kv.second.size());
+
+		// Allocate a device graph
+		uint32_t graph_size = max * (max_adj + 1);
+		cudaMalloc(&dev_graph, graph_size * sizeof(uint32_t));
+
+		std::vector <uint32_t> host_graph(graph_size, 0);
+		for (auto &kv : graph) {
+			uint32_t i = kv.first;
+			uint32_t j = 0;
+			assert(i * max_adj + j < graph_size);
+			host_graph[i * max_adj + j++] = kv.second.size();
+			for (auto &adj : kv.second) {
+				assert(i * max_adj + j < graph_size);
+				host_graph[i * max_adj + j++] = adj;
+			}
+		}
+
+		cudaMemcpy(dev_graph, host_graph.data(), graph_size * sizeof(uint32_t), cudaMemcpyHostToDevice);
+	}
+
+	~vertex_graph() {
+		if (dev_graph)
+			cudaFree(dev_graph);
 	}
 
 	torch::Tensor smooth(const torch::Tensor &vertices, float factor) const {
@@ -1420,7 +1491,6 @@ struct remapper : std::unordered_map <int32_t, int32_t> {
 
 	torch::Tensor remap(const torch::Tensor &indices) const {
 		assert(indices.dtype() == torch::kInt32);
-		assert(indices.dim() == 2 && indices.size(1) == 3);
 		assert(indices.is_cpu());
 
 		torch::Tensor out = torch::zeros_like(indices);
@@ -1591,13 +1661,6 @@ remapper generate_remapper(const torch::Tensor &complexes,
 
 	return remapper(remap);
 }
-
-// CUDA Symmetric chamfer distance
-// __global__
-// void chamfer_distance_kernel(const glm::vec3 *__restrict__ A, const glm::vec3 *__restrict__ B, size_t size_A, size_t size_B)
-// {
-// 	// Compute the vector min_{b in B} ||a - b||^2
-// }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {

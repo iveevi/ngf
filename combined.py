@@ -87,8 +87,17 @@ clusters        = optext.cluster_geometry(target_geometry, seeds, 10)
 # Compute scene extents for camera placement
 min = v_ref.min(dim=0)[0]
 max = v_ref.max(dim=0)[0]
-extent = (max - min).square().sum().sqrt().item()
+center = (min + max) / 2.0
+extent = (max - min).square().sum().sqrt() / 2.0
 print('Extent:', extent)
+
+normalize = lambda x: (x - center) / extent
+
+v_ref = normalize(v_ref)
+print('new min:', v_ref.min(dim=0)[0])
+print('new max:', v_ref.max(dim=0)[0])
+
+v_simplified = normalize(v_simplified)
 
 # Compute the centroid and normal for each cluster
 cluster_centroids = []
@@ -115,7 +124,7 @@ cluster_normals = torch.stack(cluster_normals, dim=0)
 
 # Generate camera views
 canonical_up = torch.tensor([0.0, 1.0, 0.0], device='cuda')
-cluster_eyes = cluster_centroids + cluster_normals * 0.1 * extent
+cluster_eyes = cluster_centroids + cluster_normals * 1
 cluster_ups = torch.stack(len(clusters) * [ canonical_up ], dim=0)
 cluster_rights = torch.cross(cluster_normals, cluster_ups)
 cluster_ups = torch.cross(cluster_rights, cluster_normals)
@@ -123,17 +132,7 @@ cluster_ups = torch.cross(cluster_rights, cluster_normals)
 all_views = [ lookat(eye, view_point, up) for eye, view_point, up in zip(cluster_eyes, cluster_centroids, cluster_ups) ]
 all_views = torch.stack(all_views, dim=0)
 
-import polyscope as ps
-ps.init()
-ps.register_surface_mesh('mesh', v_ref.cpu().numpy(), f_ref.cpu().numpy())
-# ps.register_point_cloud('views', eyes.cpu().numpy()) \
-#         .add_vector_quantity('forwards', -forwards.cpu().numpy(), enabled=True)
-ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
-        .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
-for i, c in enumerate(clusters):
-    ps.register_surface_mesh('cluster_{}'.format(i), v_simplified.cpu().numpy(), f_simplified.cpu().numpy()[c])
-ps.show()
-
+# TODO: provide source object
 mesh = meshio.read(os.path.join(directory, 'source.obj'))
 
 v = mesh.points
@@ -145,6 +144,8 @@ print('Quadrangulated shape; vertices:', v.shape, 'faces:', f.shape)
 points = torch.from_numpy(v).float().cuda()
 complexes = torch.from_numpy(f).int().cuda()
 features = torch.zeros((points.shape[0], POINT_ENCODING_SIZE), requires_grad=True, device='cuda')
+
+points = normalize(points)
 
 # Setup the rendering backend
 renderer = NVDRenderer(scene_parameters, shading=True, boost=3)
@@ -167,10 +168,13 @@ Fi = optext.triangulate_shorted(base, complexes.shape[0], 4)
 ps.init()
 ps.register_surface_mesh('reference', v_ref.cpu().numpy(), f_ref.cpu().numpy())
 ps.register_surface_mesh('base-original', base.cpu().numpy(), Fi.cpu().numpy())
+ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
+        .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
+# ps.show()
 
 # TODO: tone mapping
 
-def inverse_render(V, F):
+def inverse_render(V, F, sample_rate=4):
     steps     = 1_000  # Number of optimization steps
     step_size = 1e-2   # Step size
     lambda_   = 10     # Hyperparameter lambda of our method, used to compute the matrix (I + lambda_ * L)
@@ -182,6 +186,11 @@ def inverse_render(V, F):
 
     U.requires_grad = True
     opt = AdamUniform([ U ], step_size)
+
+    vgraph = optext.vertex_graph(F.cpu())
+    # quads = quadify(complexes, sample_rate)
+    # vgraph = optext.vertex_graph(torch.from_numpy(quads).int())
+    print('Vgraph:', vgraph)
 
     # Optimization loop
     for it in trange(steps):
@@ -204,11 +213,15 @@ def inverse_render(V, F):
             #     ax[1].imshow(opt_imgs[0].pow(1/2.2).detach().cpu().numpy())
             #     plt.show()
 
+            V_smoothed = vgraph.smooth_device(V, 0.5)
+            # print('V_smoothed:', V_smoothed.shape)
+
             # Compute losses
             # TODO: tone mapping from NVIDIA paper
             render_loss = (opt_imgs - ref_imgs).abs().mean()
-            area_loss = triangle_areas(V, F).var()
-            loss = render_loss + 1e3 * area_loss
+            laplacian_loss = (V - V_smoothed).abs().mean()
+            area_loss = triangle_areas(V, F).mean()
+            loss = render_loss + laplacian_loss + area_loss
 
             # Optimization step
             opt.zero_grad()
@@ -245,7 +258,7 @@ ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
 # ps.show()
 
 # Get the reference images
-def inverse_render_nsc(sample_rate, losses, lr):
+def inverse_render_nsc(sample_rate, losses, lr, aux_strength=1.0):
     # ref_imgs = renderer.render(v_ref, n_ref, f_ref)
     opt      = torch.optim.Adam(list(m.parameters()) + [ features ], lr)
 
@@ -254,10 +267,24 @@ def inverse_render_nsc(sample_rate, losses, lr):
     remap    = optext.generate_remapper(complexes.cpu(), cmap, base.shape[0], sample_rate)
     batch    = 10
 
-    for _ in trange(1_000):
+    # quads = quadify(complexes, sample_rate)
+    # vgraph = optext.vertex_graph(torch.from_numpy(quads).int())
+    vgraph = None
+    print('Vgraph:', vgraph)
+    F_previous = None
+
+    for i in trange(1_000):
         # Batch the views into disjoint sets
         assert len(all_views) % batch == 0
         views = torch.split(all_views, batch, dim=0)
+
+        if i % 10 == 0:
+            # print('Rebuilding vgraph...')
+            lerped_points, lerped_features = sample(complexes, points, features, sample_rate)
+            V = m(points=lerped_points, features=lerped_features)
+            indices = optext.triangulate_shorted(V, complexes.shape[0], sample_rate)
+            F = remap.remap_device(indices)
+            vgraph = optext.vertex_graph(F.cpu())
 
         batch_losses = []
         for view_mats in views:
@@ -266,17 +293,23 @@ def inverse_render_nsc(sample_rate, losses, lr):
 
             indices = optext.triangulate_shorted(V, complexes.shape[0], sample_rate)
             F = remap.remap_device(indices)
+
             Fn = compute_face_normals(V, F)
             N = compute_vertex_normals(V, F, Fn)
 
             opt_imgs = renderer.render(V, N, F, view_mats)
             ref_imgs = renderer.render(v_ref, n_ref, f_ref, view_mats)
 
+            # TODO: check if the faces are different
+            # vgraph = optext.vertex_graph(F.cpu())
+            V_smoothed = vgraph.smooth_device(V, 0.5)
+
             # Compute losses
             # TODO: tone mapping from NVIDIA paper
             render_loss = (opt_imgs - ref_imgs).abs().mean()
-            area_loss = triangle_areas(V, F).var()
-            loss = render_loss # + 1e3 * area_loss
+            laplacian_loss = (V - V_smoothed).abs().mean()
+            area_loss = triangle_areas(V, F).mean()
+            loss = render_loss + aux_strength * (laplacian_loss + area_loss)
 
             # Optimization step
             opt.zero_grad()
@@ -292,8 +325,21 @@ def inverse_render_nsc(sample_rate, losses, lr):
     return V.detach(), F, losses
 
 V, F, losses = inverse_render_nsc(4, {}, 1e-3)
-V, F, losses = inverse_render_nsc(8, losses, 1e-3)
-V, F, losses = inverse_render_nsc(16, losses, 1e-3)
+
+ps.register_surface_mesh('model-phase2-4', V.cpu().numpy(), F.cpu().numpy())
+# ps.show()
+
+V, F, losses = inverse_render_nsc(8, losses, 1e-3, 5e-2)
+
+ps.register_surface_mesh('model-phase2-8', V.cpu().numpy(), F.cpu().numpy())
+# ps.show()
+
+V, F, losses = inverse_render_nsc(16, losses, 1e-3, 1e-2)
+
+ps.register_surface_mesh('model-phase2-16', V.cpu().numpy(), F.cpu().numpy())
+# ps.show()
+
+# TODO: 32 by 32 resolution
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -312,9 +358,6 @@ plt.tight_layout()
 plt.legend()
 
 # plt.savefig('losses.png')
-
-ps.register_surface_mesh('model-phase2', V.cpu().numpy(), F.cpu().numpy())
-# ps.show()
 
 # Save data
 result = os.path.basename(sys.argv[1])
