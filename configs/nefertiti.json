@@ -1,0 +1,15 @@
+{
+	"name": "nefertiti",
+	"target": "meshes/nefertiti/target.obj",
+	"directory": "results/nefertiti",
+	"experiments": [
+		{
+			"name": "pos-linear",
+			"source": "meshes/nefertiti/source.obj",
+			"method": "pos/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		}
+	]
+}
