@@ -72,8 +72,8 @@ with open(db) as f:
         for k, v in resolutions.items():
             dpm = v['dpm']
             size = v['size']/1024
-            l.append((size, -np.log10(dpm)))
-            # l.append((size, dpm))
+            # l.append((size, -np.log10(dpm)))
+            l.append((size, dpm))
 
         l.sort(key=lambda x: x[0])
         x, y = zip(*l)
@@ -83,6 +83,7 @@ with open(db) as f:
     # ax[0][0].set_ylabel('dpm')
     ax[0][0].set_xlabel('size (KB)')
     ax[0][0].set_xscale('log')
+    ax[0][0].set_yscale('log')
     ax[0][0].legend()
 
     # Plot the atomic elements (dnormal vs size)
@@ -94,8 +95,8 @@ with open(db) as f:
         for k, v in resolutions.items():
             dnormal = v['dnormal']
             size = v['size']/1024
-            l.append((size, -np.log10(dnormal)))
-            # l.append((size, dnormal))
+            # l.append((size, -np.log10(dnormal)))
+            l.append((size, dnormal))
 
         l.sort(key=lambda x: x[0])
         x, y = zip(*l)
@@ -105,6 +106,7 @@ with open(db) as f:
     # ax[0][1].set_ylabel('dnormal')
     ax[0][1].set_xlabel('size (KB)')
     ax[0][1].set_xscale('log')
+    ax[0][1].set_yscale('log')
     ax[0][1].legend()
 
     # Plot the atomic elements (render vs size)
@@ -116,8 +118,8 @@ with open(db) as f:
         for k, v in resolutions.items():
             render = v['render']
             size = v['size']/1024
-            l.append((size, -np.log10(render)))
-            # l.append((size, render))
+            # l.append((size, -np.log10(render)))
+            l.append((size, render))
 
         l.sort(key=lambda x: x[0])
         x, y = zip(*l)
@@ -127,6 +129,7 @@ with open(db) as f:
     # ax[1][0].set_ylabel('render')
     ax[1][0].set_xlabel('size (KB)')
     ax[1][0].set_xscale('log')
+    ax[1][0].set_yscale('log')
     ax[1][0].legend()
 
     # Plot the atomic elements (chamfer vs size)
@@ -138,8 +141,8 @@ with open(db) as f:
         for k, v in resolutions.items():
             chamfer = v['chamfer']
             size = v['size']/1024
-            l.append((size, -np.log10(chamfer)))
-            # l.append((size, chamfer))
+            # l.append((size, -np.log10(chamfer)))
+            l.append((size, chamfer))
 
         l.sort(key=lambda x: x[0])
         x, y = zip(*l)
@@ -149,6 +152,7 @@ with open(db) as f:
     # ax[1][1].set_ylabel('chamfer')
     ax[1][1].set_xlabel('size (KB)')
     ax[1][1].set_xscale('log')
+    ax[1][1].set_yscale('log')
     ax[1][1].legend()
 
     fig.tight_layout()

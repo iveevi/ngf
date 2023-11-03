@@ -917,13 +917,13 @@ void cached_grid::query_vector(const torch::Tensor &sources,
 }
 
 struct closest_point_kinfo {
-	glm::vec3 *points;
-	glm::vec3 *closest;
-	glm::vec3 *bary;
-	float     *distances;
-	int32_t   *triangles;
+	const glm::vec3 *__restrict__ points;
+	const glm::vec3 *__restrict__ closest;
+	const glm::vec3 *__restrict__ bary;
+	const float     *__restrict__ distances;
+	const int32_t   *__restrict__ triangles;
 
-	int32_t   point_count;
+	int32_t                       point_count;
 };
 
 __global__
@@ -1096,108 +1096,108 @@ void cached_grid::precache_device()
 	cudaMemcpy(dev_cas.index1, index1.data(), sizeof(uint32_t) * index1.size(), cudaMemcpyHostToDevice);
 }
 
-struct cumesh {
-	const glm::vec3 *vertices;
-	const glm::uvec3 *triangles;
-
-	uint32_t vertex_count = 0;
-	uint32_t triangle_count = 0;
-};
-
-__global__
-static void barycentric_closest_point_kernel(cumesh cm, closest_point_kinfo kinfo)
-{
-	uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-	uint32_t stride = blockDim.x * gridDim.x;
-
-	for (uint32_t i = tid; i < kinfo.point_count; i += stride) {
-		glm::vec3 point = kinfo.points[i];
-		glm::vec3 closest;
-		glm::vec3 barycentrics;
-		uint32_t triangle;
-
-		float min_distance = FLT_MAX;
-		for (uint32_t j = 0; j < cm.triangle_count; j++) {
-			glm::uvec3 tri = cm.triangles[j];
-
-			glm::vec3 v0 = cm.vertices[tri.x];
-			glm::vec3 v1 = cm.vertices[tri.y];
-			glm::vec3 v2 = cm.vertices[tri.z];
-
-			glm::vec3 candidate;
-			glm::vec3 bary;
-			float distance;
-
-			triangle_closest_point(v0, v1, v2, point, &candidate, &bary, &distance);
-
-			if (distance < min_distance) {
-				min_distance = distance;
-				closest = candidate;
-				barycentrics = bary;
-				triangle = j;
-			}
-		}
-
-		kinfo.bary[i] = barycentrics;
-		kinfo.triangles[i] = triangle;
-	}
-}
-
-void barycentric_closest_points(const torch::Tensor &vertices, const torch::Tensor &triangles, const torch::Tensor &sources, torch::Tensor &bary, torch::Tensor &indices)
-{
-	// Check types, devices and sizes
-	assert(vertices.dim() == 2 && vertices.size(1) == 3);
-	assert(triangles.dim() == 2 && triangles.size(1) == 3);
-	assert(sources.dim() == 2 && sources.size(1) == 3);
-	assert(bary.dim() == 2 && bary.size(1) == 3);
-	assert(indices.dim() == 1);
-
-	assert(vertices.device().is_cuda());
-	assert(triangles.device().is_cuda());
-	assert(sources.device().is_cuda());
-	assert(bary.device().is_cuda());
-	assert(indices.device().is_cuda());
-
-	assert(vertices.dtype() == torch::kFloat32);
-	assert(triangles.dtype() == torch::kInt32);
-	assert(sources.dtype() == torch::kFloat32);
-	assert(bary.dtype() == torch::kFloat32);
-	assert(indices.dtype() == torch::kInt32);
-
-	assert(sources.size(0) == bary.size(0));
-	assert(sources.size(0) == indices.size(0));
-
-	// Assuming all elements are precached already (in device as well)
-	// and that the dst vector is already allocated
-	size_t size = sources.size(0);
-
-	cumesh cm;
-
-	cm.vertices = (glm::vec3 *) vertices.data_ptr <float> ();
-	cm.triangles = (glm::uvec3 *) triangles.data_ptr <int32_t> ();
-	cm.vertex_count = vertices.size(0);
-	cm.triangle_count = triangles.size(0);
-
-	closest_point_kinfo kinfo;
-
-	kinfo.points = (glm::vec3 *) sources.data_ptr <float> ();
-	kinfo.bary = (glm::vec3 *) bary.data_ptr <float> ();
-	kinfo.triangles = (int32_t *) indices.data_ptr <int32_t> ();
-	kinfo.point_count = size;
-
-	dim3 block(256);
-	dim3 grid((size + block.x - 1) / block.x);
-
-	barycentric_closest_point_kernel <<<grid, block>>> (cm, kinfo);
-
-	// TODO: cuda check
-	cudaDeviceSynchronize();
-	cudaError_t err = cudaGetLastError();
-	if (err != cudaSuccess) {
-		std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
-		exit(1);
-	}
-}
+// struct cumesh {
+// 	const glm::vec3 *vertices;
+// 	const glm::uvec3 *triangles;
+//
+// 	uint32_t vertex_count = 0;
+// 	uint32_t triangle_count = 0;
+// };
+//
+// __global__
+// static void barycentric_closest_point_kernel(cumesh cm, closest_point_kinfo kinfo)
+// {
+// 	uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+// 	uint32_t stride = blockDim.x * gridDim.x;
+//
+// 	for (uint32_t i = tid; i < kinfo.point_count; i += stride) {
+// 		glm::vec3 point = kinfo.points[i];
+// 		glm::vec3 closest;
+// 		glm::vec3 barycentrics;
+// 		uint32_t triangle;
+//
+// 		float min_distance = FLT_MAX;
+// 		for (uint32_t j = 0; j < cm.triangle_count; j++) {
+// 			glm::uvec3 tri = cm.triangles[j];
+//
+// 			glm::vec3 v0 = cm.vertices[tri.x];
+// 			glm::vec3 v1 = cm.vertices[tri.y];
+// 			glm::vec3 v2 = cm.vertices[tri.z];
+//
+// 			glm::vec3 candidate;
+// 			glm::vec3 bary;
+// 			float distance;
+//
+// 			triangle_closest_point(v0, v1, v2, point, &candidate, &bary, &distance);
+//
+// 			if (distance < min_distance) {
+// 				min_distance = distance;
+// 				closest = candidate;
+// 				barycentrics = bary;
+// 				triangle = j;
+// 			}
+// 		}
+//
+// 		kinfo.bary[i] = barycentrics;
+// 		kinfo.triangles[i] = triangle;
+// 	}
+// }
+//
+// void barycentric_closest_points(const torch::Tensor &vertices, const torch::Tensor &triangles, const torch::Tensor &sources, torch::Tensor &bary, torch::Tensor &indices)
+// {
+// 	// Check types, devices and sizes
+// 	assert(vertices.dim() == 2 && vertices.size(1) == 3);
+// 	assert(triangles.dim() == 2 && triangles.size(1) == 3);
+// 	assert(sources.dim() == 2 && sources.size(1) == 3);
+// 	assert(bary.dim() == 2 && bary.size(1) == 3);
+// 	assert(indices.dim() == 1);
+//
+// 	assert(vertices.device().is_cuda());
+// 	assert(triangles.device().is_cuda());
+// 	assert(sources.device().is_cuda());
+// 	assert(bary.device().is_cuda());
+// 	assert(indices.device().is_cuda());
+//
+// 	assert(vertices.dtype() == torch::kFloat32);
+// 	assert(triangles.dtype() == torch::kInt32);
+// 	assert(sources.dtype() == torch::kFloat32);
+// 	assert(bary.dtype() == torch::kFloat32);
+// 	assert(indices.dtype() == torch::kInt32);
+//
+// 	assert(sources.size(0) == bary.size(0));
+// 	assert(sources.size(0) == indices.size(0));
+//
+// 	// Assuming all elements are precached already (in device as well)
+// 	// and that the dst vector is already allocated
+// 	size_t size = sources.size(0);
+//
+// 	cumesh cm;
+//
+// 	cm.vertices = (glm::vec3 *) vertices.data_ptr <float> ();
+// 	cm.triangles = (glm::uvec3 *) triangles.data_ptr <int32_t> ();
+// 	cm.vertex_count = vertices.size(0);
+// 	cm.triangle_count = triangles.size(0);
+//
+// 	closest_point_kinfo kinfo;
+//
+// 	kinfo.points = (glm::vec3 *) sources.data_ptr <float> ();
+// 	kinfo.bary = (glm::vec3 *) bary.data_ptr <float> ();
+// 	kinfo.triangles = (int32_t *) indices.data_ptr <int32_t> ();
+// 	kinfo.point_count = size;
+//
+// 	dim3 block(256);
+// 	dim3 grid((size + block.x - 1) / block.x);
+//
+// 	barycentric_closest_point_kernel <<<grid, block>>> (cm, kinfo);
+//
+// 	// TODO: cuda check
+// 	cudaDeviceSynchronize();
+// 	cudaError_t err = cudaGetLastError();
+// 	if (err != cudaSuccess) {
+// 		std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
+// 		exit(1);
+// 	}
+// }
 
 __global__
 void laplacian_smooth_kernel(glm::vec3 *result, glm::vec3 *vertices, uint32_t *graph, uint32_t count, uint32_t max_adj, float factor)
@@ -1232,8 +1232,8 @@ struct vertex_graph {
 
 		if (primitives.size(1) == 3)
 			initialize_from_triangles(primitives);
-		else if (primitives.size(1) == 4)
-			initialize_from_quads(primitives);
+		// else if (primitives.size(1) == 4)
+		// 	initialize_from_quads(primitives);
 		else
 			assert(false);
 	}
@@ -1286,59 +1286,59 @@ struct vertex_graph {
 		cudaMemcpy(dev_graph, host_graph.data(), graph_size * sizeof(uint32_t), cudaMemcpyHostToDevice);
 	}
 
-	void initialize_from_quads(const torch::Tensor &quads) {
-		assert(quads.dim() == 2 && quads.size(1) == 4);
-		assert(quads.dtype() == torch::kInt32);
-		assert(quads.device().is_cpu());
-
-		uint32_t quad_count = quads.size(0);
-
-		max = 0;
-		for (uint32_t i = 0; i < quad_count; i++) {
-			int32_t v0 = quads[i][0].item().to <int32_t> ();
-			int32_t v1 = quads[i][1].item().to <int32_t> ();
-			int32_t v2 = quads[i][2].item().to <int32_t> ();
-			int32_t v3 = quads[i][3].item().to <int32_t> ();
-
-			graph[v0].insert(v1);
-			graph[v0].insert(v3);
-
-			graph[v1].insert(v0);
-			graph[v1].insert(v2);
-
-			graph[v2].insert(v1);
-			graph[v2].insert(v3);
-
-			graph[v3].insert(v0);
-			graph[v3].insert(v2);
-
-			int32_t max01 = std::max(v0, v1);
-			int32_t max23 = std::max(v2, v3);
-			max = std::max(max, std::max(max01, max23));
-		}
-
-		max_adj = 0;
-		for (auto &kv : graph)
-			max_adj = std::max(max_adj, (int32_t) kv.second.size());
-
-		// Allocate a device graph
-		uint32_t graph_size = max * (max_adj + 1);
-		cudaMalloc(&dev_graph, graph_size * sizeof(uint32_t));
-
-		std::vector <uint32_t> host_graph(graph_size, 0);
-		for (auto &kv : graph) {
-			uint32_t i = kv.first;
-			uint32_t j = 0;
-			assert(i * max_adj + j < graph_size);
-			host_graph[i * max_adj + j++] = kv.second.size();
-			for (auto &adj : kv.second) {
-				assert(i * max_adj + j < graph_size);
-				host_graph[i * max_adj + j++] = adj;
-			}
-		}
-
-		cudaMemcpy(dev_graph, host_graph.data(), graph_size * sizeof(uint32_t), cudaMemcpyHostToDevice);
-	}
+	// void initialize_from_quads(const torch::Tensor &quads) {
+	// 	assert(quads.dim() == 2 && quads.size(1) == 4);
+	// 	assert(quads.dtype() == torch::kInt32);
+	// 	assert(quads.device().is_cpu());
+	//
+	// 	uint32_t quad_count = quads.size(0);
+	//
+	// 	max = 0;
+	// 	for (uint32_t i = 0; i < quad_count; i++) {
+	// 		int32_t v0 = quads[i][0].item().to <int32_t> ();
+	// 		int32_t v1 = quads[i][1].item().to <int32_t> ();
+	// 		int32_t v2 = quads[i][2].item().to <int32_t> ();
+	// 		int32_t v3 = quads[i][3].item().to <int32_t> ();
+	//
+	// 		graph[v0].insert(v1);
+	// 		graph[v0].insert(v3);
+	//
+	// 		graph[v1].insert(v0);
+	// 		graph[v1].insert(v2);
+	//
+	// 		graph[v2].insert(v1);
+	// 		graph[v2].insert(v3);
+	//
+	// 		graph[v3].insert(v0);
+	// 		graph[v3].insert(v2);
+	//
+	// 		int32_t max01 = std::max(v0, v1);
+	// 		int32_t max23 = std::max(v2, v3);
+	// 		max = std::max(max, std::max(max01, max23));
+	// 	}
+	//
+	// 	max_adj = 0;
+	// 	for (auto &kv : graph)
+	// 		max_adj = std::max(max_adj, (int32_t) kv.second.size());
+	//
+	// 	// Allocate a device graph
+	// 	uint32_t graph_size = max * (max_adj + 1);
+	// 	cudaMalloc(&dev_graph, graph_size * sizeof(uint32_t));
+	//
+	// 	std::vector <uint32_t> host_graph(graph_size, 0);
+	// 	for (auto &kv : graph) {
+	// 		uint32_t i = kv.first;
+	// 		uint32_t j = 0;
+	// 		assert(i * max_adj + j < graph_size);
+	// 		host_graph[i * max_adj + j++] = kv.second.size();
+	// 		for (auto &adj : kv.second) {
+	// 			assert(i * max_adj + j < graph_size);
+	// 			host_graph[i * max_adj + j++] = adj;
+	// 		}
+	// 	}
+	//
+	// 	cudaMemcpy(dev_graph, host_graph.data(), graph_size * sizeof(uint32_t), cudaMemcpyHostToDevice);
+	// }
 
 	~vertex_graph() {
 		if (dev_graph)
@@ -1390,6 +1390,118 @@ struct vertex_graph {
 		return result;
 	}
 };
+
+torch::Tensor conformal_graph(const torch::Tensor &quads)
+{
+	// Requries quads
+	assert(primitives.dim() == 2 && primitives.size(1) == 4);
+	assert(primitives.dtype() == torch::kInt32);
+	assert(primitives.device().is_cpu());
+
+	// First build the adjacency graph and record quad sharing
+	std::unordered_map <int32_t, std::unordered_set <int32_t>> graph;
+	std::unordered_map <int32_t, std::vector <glm::ivec4>> shared;
+
+	uint32_t quad_count = primitives.size(0);
+
+	// Fill the graphs
+	for (uint32_t i = 0; i < quad_count; i++) {
+		int32_t v0 = quads[i][0].item().to <int32_t> ();
+		int32_t v1 = quads[i][1].item().to <int32_t> ();
+		int32_t v2 = quads[i][2].item().to <int32_t> ();
+		int32_t v3 = quads[i][3].item().to <int32_t> ();
+
+		graph[v0].insert(v1);
+		graph[v0].insert(v3);
+
+		graph[v1].insert(v0);
+		graph[v1].insert(v2);
+
+		graph[v2].insert(v1);
+		graph[v2].insert(v3);
+
+		graph[v3].insert(v0);
+		graph[v3].insert(v2);
+
+		glm::ivec4 quad = glm::ivec4(v0, v1, v2, v3);
+		shared[v0].push_back(quad);
+		shared[v1].push_back(quad);
+		shared[v2].push_back(quad);
+		shared[v3].push_back(quad);
+	}
+
+	// Collect all crossings; only vertices with valence 4, with opposite vertices not sharing quads
+	for (auto &kv : graph) {
+		std::unordered_set <int32_t> &adj = kv.second;
+		if (adj.size() != 4)
+			continue;
+
+		// Find the opposite vertices
+		auto it = adj.begin();
+		int32_t a = *it++;
+		int32_t b = *it++;
+		int32_t c = *it++;
+		int32_t d = *it++;
+
+		// Expect that a-b and c-d are opposite (non-sharing), swap if otherwise
+		bool a_b_opposite = true;
+		bool c_d_opposite = true;
+
+		for (auto &quad : shared[a]) {
+			if (quad[0] == b || quad[1] == b || quad[2] == b || quad[3] == b) {
+				a_b_opposite = false;
+				break;
+			}
+		}
+
+		for (auto &quad : shared[c]) {
+			if (quad[0] == d || quad[1] == d || quad[2] == d || quad[3] == d) {
+				c_d_opposite = false;
+				break;
+			}
+		}
+
+		assert(!(a_b_opposite ^ c_d_opposite)); // either both are opposite or both are not
+
+		if (!a_b_opposite)
+			std::swap(b, c);
+
+		// Check again to make sure
+		a_b_opposite = true;
+		c_d_opposite = true;
+
+		for (auto &quad : shared[a]) {
+			if (quad[0] == b || quad[1] == b || quad[2] == b || quad[3] == b) {
+				a_b_opposite = false;
+				break;
+			}
+		}
+
+		for (auto &quad : shared[c]) {
+			if (quad[0] == d || quad[1] == d || quad[2] == d || quad[3] == d) {
+				c_d_opposite = false;
+				break;
+			}
+		}
+
+		assert(a_b_opposite && c_d_opposite);
+
+		// Now we can safely add the crossings
+		crossings.push_back(glm::ivec4(a, b, c, d));
+	}
+
+	// Construct tensor of crossings
+	torch::Tensor result = torch::zeros({ (long) crossings.size(), 4 }, torch::kInt32);
+
+	for (uint32_t i = 0; i < crossings.size(); i++) {
+		result[i][0] = crossings[i][0];
+		result[i][1] = crossings[i][1];
+		result[i][2] = crossings[i][2];
+		result[i][3] = crossings[i][3];
+	}
+
+	return result;
+}
 
 __global__
 void triangulate_shorted_kernel(const glm::vec3 *__restrict__ vertices, glm::ivec3 *__restrict__ triangles, size_t sample_rate)
