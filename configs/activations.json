@@ -1,0 +1,42 @@
+{
+	"name": "nefertiti",
+	"target": "meshes/nefertiti/target.obj",
+	"directory": "results/nefertiti",
+	"experiments": [
+		{
+			"name": "pos-linear",
+			"source": "meshes/nefertiti/source-lod0.obj",
+			"method": "pos/linear",
+			"clusters": 100,
+			"batch": 10,
+			"resolution": 16
+		},
+		
+		{
+			"name": "morlet-linear",
+			"source": "meshes/nefertiti/source-lod0.obj",
+			"method": "morlet/linear",
+			"clusters": 100,
+			"batch": 10,
+			"resolution": 16
+		},
+		
+		{
+			"name": "onion-linear",
+			"source": "meshes/nefertiti/source-lod0.obj",
+			"method": "onion/linear",
+			"clusters": 100,
+			"batch": 10,
+			"resolution": 16
+		},
+		
+		{
+			"name": "feat-linear",
+			"source": "meshes/nefertiti/source-lod0.obj",
+			"method": "feat/linear",
+			"clusters": 100,
+			"batch": 10,
+			"resolution": 16
+		}
+	]
+}

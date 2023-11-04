@@ -1,4 +1,3 @@
-import argparse
 import json
 import meshio
 import os
@@ -13,12 +12,12 @@ from util import *
 from configurations import *
 
 # Arguments
-assert len(sys.argv) == 5, 'evaluate.py <reference> <directory> <cameras> <db>'
+assert len(sys.argv) == 4, 'evaluate.py <reference> <directory> <db>'
+# TODO: directory and /db.sjon
 
 reference = sys.argv[1]
 directory = sys.argv[2]
-cameras = sys.argv[3]
-db = sys.argv[4]
+db = sys.argv[3]
 
 assert reference is not None
 assert directory is not None
@@ -38,68 +37,95 @@ optext = load(name='optext',
 
 print('Loaded optimization extension')
 
+# Converting meshio to torch
+convert = lambda M: (torch.from_numpy(M.points).float().cuda(), torch.from_numpy(M.cells_dict['triangle']).int().cuda())
+
+# Load target reference meshe
+print('Loading target mesh: %s' % reference)
+
+target_path = os.path.basename(reference)
+target = meshio.read(reference)
+
+v_ref = target.points
+min = np.min(v_ref, axis=0)
+max = np.max(v_ref, axis=0)
+center = (min + max) / 2.0
+extent = np.linalg.norm(max - min) / 2.0
+normalize = lambda x: (x - center) / extent
+
+target.points = normalize(target.points)
+target = convert(target)
+
+target = optext.geometry(target[0].cpu(), target[1].cpu())
+target_cas = optext.cached_grid(target, 32)
+target = target.torched()
+
 # Load scene cameras
-from scripts.load_xml import load_scene
+# from scripts.load_xml import load_scene
 from scripts.render import NVDRenderer
 
-scene = load_scene(cameras) if cameras != 'None' else {}
-if len(scene) == 0:
-    print('No cameras loaded, using randomly generated ones')
-    ref_directory   = os.path.dirname(reference)
-    simplified      = os.path.join(ref_directory, 'simplified.obj')
+# TODO: put into a util function/script
+ref_directory   = os.path.dirname(reference)
+simplified      = os.path.join(ref_directory, 'simplified.obj')
 
-    simplified_mesh = meshio.read(simplified)
-    v_simplified    = torch.from_numpy(simplified_mesh.points).float().cuda()
-    f_simplified    = torch.from_numpy(simplified_mesh.cells_dict['triangle']).int().cuda()
-    fn_simplified   = compute_face_normals(v_simplified, f_simplified)
-    n_simplified    = compute_vertex_normals(v_simplified, f_simplified, fn_simplified)
+simplified_mesh = meshio.read(simplified)
+# v_simplified    = torch.from_numpy(simplified_mesh.points).float().cuda()
 
-    cameras         = 25
-    seeds           = list(torch.randint(0, f_simplified.shape[0], (cameras,)).numpy())
-    target_geometry = optext.geometry(v_simplified.cpu(), n_simplified.cpu(), f_simplified.cpu())
-    target_geometry = target_geometry.deduplicate()
-    clusters        = optext.cluster_geometry(target_geometry, seeds, 10)
+v_simplified    = normalize(simplified_mesh.points)
+v_simplified    = torch.from_numpy(v_simplified).float().cuda()
 
-    # Compute the centroid and normal for each cluster
-    cluster_centroids = []
-    cluster_normals = []
+f_simplified    = torch.from_numpy(simplified_mesh.cells_dict['triangle']).int().cuda()
+fn_simplified   = compute_face_normals(v_simplified, f_simplified)
+n_simplified    = compute_vertex_normals(v_simplified, f_simplified, fn_simplified)
 
-    for cluster in clusters:
-        faces = f_simplified[cluster]
+cameras         = 25
+seeds           = list(torch.randint(0, f_simplified.shape[0], (cameras,)).numpy())
+target_geometry = optext.geometry(v_simplified.cpu(), n_simplified.cpu(), f_simplified.cpu())
+target_geometry = target_geometry.deduplicate()
+clusters        = optext.cluster_geometry(target_geometry, seeds, 10)
 
-        v0 = v_simplified[faces[:, 0]]
-        v1 = v_simplified[faces[:, 1]]
-        v2 = v_simplified[faces[:, 2]]
-        centroids = (v0 + v1 + v2) / 3.0
-        centroids = centroids.mean(dim=0)
+# Compute the centroid and normal for each cluster
+cluster_centroids = []
+cluster_normals = []
 
-        normals = torch.cross(v1 - v0, v2 - v0)
-        normals = normals.mean(dim=0)
-        normals = normals / torch.norm(normals)
+for cluster in clusters:
+    faces = f_simplified[cluster]
 
-        cluster_centroids.append(centroids)
-        cluster_normals.append(normals)
+    v0 = v_simplified[faces[:, 0]]
+    v1 = v_simplified[faces[:, 1]]
+    v2 = v_simplified[faces[:, 2]]
+    centroids = (v0 + v1 + v2) / 3.0
+    centroids = centroids.mean(dim=0)
 
-    cluster_centroids = torch.stack(cluster_centroids, dim=0)
-    cluster_normals = torch.stack(cluster_normals, dim=0)
+    normals = torch.cross(v1 - v0, v2 - v0)
+    normals = normals.mean(dim=0)
+    normals = normals / torch.norm(normals)
 
-    canonical_up = torch.tensor([0.0, 1.0, 0.0], device='cuda')
-    cluster_eyes = cluster_centroids + cluster_normals * 1.5
-    cluster_ups = torch.stack(len(clusters) * [ canonical_up ], dim=0)
-    cluster_rights = torch.cross(cluster_normals, cluster_ups)
-    cluster_ups = torch.cross(cluster_rights, cluster_normals)
+    cluster_centroids.append(centroids)
+    cluster_normals.append(normals)
 
-    all_views = [ lookat(eye, view_point, up) for eye, view_point, up in zip(cluster_eyes, cluster_centroids, cluster_ups) ]
-    scene['view_mats'] = all_views
+cluster_centroids = torch.stack(cluster_centroids, dim=0)
+cluster_normals = torch.stack(cluster_normals, dim=0)
 
-    # Also load an environment map
-    environment = imageio.imread('images/environment.hdr', format='HDR-FI')
-    environment = torch.tensor(environment, dtype=torch.float32, device='cuda')
-    alpha       = torch.ones((*environment.shape[:2], 1), dtype=torch.float32, device='cuda')
-    environment = torch.cat((environment, alpha), dim=-1)
+canonical_up = torch.tensor([0.0, 1.0, 0.0], device='cuda')
+cluster_eyes = cluster_centroids + cluster_normals * 1.0
+cluster_ups = torch.stack(len(clusters) * [ canonical_up ], dim=0)
+cluster_rights = torch.cross(cluster_normals, cluster_ups)
+cluster_ups = torch.cross(cluster_rights, cluster_normals)
 
-    scene['envmap']       = environment
-    scene['envmap_scale'] = 1.0
+all_views = [ lookat(eye, view_point, up) for eye, view_point, up in zip(cluster_eyes, cluster_centroids, cluster_ups) ]
+
+scene = {}
+scene['view_mats'] = all_views
+
+# Also load an environment map
+environment = imageio.imread('images/environment.hdr', format='HDR-FI')
+environment = torch.tensor(environment, dtype=torch.float32, device='cuda')
+alpha       = torch.ones((*environment.shape[:2], 1), dtype=torch.float32, device='cuda')
+environment = torch.cat((environment, alpha), dim=-1)
+
+scene['envmap']       = environment
+scene['envmap_scale'] = 1.0
 
 print('Loaded scene with %d cameras' % len(scene['view_mats']))
 
@@ -203,13 +229,9 @@ def render_loss(target, source, alt=None):
     t_imgs = renderer.render(tV, tN, tF, scene['view_mats'])
     s_imgs = renderer.render(sV, sN, sF if alt is None else alt, scene['view_mats'])
 
-    # from matplotlib import pyplot as plt
-    # fig, ax = plt.subplots(1, 2, figsize=(10, 10))
-    # ax[0].imshow(t_imgs[0].detach().cpu().numpy())
-    # ax[1].imshow(s_imgs[0].detach().cpu().numpy())
-    # plt.show()
-
     loss = torch.mean(torch.abs(t_imgs - s_imgs))
+
+    # TODO: generate another view
 
     return loss.item()
 
@@ -285,9 +307,6 @@ def write(catag, dpm, dnormal, render, chamfer, size=0):
     with open(db, 'w') as f:
         json.dump(db_json, f, indent=4)
 
-# Converting meshio to torch
-convert = lambda M: (torch.from_numpy(M.points).float().cuda(), torch.from_numpy(M.cells_dict['triangle']).int().cuda())
-
 # Erase existing directory data from the database
 if not os.path.exists(db):
     with open(db, 'w') as f:
@@ -313,17 +332,6 @@ else:
     with open(db, 'w') as f:
         json.dump(db_json, f, indent=4)
 
-# Load target reference meshe
-print('Loading target mesh: %s' % reference)
-
-target_path = os.path.basename(reference)
-target = meshio.read(reference)
-target = convert(target)
-
-target = optext.geometry(target[0].cpu(), target[1].cpu())
-target_cas = optext.cached_grid(target, 32)
-target = target.torched()
-
 # Recursively find all simple meshes and model configurations
 for root, dirs, files in os.walk(directory):
     for file in files:
@@ -335,6 +343,7 @@ for root, dirs, files in os.walk(directory):
             print('Loading source mesh: %s' % path)
 
             source = meshio.read(path)
+            source.points = normalize(source.points)
             source = convert(source)
 
             fn = compute_face_normals(source[0], source[1])
@@ -362,83 +371,82 @@ for root, dirs, files in os.walk(directory):
             catag = os.path.basename(file)
             catag = os.path.splitext(catag)[0]
             write(catag, dpm, dnormal, render, chamfer, size=total)
-    for nsc in dirs:
-        if nsc in [ 'unpacked' ]:
-            continue
+        elif file.endswith('.pt'):
+            print('Loading NSC representation:', file)
 
-        print('Loading NSC representation: %s' % nsc)
+            data = torch.load(os.path.join(root, file))
 
-        data = torch.load(os.path.join(root, nsc, 'model.pt'))
+            m = data['model']
+            c = data['complexes']
+            p = data['points']
+            f = data['features']
 
-        m = data['model']
-        c = data['complexes']
-        p = data['points']
-        f = data['features']
+            print('  > c:', c.shape)
+            print('  > p:', p.shape)
+            print('  > f:', f.shape)
 
-        print('  > c:', c.shape)
-        print('  > p:', p.shape)
-        print('  > f:', f.shape)
+            nsc = file.split('.')[0]
+            print('  > nsc: %s' % nsc)
+            lerper = nsc.split('-')[1]
+            print('  > lerper: %s' % lerper)
 
-        lerper = nsc.split('-')[1]
-        print('  > lerper: %s' % lerper)
+            ker = clerp(lerps[lerper])
+            print('  > clerp: %s' % ker)
 
-        ker = clerp(lerps[lerper])
-        print('  > clerp: %s' % ker)
+            # Compute byte size of the representation
+            feature_bytes = f.numel() * f.element_size()
+            index_bytes = c.numel() * c.element_size()
+            model_bytes = sum([ p.numel() * p.element_size() for p in m.parameters() ])
+            vertex_bytes = p.numel() * p.element_size()
+            total = feature_bytes + index_bytes + model_bytes + vertex_bytes
 
-        # Compute byte size of the representation
-        feature_bytes = f.numel() * f.element_size()
-        index_bytes = c.numel() * c.element_size()
-        model_bytes = sum([ p.numel() * p.element_size() for p in m.parameters() ])
-        vertex_bytes = p.numel() * p.element_size()
-        total = feature_bytes + index_bytes + model_bytes + vertex_bytes
+            print('  > Size: %d KB' % (total/1024))
 
-        print('  > Size: %d KB' % (total/1024))
+            for rate in [ 2, 4, 8, 16 ]:
+                lerped_points, lerped_features = sample(c, p, f, rate, kernel=ker)
+                # print('    > lerped_points:', lerped_points.shape)
+                # print('    > lerped_features:', lerped_features.shape)
 
-        for rate in [ 2, 4, 8, 16 ]:
-            lerped_points, lerped_features = sample(c, p, f, rate, kernel=ker)
-            # print('    > lerped_points:', lerped_points.shape)
-            # print('    > lerped_features:', lerped_features.shape)
+                vertices = m(points=lerped_points, features=lerped_features).detach()
 
-            vertices = m(points=lerped_points, features=lerped_features).detach()
+                I = shorted_indices(vertices.cpu().numpy(), c, rate)
+                I = torch.from_numpy(I).int()
 
-            I = shorted_indices(vertices.cpu().numpy(), c, rate)
-            I = torch.from_numpy(I).int()
+                cmap = make_cmap(c, p, lerped_points, rate)
+                remap = optext.generate_remapper(c.cpu(), cmap, lerped_points.shape[0], rate)
+                F = remap.remap(I).cuda()
 
-            cmap = make_cmap(c, p, lerped_points, rate)
-            remap = optext.generate_remapper(c.cpu(), cmap, lerped_points.shape[0], rate)
-            F = remap.remap(I).cuda()
+                # import polyscope as ps
+                # ps.init()
+                # ps.register_surface_mesh('mesh', lerped_points.detach().cpu().numpy(), F.cpu().numpy())
+                # ps.show()
 
-            # import polyscope as ps
-            # ps.init()
-            # ps.register_surface_mesh('mesh', lerped_points.detach().cpu().numpy(), F.cpu().numpy())
-            # ps.show()
+                fn = compute_face_normals(vertices, F)
+                vn = compute_vertex_normals(vertices, F, fn)
 
-            fn = compute_face_normals(vertices, F)
-            vn = compute_vertex_normals(vertices, F, fn)
+                if torch.isnan(vertices).any():
+                    print('  > vertices has nan')
+                    continue
+                if torch.isnan(fn).any():
+                    print('  > F has nan')
+                    continue
+                if torch.isnan(vn).any():
+                    print('  > vn has nan')
+                    continue
 
-            if torch.isnan(vertices).any():
-                print('  > vertices has nan')
-                continue
-            if torch.isnan(fn).any():
-                print('  > F has nan')
-                continue
-            if torch.isnan(vn).any():
-                print('  > vn has nan')
-                continue
+                source = optext.geometry(vertices.cpu(), vn.cpu(), I)
+                source_cas = optext.cached_grid(source, 32)
+                source = source.torched()
 
-            source = optext.geometry(vertices.cpu(), vn.cpu(), I)
-            source_cas = optext.cached_grid(source, 32)
-            source = source.torched()
+                dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
+                render       = render_loss(target, source, alt=F)
+                chamfer      = chamfer_loss(target, source)
 
-            dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
-            render       = render_loss(target, source, alt=F)
-            chamfer      = chamfer_loss(target, source)
+                catag = nsc + '-r' + str(rate)
+                print('  > rate: %d, tag: %s' % (rate, catag))
+                print('    > DPM: %f' % dpm)
+                print('    > DNormal: %f' % dnormal)
+                print('    > Render: %f' % render)
+                print('    > Chamfer: %f' % chamfer)
 
-            catag = nsc + '-r' + str(rate)
-            print('  > rate: %d, tag: %s' % (rate, catag))
-            print('    > DPM: %f' % dpm)
-            print('    > DNormal: %f' % dnormal)
-            print('    > Render: %f' % render)
-            print('    > Chamfer: %f' % chamfer)
-
-            write(catag, dpm, dnormal, render, chamfer, size=total)
+                write(catag, dpm, dnormal, render, chamfer, size=total)

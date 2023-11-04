@@ -918,10 +918,10 @@ void cached_grid::query_vector(const torch::Tensor &sources,
 
 struct closest_point_kinfo {
 	const glm::vec3 *__restrict__ points;
-	const glm::vec3 *__restrict__ closest;
-	const glm::vec3 *__restrict__ bary;
-	const float     *__restrict__ distances;
-	const int32_t   *__restrict__ triangles;
+	glm::vec3       *__restrict__ closest;
+	glm::vec3       *__restrict__ bary;
+	float           *__restrict__ distances;
+	int32_t         *__restrict__ triangles;
 
 	int32_t                       point_count;
 };
@@ -1394,15 +1394,15 @@ struct vertex_graph {
 torch::Tensor conformal_graph(const torch::Tensor &quads)
 {
 	// Requries quads
-	assert(primitives.dim() == 2 && primitives.size(1) == 4);
-	assert(primitives.dtype() == torch::kInt32);
-	assert(primitives.device().is_cpu());
+	assert(quads.dim() == 2 && quads.size(1) == 4);
+	assert(quads.dtype() == torch::kInt32);
+	assert(quads.device().is_cpu());
 
 	// First build the adjacency graph and record quad sharing
 	std::unordered_map <int32_t, std::unordered_set <int32_t>> graph;
 	std::unordered_map <int32_t, std::vector <glm::ivec4>> shared;
 
-	uint32_t quad_count = primitives.size(0);
+	uint32_t quad_count = quads.size(0);
 
 	// Fill the graphs
 	for (uint32_t i = 0; i < quad_count; i++) {
@@ -1431,6 +1431,8 @@ torch::Tensor conformal_graph(const torch::Tensor &quads)
 	}
 
 	// Collect all crossings; only vertices with valence 4, with opposite vertices not sharing quads
+	std::vector <glm::ivec4> crossings;
+
 	for (auto &kv : graph) {
 		std::unordered_set <int32_t> &adj = kv.second;
 		if (adj.size() != 4)
@@ -1443,51 +1445,46 @@ torch::Tensor conformal_graph(const torch::Tensor &quads)
 		int32_t c = *it++;
 		int32_t d = *it++;
 
+		// printf("a: %d, b: %d, c: %d, d: %d\n", a, b, c, d);
+		// printf("shared quads:\n");
+		// for (auto &quad : shared[kv.first])
+		// 	printf("  > %d %d %d %d\n", quad[0], quad[1], quad[2], quad[3]);
+
 		// Expect that a-b and c-d are opposite (non-sharing), swap if otherwise
-		bool a_b_opposite = true;
-		bool c_d_opposite = true;
+		int32_t opp_a = b;
 
-		for (auto &quad : shared[a]) {
-			if (quad[0] == b || quad[1] == b || quad[2] == b || quad[3] == b) {
-				a_b_opposite = false;
-				break;
-			}
-		}
+		auto in_shared = [&shared](int32_t a, int32_t b) {
+			for (auto &quad : shared[a])
+				if (quad[0] == b || quad[1] == b || quad[2] == b || quad[3] == b)
+					return true;
+			return false;
+		};
 
-		for (auto &quad : shared[c]) {
-			if (quad[0] == d || quad[1] == d || quad[2] == d || quad[3] == d) {
-				c_d_opposite = false;
-				break;
-			}
-		}
+		if (in_shared(a, opp_a))
+			opp_a = c;
+		if (in_shared(a, opp_a))
+			opp_a = d;
 
-		assert(!(a_b_opposite ^ c_d_opposite)); // either both are opposite or both are not
+		assert(!in_shared(a, opp_a));
 
-		if (!a_b_opposite)
-			std::swap(b, c);
+		// Then find the other two opposite vertices
+		int32_t other_a = b;
+		if (other_a == a || other_a == opp_a)
+			other_a = c;
+		if (other_a == a || other_a == opp_a)
+			other_a = d;
 
-		// Check again to make sure
-		a_b_opposite = true;
-		c_d_opposite = true;
+		int32_t other_opp_a = b;
+		if (other_opp_a == opp_a || other_opp_a == a || other_opp_a == other_a)
+			other_opp_a = c;
+		if (other_opp_a == opp_a || other_opp_a == a || other_opp_a == other_a)
+			other_opp_a = d;
 
-		for (auto &quad : shared[a]) {
-			if (quad[0] == b || quad[1] == b || quad[2] == b || quad[3] == b) {
-				a_b_opposite = false;
-				break;
-			}
-		}
+		assert(!in_shared(other_a, other_opp_a));
+		assert(other_a != a && other_a != opp_a);
 
-		for (auto &quad : shared[c]) {
-			if (quad[0] == d || quad[1] == d || quad[2] == d || quad[3] == d) {
-				c_d_opposite = false;
-				break;
-			}
-		}
-
-		assert(a_b_opposite && c_d_opposite);
-
-		// Now we can safely add the crossings
-		crossings.push_back(glm::ivec4(a, b, c, d));
+		// Finally, add the crossing
+		crossings.push_back(glm::ivec4(a, opp_a, other_a, other_opp_a));
 	}
 
 	// Construct tensor of crossings
@@ -1803,8 +1800,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 		.def("remap_device", &remapper::remap_device, "Remap indices")
 		.def("scatter", &remapper::scatter, "Scatter vertices");
 
+	m.def("conformal_graph", &conformal_graph);
 	m.def("cluster_geometry", &cluster_geometry);
-	m.def("barycentric_closest_points", &barycentric_closest_points);
+	// m.def("barycentric_closest_points", &barycentric_closest_points);
 	m.def("triangulate_shorted", &triangulate_shorted);
 	m.def("generate_remapper", &generate_remapper, "Generate remapper");
 }

@@ -23,7 +23,25 @@ from util import *
 
 sns.set()
 
-assert len(sys.argv) >= 5, 'Usage: python combined.py <directory> <model> <kernel> <clusters>'
+assert len(sys.argv) == 8, 'Usage: python combined.py <target> <source> <method> <clusters> <batch> <resolution> <result>'
+
+# Parse all the arguments
+target     = sys.argv[1]
+source     = sys.argv[2]
+method     = sys.argv[3].split('/')
+batch      = int(sys.argv[5])
+resolution = int(sys.argv[6])
+result     = sys.argv[7]
+
+assert len(method) == 2, 'Method must be of the form <activation + encoding>/<interpolation>'
+
+print('Training neural subdivision complexes with the following configuration')
+print('  > Target:    ', target)
+print('  > Source:    ', source)
+print('  > Method:    ', method)
+print('  > Batch:     ', batch)
+print('  > Resolution:', resolution)
+print('  > Result:    ', result)
 
 # Load all necessary extensions
 if not os.path.exists('build'):
@@ -38,8 +56,7 @@ optext = load(name='optext',
 
 print('Loaded optimization extension')
 
-directory = sys.argv[1]
-mesh = meshio.read(os.path.join(directory, 'target.obj'))
+mesh = meshio.read(target)
 
 environment = imageio.imread('images/environment.hdr', format='HDR-FI')
 environment = torch.tensor(environment, dtype=torch.float32, device='cuda')
@@ -63,16 +80,17 @@ n_ref  = compute_vertex_normals(v_ref, f_ref, fn_ref)
 print('vertices:', v_ref.shape, 'faces:', f_ref.shape)
 
 # Simplify the target mesh for simplification
+base            = os.path.dirname(os.path.realpath(target))
 simplify_binary = './build/simplify'
 reduction       = 10_000/f_ref.shape[0]
-result          = os.path.join(directory, 'simplified.obj')
+simplified_path = os.path.join(base, 'simplified.obj')
 
 print('Simplifying mesh with qslim...')
 print('Reduction:', reduction)
-print('Result:', result)
-os.system('{} {} {} {:4f}'.format(simplify_binary, os.path.join(directory, 'target.obj'), result, reduction))
+print('Result:', simplified_path)
+os.system('{} {} {} {:4f}'.format(simplify_binary, target, simplified_path, reduction))
 
-simplified_mesh = meshio.read(result)
+simplified_mesh = meshio.read(simplified_path)
 v_simplified    = torch.from_numpy(simplified_mesh.points).float().cuda()
 f_simplified    = torch.from_numpy(simplified_mesh.cells_dict['triangle']).int().cuda()
 fn_simplified   = compute_face_normals(v_simplified, f_simplified)
@@ -124,7 +142,7 @@ cluster_normals = torch.stack(cluster_normals, dim=0)
 
 # Generate camera views
 canonical_up = torch.tensor([0.0, 1.0, 0.0], device='cuda')
-cluster_eyes = cluster_centroids + cluster_normals * 1
+cluster_eyes = cluster_centroids + cluster_normals * 1.0
 cluster_ups = torch.stack(len(clusters) * [ canonical_up ], dim=0)
 cluster_rights = torch.cross(cluster_normals, cluster_ups)
 cluster_ups = torch.cross(cluster_rights, cluster_normals)
@@ -132,13 +150,13 @@ cluster_ups = torch.cross(cluster_rights, cluster_normals)
 all_views = [ lookat(eye, view_point, up) for eye, view_point, up in zip(cluster_eyes, cluster_centroids, cluster_ups) ]
 all_views = torch.stack(all_views, dim=0)
 
-# TODO: provide source object
-mesh = meshio.read(os.path.join(directory, 'source.obj'))
+# Configure the model
+mesh = meshio.read(source)
 
 v = mesh.points
 f = mesh.cells_dict['quad']
 
-print('Quadrangulated shape; vertices:', v.shape, 'faces:', f.shape)
+print('Complexes; vertices:', v.shape, 'faces:', f.shape)
 
 # Configure neural subdivision complex parameters
 points = torch.from_numpy(v).float().cuda()
@@ -163,22 +181,25 @@ remap = optext.generate_remapper(complexes.cpu(), cmap, base.shape[0], 4)
 F = remap.remap(tch_base_indices).cuda()
 print('F:', F.shape)
 
-Fi = optext.triangulate_shorted(base, complexes.shape[0], 4)
+# Fi = optext.triangulate_shorted(base, complexes.shape[0], 4)
 
 ps.init()
+
+indices = quadify(complexes.cpu().numpy(), 4)
+
 ps.register_surface_mesh('reference', v_ref.cpu().numpy(), f_ref.cpu().numpy())
-ps.register_surface_mesh('base-original', base.cpu().numpy(), Fi.cpu().numpy())
+ps.register_surface_mesh('base-original', base.cpu().numpy(), indices)
 ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
         .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
+
 # ps.show()
 
 # TODO: tone mapping
 
 def inverse_render(V, F, sample_rate=4):
     steps     = 1_000  # Number of optimization steps
-    step_size = 1e-2   # Step size
+    step_size = 3e-2   # Step size
     lambda_   = 10     # Hyperparameter lambda of our method, used to compute the matrix (I + lambda_ * L)
-    batch     = 10
 
     # Optimization setup
     M = compute_matrix(V, F, lambda_)
@@ -187,10 +208,15 @@ def inverse_render(V, F, sample_rate=4):
     U.requires_grad = True
     opt = AdamUniform([ U ], step_size)
 
+    indices = quadify(complexes.cpu().numpy(), sample_rate)
     vgraph = optext.vertex_graph(F.cpu())
-    # quads = quadify(complexes, sample_rate)
-    # vgraph = optext.vertex_graph(torch.from_numpy(quads).int())
-    print('Vgraph:', vgraph)
+    cgraph = optext.conformal_graph(torch.from_numpy(indices).int())
+    print('vgraph:', vgraph, 'cgraph:', cgraph)
+
+    a, opp_a = cgraph[:, 0], cgraph[:, 1]
+    b, opp_b = cgraph[:, 2], cgraph[:, 3]
+    print('a:', a.shape, 'opp_a:', opp_a.shape)
+    print('b:', b.shape, 'opp_b:', opp_b.shape)
 
     # Optimization loop
     for it in trange(steps):
@@ -206,22 +232,14 @@ def inverse_render(V, F, sample_rate=4):
             opt_imgs = renderer.render(V, N, F, view_mats)
             ref_imgs = renderer.render(v_ref, n_ref, f_ref, view_mats)
 
-            # Show render
-            # if i == 0:
-            #     fig, ax = plt.subplots(1, 2)
-            #     ax[0].imshow(ref_imgs[0].pow(1/2.2).cpu().numpy())
-            #     ax[1].imshow(opt_imgs[0].pow(1/2.2).detach().cpu().numpy())
-            #     plt.show()
-
-            V_smoothed = vgraph.smooth_device(V, 0.5)
-            # print('V_smoothed:', V_smoothed.shape)
+            V_smoothed = vgraph.smooth_device(V, 1.0)
+            V_smoothed = vgraph.smooth_device(V_smoothed, 1.0)
 
             # Compute losses
             # TODO: tone mapping from NVIDIA paper
             render_loss = (opt_imgs - ref_imgs).abs().mean()
             laplacian_loss = (V - V_smoothed).abs().mean()
-            area_loss = triangle_areas(V, F).mean()
-            loss = render_loss + laplacian_loss + area_loss
+            loss = render_loss + laplacian_loss
 
             # Optimization step
             opt.zero_grad()
@@ -236,49 +254,45 @@ base = remap.scatter(base.cpu()).cuda()
 # Train model to the base first
 from configurations import *
 
-m = models[sys.argv[2]]().cuda()
+m = models[method[0]]().cuda()
+c = clerp(lerps[method[1]])
 
 opt = torch.optim.Adam(list(m.parameters()) + [ features ], 1e-2)
 for _ in trange(1000):
-    lerped_points, lerped_features = sample(complexes, points, features, 4)
+    lerped_points, lerped_features = sample(complexes, points, features, 4, kernel=c)
     V = m(points=lerped_points, features=lerped_features)
     loss = (V - base).abs().mean()
     opt.zero_grad()
     loss.backward()
     opt.step()
 
-base_indices = shorted_indices(base.cpu().numpy(), complexes.cpu().numpy(), 4)
-ps.register_surface_mesh('base', base.cpu().numpy(), base_indices)
+# base_indices = shorted_indices(base.cpu().numpy(), complexes.cpu().numpy(), 4)
 
-V = V.detach()
-indices = shorted_indices(V.cpu().numpy(), complexes.cpu().numpy(), 4)
-ps.register_surface_mesh('model-phase1', V.cpu().numpy(), indices)
+V = V.detach().cpu().numpy()
+# indices = shorted_indices(V.cpu().numpy(), complexes.cpu().numpy(), 4)
+indices = quadify(complexes.cpu().numpy(), 4)
+
+ps.register_surface_mesh('model-phase1', V, indices)
+ps.register_surface_mesh('base', base.cpu().numpy(), indices)
 ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
         .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
+
 # ps.show()
 
 # Get the reference images
 def inverse_render_nsc(sample_rate, losses, lr, aux_strength=1.0):
-    # ref_imgs = renderer.render(v_ref, n_ref, f_ref)
     opt      = torch.optim.Adam(list(m.parameters()) + [ features ], lr)
-
     base, _  = sample(complexes, points, features, sample_rate)
     cmap     = make_cmap(complexes, points, base, sample_rate)
     remap    = optext.generate_remapper(complexes.cpu(), cmap, base.shape[0], sample_rate)
-    batch    = 10
-
-    # quads = quadify(complexes, sample_rate)
-    # vgraph = optext.vertex_graph(torch.from_numpy(quads).int())
-    vgraph = None
-    print('Vgraph:', vgraph)
-    F_previous = None
+    vgraph   = None
 
     for i in trange(1_000):
         # Batch the views into disjoint sets
         assert len(all_views) % batch == 0
         views = torch.split(all_views, batch, dim=0)
 
-        if i % 10 == 0:
+        if i % 50 == 0:
             # print('Rebuilding vgraph...')
             lerped_points, lerped_features = sample(complexes, points, features, sample_rate)
             V = m(points=lerped_points, features=lerped_features)
@@ -286,9 +300,8 @@ def inverse_render_nsc(sample_rate, losses, lr, aux_strength=1.0):
             F = remap.remap_device(indices)
             vgraph = optext.vertex_graph(F.cpu())
 
-        batch_losses = []
         for view_mats in views:
-            lerped_points, lerped_features = sample(complexes, points, features, sample_rate)
+            lerped_points, lerped_features = sample(complexes, points, features, sample_rate, kernel=c)
             V = m(points=lerped_points, features=lerped_features)
 
             indices = optext.triangulate_shorted(V, complexes.shape[0], sample_rate)
@@ -300,77 +313,51 @@ def inverse_render_nsc(sample_rate, losses, lr, aux_strength=1.0):
             opt_imgs = renderer.render(V, N, F, view_mats)
             ref_imgs = renderer.render(v_ref, n_ref, f_ref, view_mats)
 
-            # TODO: check if the faces are different
-            # vgraph = optext.vertex_graph(F.cpu())
-            V_smoothed = vgraph.smooth_device(V, 0.5)
+            V_smoothed = vgraph.smooth_device(V, 1.0)
+            V_smoothed = vgraph.smooth_device(V_smoothed, 1.0)
 
             # Compute losses
             # TODO: tone mapping from NVIDIA paper
             render_loss = (opt_imgs - ref_imgs).abs().mean()
             laplacian_loss = (V - V_smoothed).abs().mean()
             area_loss = triangle_areas(V, F).mean()
-            loss = render_loss + aux_strength * (laplacian_loss + area_loss)
+            loss = render_loss + aux_strength * (area_loss + laplacian_loss)
 
             # Optimization step
             opt.zero_grad()
             loss.backward()
             opt.step()
 
-            # losses.setdefault('render', []).append(render_loss.item())
-            # losses.setdefault('area', []).append(area_loss.item())
-            batch_losses.append(loss.item())
-
-        losses.setdefault('loss', []).append(sum(batch_losses) / len(batch_losses))
-
     return V.detach(), F, losses
 
 V, F, losses = inverse_render_nsc(4, {}, 1e-3)
-
-ps.register_surface_mesh('model-phase2-4', V.cpu().numpy(), F.cpu().numpy())
+indices = quadify(complexes.cpu().numpy(), 4)
+ps.register_surface_mesh('model-phase2-4', V.cpu().numpy(), indices)
 # ps.show()
 
 V, F, losses = inverse_render_nsc(8, losses, 1e-3, 5e-2)
-
-ps.register_surface_mesh('model-phase2-8', V.cpu().numpy(), F.cpu().numpy())
+indices = quadify(complexes.cpu().numpy(), 8)
+ps.register_surface_mesh('model-phase2-8', V.cpu().numpy(), indices)
 # ps.show()
 
 V, F, losses = inverse_render_nsc(16, losses, 1e-3, 1e-2)
-
-ps.register_surface_mesh('model-phase2-16', V.cpu().numpy(), F.cpu().numpy())
+indices = quadify(complexes.cpu().numpy(), 16)
+ps.register_surface_mesh('model-phase2-16', V.cpu().numpy(), indices)
 # ps.show()
 
 # TODO: 32 by 32 resolution
 
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-sns.set()
-
-plt.plot(losses['loss'], label='loss')
-# plt.plot(losses['render'], label='render')
-# plt.plot(losses['area'], label='area')
-plt.xlabel('Iteration')
-plt.ylabel('Loss')
-plt.yscale('log')
-
-plt.title('Losses')
-plt.tight_layout()
-plt.legend()
-
-# plt.savefig('losses.png')
-
 # Save data
-result = os.path.basename(sys.argv[1])
-result = os.path.splitext(result)[0]
-result = os.path.join('results', result, sys.argv[2] + '-' + sys.argv[3])
-os.makedirs(result, exist_ok=True)
+print('Saving model to', result)
+directory = os.path.dirname(result)
+os.makedirs(directory, exist_ok=True)
 
 model = {
     'model': m,
     'features': features,
     'complexes': complexes,
     'points': points,
+    'kernel': method[1],
 }
 
-torch.save(model, os.path.join(result, 'model.pt'))
-plt.savefig(os.path.join(result, 'loss.png'))
+torch.save(model, result)

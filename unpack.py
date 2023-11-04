@@ -41,7 +41,31 @@ if os.path.exists(new_directory):
 os.makedirs(new_directory)
 
 # Copy the reference mesh to the new directory
-shutil.copyfile(reference, os.path.join(new_directory, 'ref.obj'))
+# shutil.copyfile(reference, os.path.join(new_directory, 'ref.obj'))
+
+mesh = meshio.read(reference)
+v_ref = mesh.points
+f_ref = mesh.cells_dict['triangle']
+min = np.min(v_ref, axis=0)
+max = np.max(v_ref, axis=0)
+center = (min + max) / 2.0
+# extent = (max - min).square().sum().sqrt() / 2.0
+extent = np.linalg.norm(max - min) / 2.0
+print('Reference mesh center:', center)
+print('Reference mesh size:', max - min)
+print('Reference mesh #vertices:', v_ref.shape[0])
+print('Reference mesh #faces:', f_ref.shape[0])
+
+print('Extent:', extent)
+
+normalize = lambda x: (x - center) / extent
+
+v_ref = normalize(v_ref)
+print('new min:', np.min(v_ref, axis=0))
+print('new max:', np.max(v_ref, axis=0))
+
+mesh = meshio.Mesh(v_ref, [ ('triangle', f_ref) ])
+meshio.write(os.path.join(new_directory, 'ref.obj'), mesh)
 
 def shorted_quads(V, C, sample_rate=16):
     quads = []
@@ -58,13 +82,13 @@ def shorted_quads(V, C, sample_rate=16):
 
 # Recursively find all simple meshes and model configurations
 for root, dirs, files in os.walk(directory):
-    for nsc in dirs:
-        if nsc == 'unpacked':
+    for file in files:
+        if not file.endswith('.pt'):
             continue
 
-        print('Loading NSC representation: %s' % nsc)
+        print('Loading NSC representation: %s' % file)
 
-        data = torch.load(os.path.join(root, nsc, 'model.pt'))
+        data = torch.load(os.path.join(root, file))
 
         m = data['model']
         c = data['complexes']
@@ -75,7 +99,8 @@ for root, dirs, files in os.walk(directory):
         print('  > p:', p.shape)
         print('  > f:', f.shape)
 
-        lerper = nsc.split('-')[1]
+        file = file.split('.')[0]
+        lerper = file.split('-')[1]
         print('  > lerper: %s' % lerper)
 
         ker = clerp(lerps[lerper])
@@ -114,4 +139,4 @@ for root, dirs, files in os.walk(directory):
         print('    > faces:', F.shape)
 
         # Save using the same name as the NSC representation
-        meshio.write(os.path.join(new_directory, nsc + '.obj'), m)
+        meshio.write(os.path.join(new_directory, file + '.obj'), m)

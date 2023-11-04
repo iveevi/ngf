@@ -9,8 +9,7 @@ models = {
 
 lerps = {
         'linear' : lambda x: x,
-        'sin'    : lambda x: torch.sin(32.0 * x * np.pi / 2.0),
-        'floor'  : lambda x: torch.floor(32 * x)/32.0,
-        'smooth' : lambda x: (32.0 * x - torch.sin(32.0 * 2.0 * x * np.pi)/(2.0 * np.pi)) / 32.0,
-        'cubic'  : lambda x: 25 * x ** 3/3.0 - 25 * x ** 2 + 31 * x/6.0,
+        'floor'  : lambda x: torch.floor(16 * x)/16.0,
+        'sin'    : lambda x: torch.sin(16.0 * np.pi * x)/(4.0 * np.pi) + x,
+        'sincos' : lambda x: torch.sin(16.0 * np.pi * x) * torch.cos(32.0 * np.pi * x)/(4.0 * np.pi) + x,
 }

@@ -1,20 +1,20 @@
 {
-	"name": "nefertiti",
-	"target": "meshes/nefertiti/target.obj",
-	"directory": "results/nefertiti",
+	"name": "metatron",
+	"target": "meshes/metatron/target.obj",
+	"directory": "results/metatron",
 	"experiments": [
 		{
 			"name": "pos-linear",
-			"source": "meshes/nefertiti/source.obj",
+			"source": "meshes/metatron/source.obj",
 			"method": "pos/linear",
 			"clusters": 250,
 			"batch": 10,
 			"resolution": 16
 		},
-		
+
 		{
 			"name": "onion-linear",
-			"source": "meshes/nefertiti/source.obj",
+			"source": "meshes/metatron/source.obj",
 			"method": "onion/linear",
 			"clusters": 250,
 			"batch": 10,

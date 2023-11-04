@@ -1,11 +1,11 @@
 {
-	"name": "nefertiti",
-	"target": "meshes/nefertiti/target.obj",
-	"directory": "results/nefertiti",
+	"name": "armadillo",
+	"target": "meshes/armadillo/target.obj",
+	"directory": "results/armadillo",
 	"experiments": [
 		{
 			"name": "pos-linear",
-			"source": "meshes/nefertiti/source.obj",
+			"source": "meshes/armadillo/source.obj",
 			"method": "pos/linear",
 			"clusters": 250,
 			"batch": 10,
@@ -14,7 +14,7 @@
 		
 		{
 			"name": "onion-linear",
-			"source": "meshes/nefertiti/source.obj",
+			"source": "meshes/armadillo/source.obj",
 			"method": "onion/linear",
 			"clusters": 250,
 			"batch": 10,

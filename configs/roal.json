@@ -1,11 +1,11 @@
 {
-	"name": "nefertiti",
-	"target": "meshes/nefertiti/target.obj",
-	"directory": "results/nefertiti",
+	"name": "roal",
+	"target": "meshes/roal/target.obj",
+	"directory": "results/roal",
 	"experiments": [
 		{
 			"name": "pos-linear",
-			"source": "meshes/nefertiti/source.obj",
+			"source": "meshes/roal/source.obj",
 			"method": "pos/linear",
 			"clusters": 250,
 			"batch": 10,
@@ -14,7 +14,7 @@
 		
 		{
 			"name": "onion-linear",
-			"source": "meshes/nefertiti/source.obj",
+			"source": "meshes/roal/source.obj",
 			"method": "onion/linear",
 			"clusters": 250,
 			"batch": 10,

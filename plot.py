@@ -156,5 +156,5 @@ with open(db) as f:
     ax[1][1].legend()
 
     fig.tight_layout()
-    plt.savefig(key + '_metrics.png')
+    plt.savefig(key + '_metrics.pdf', format='pdf', backend='pgf')
     plt.show()
