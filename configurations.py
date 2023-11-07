@@ -1,10 +1,10 @@
 from mlp import *
 
 models = {
+        # TODO: we dont need too many here...
         'pos'    : MLP_Positional_Encoding,
         'onion'  : MLP_Positional_Onion_Encoding,
         'morlet' : MLP_Positional_Morlet_Encoding,
-        'feat'   : MLP_Feature_Sinusoidal_Encoding,
 }
 
 lerps = {

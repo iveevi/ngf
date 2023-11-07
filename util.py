@@ -11,6 +11,7 @@ def lerp(X, U, V):
     return lp00 + lp01 + lp10 + lp11
 
 def sample(complexes, points, features, sample_rate, kernel=lerp):
+    # TDDO: return a compiled version of this function
     U = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
     V = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
     U, V = torch.meshgrid(U, V, indexing='ij')
@@ -143,6 +144,27 @@ def clerp(f=lambda x: x):
         lp11 = X[:, 2, :].unsqueeze(1) * f(1.0 - U.unsqueeze(-1)) * f(1.0 - V.unsqueeze(-1))
         return lp00 + lp01 + lp10 + lp11
     return ftn
+
+def sampler(kernel=lerp):
+    def ftn(complexes, points, features, sample_rate):
+        # TDDO: return a compiled version of this function
+        U = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
+        V = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
+        U, V = torch.meshgrid(U, V, indexing='ij')
+
+        corner_points = points[complexes, :]
+        corner_features = features[complexes, :]
+
+        U, V = U.reshape(-1), V.reshape(-1)
+        U = U.repeat((complexes.shape[0], 1))
+        V = V.repeat((complexes.shape[0], 1))
+
+        lerped_points = lerp(corner_points, U, V).reshape(-1, 3)
+        lerped_features = kernel(corner_features, U, V).reshape(-1, POINT_ENCODING_SIZE)
+
+        return lerped_points, lerped_features
+
+    return torch.compile(ftn, mode='reduce-overhead')
 
 def lookat(eye, center, up):
     normalize = lambda x: x / torch.norm(x)
