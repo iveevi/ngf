@@ -175,6 +175,17 @@ class MLP_Positional_Morlet_Encoding(nn.Module):
 
         return bases + X
 
+    # Avoid pickling the compiled function
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        del state['morlet']
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        morlet = lambda x, s: torch.exp(-x ** 2/s) * torch.sin(s * x)
+        self.morlet = torch.compile(morlet, mode='reduce-overhead')
+
 class MLP_Positional_Onion_Encoding(nn.Module):
     L = 10
 
@@ -194,13 +205,8 @@ class MLP_Positional_Onion_Encoding(nn.Module):
         self.s0 = nn.Parameter(torch.tensor(1.0))
         self.s1 = nn.Parameter(torch.tensor(1.0))
 
-        self.onion_kernel = torch.compile(self.onion, mode='reduce-overhead')
-
-    def onion(self, x, s):
-        softplus = torch.log(1 + torch.exp(s * x))
-        sin = torch.sin(s * x)
-        exp = torch.exp(-x ** 2/s)
-        return softplus * sin * exp
+        self.onion = lambda x, s: torch.log(1 + torch.exp(s * x)) * torch.sin(s * x) * torch.exp(-x ** 2/s)
+        self.onion = torch.compile(self.onion, mode='reduce-overhead')
 
     def forward(self, **kwargs):
         bases = kwargs['points']
@@ -214,9 +220,20 @@ class MLP_Positional_Onion_Encoding(nn.Module):
         for i, linear in enumerate(self.encoding_linears):
             X = linear(X)
             if i < len(self.encoding_linears) - 1:
-                X = self.onion_kernel(X, self.s0 if i == 0 else self.s1)
+                X = self.onion(X, self.s0 if i == 0 else self.s1)
 
         return bases + X
+
+    # Avoid pickling the compiled function
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        del state['onion']
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.onion = lambda x, s: torch.log(1 + torch.exp(s * x)) * torch.sin(s * x) * torch.exp(-x ** 2/s)
+        self.onion = torch.compile(self.onion, mode='reduce-overhead')
 
 class MLP_Positional_Sinc_Encoding(nn.Module):
     L = 10
@@ -273,7 +290,7 @@ class MLP_Positional_Rexin_Encoding(nn.Module):
         self.s1 = nn.Parameter(torch.tensor(1.0))
 
         # Rexin activation (ReLU, Exponential, Sine)
-        self.rexin = lambda x, s: torch.sinc(s * x) + torch.log(1 + torch.exp(x))
+        self.rexin = lambda x, s: torch.sinc(s * x) * torch.log(1 + torch.exp(s * x)) * torch.exp(-x ** 2/s)
         self.rexin = torch.compile(self.rexin, mode='reduce-overhead')
 
     def forward(self, **kwargs):
@@ -291,3 +308,14 @@ class MLP_Positional_Rexin_Encoding(nn.Module):
                 X = self.rexin(X, (self.s0 if i == 0 else self.s1))
 
         return bases + X
+
+    # Avoid pickling the compiled function
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        del state['rexin']
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.rexin = lambda x, s: torch.sinc(s * x) * torch.log(1 + torch.exp(s * x)) * torch.exp(-x ** 2/s)
+        self.rexin = torch.compile(self.rexin, mode='reduce-overhead')
