@@ -1,4 +1,4 @@
-*.nsc
+.nsc
 *.obj
 *.tar.gz
 .cache/
@@ -8,13 +8,14 @@ __pycache__/
 build/
 compile_commands.json
 data/
+db.json
 experiments/meshes
 experiments/results
+export/
 imgui.ini
 measurements/
+meshes/
 output/
+results/
 runs/
 scenes/
-results/
-meshes/
-export/

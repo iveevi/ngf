@@ -78,7 +78,7 @@ f_simplified    = torch.from_numpy(simplified_mesh.cells_dict['triangle']).int()
 fn_simplified   = compute_face_normals(v_simplified, f_simplified)
 n_simplified    = compute_vertex_normals(v_simplified, f_simplified, fn_simplified)
 
-cameras         = 25
+cameras         = 100
 seeds           = list(torch.randint(0, f_simplified.shape[0], (cameras,)).numpy())
 target_geometry = optext.geometry(v_simplified.cpu(), n_simplified.cpu(), f_simplified.cpu())
 target_geometry = target_geometry.deduplicate()
@@ -223,17 +223,46 @@ def sampled_measurements(target, target_cas, source, source_cas):
     return dpm.item(), dnormal.item()
 
 def render_loss(target, source, alt=None):
+    batch = 10
+    cameras = scene['view_mats']
+    cameras_count = cameras.shape[0]
+    losses = []
+
     tV, tN, tF = target[0], target[1].cuda(), target[2].cuda()
     sV, sN, sF = source[0], source[1].cuda(), source[2].cuda()
 
-    t_imgs = renderer.render(tV, tN, tF, scene['view_mats'])
-    s_imgs = renderer.render(sV, sN, sF if alt is None else alt, scene['view_mats'])
+    assert cameras_count % batch == 0
+    for i in range(0, cameras_count, batch):
+        camera_batch = cameras[i:i + batch]
+        t_imgs = renderer.render(tV, tN, tF, camera_batch)
+        s_imgs = renderer.render(sV, sN, sF if alt is None else alt, camera_batch)
 
-    loss = torch.mean(torch.abs(t_imgs - s_imgs))
+        # TODO: alpha difference here
+        loss = torch.mean(torch.abs(t_imgs - s_imgs))
+        losses.append(loss.item())
 
-    # TODO: generate another view
+    return sum(losses) / len(losses)
 
-    return loss.item()
+def normal_loss(target, source, alt=None):
+    batch = 10
+    cameras = scene['view_mats']
+    cameras_count = cameras.shape[0]
+    losses = []
+
+    tV, tN, tF = target[0], target[1].cuda(), target[2].cuda()
+    sV, sN, sF = source[0], source[1].cuda(), source[2].cuda()
+
+    assert cameras_count % batch == 0
+    for i in range(0, cameras_count, batch):
+        camera_batch = cameras[i:i + batch]
+        t_nrms = renderer.render_normals(tV, tN, tF, camera_batch)
+        s_nrms = renderer.render_normals(sV, sN, sF if alt is None else alt, camera_batch)
+
+        loss = torch.mean(torch.abs(t_nrms - s_nrms))
+        losses.append(loss.item())
+
+    return sum(losses) / len(losses)
+    # TODO: PSNR here (and L1)
 
 def chamfer_loss(target, source):
     from tqdm import trange
@@ -257,7 +286,7 @@ def chamfer_loss(target, source):
     return (sum_S1 + sum_S2).item()
 
 # Writing to the database
-def write(catag, dpm, dnormal, render, chamfer, size=0):
+def write(catag, dpm, dnormal, render, normal, chamfer, size=0, cratio=1):
     global db
 
     # Open or create the database (json)
@@ -281,8 +310,10 @@ def write(catag, dpm, dnormal, render, chamfer, size=0):
             'dpm': dpm,
             'dnormal': dnormal,
             'render': render,
+            'normal': normal,
             'chamfer': chamfer,
-            'size': size
+            'size': size,
+            'cratio': cratio,
         }
 
         for tag in reversed(tags):
@@ -332,6 +363,11 @@ else:
     with open(db, 'w') as f:
         json.dump(db_json, f, indent=4)
 
+# Target mesh size
+vertex_bytes = target[0].numel() * target[0].element_size()
+index_bytes = target[2].numel() * target[2].element_size()
+target_total = vertex_bytes + index_bytes
+
 # Recursively find all simple meshes and model configurations
 for root, dirs, files in os.walk(directory):
     for file in files:
@@ -360,17 +396,21 @@ for root, dirs, files in os.walk(directory):
 
             dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
             render       = render_loss(target, source)
+            normal       = normal_loss(target, source)
             chamfer      = chamfer_loss(target, source)
+            cratio       = target_total / total
 
             print('  > DPM: %f' % dpm)
             print('  > DNormal: %f' % dnormal)
             print('  > Render: %f' % render)
+            print('  > Normal: %f' % normal)
             print('  > Chamfer: %f' % chamfer)
             print('  > Size: %d KB' % (total/1024))
+            print('  > Compression: %f' % cratio)
 
             catag = os.path.basename(file)
             catag = os.path.splitext(catag)[0]
-            write(catag, dpm, dnormal, render, chamfer, size=total)
+            write(catag, dpm, dnormal, render, normal, chamfer, size=total, cratio=cratio)
         elif file.endswith('.pt'):
             print('Loading NSC representation:', file)
 
@@ -381,17 +421,22 @@ for root, dirs, files in os.walk(directory):
             p = data['points']
             f = data['features']
 
+            nsc = file.split('.')[0]
+            print('  > nsc:', nsc)
+
+            m = data['model']
+            c = data['complexes']
+            p = data['points']
+            f = data['features']
+            l = data['kernel']
+
             print('  > c:', c.shape)
             print('  > p:', p.shape)
             print('  > f:', f.shape)
+            print('  > l:', l)
 
-            nsc = file.split('.')[0]
-            print('  > nsc: %s' % nsc)
-            lerper = nsc.split('-')[1]
-            print('  > lerper: %s' % lerper)
-
-            ker = clerp(lerps[lerper])
-            print('  > clerp: %s' % ker)
+            ker = clerp(lerps[l])
+            print('  > clerp:', ker)
 
             # Compute byte size of the representation
             feature_bytes = f.numel() * f.element_size()
@@ -440,13 +485,18 @@ for root, dirs, files in os.walk(directory):
 
                 dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
                 render       = render_loss(target, source, alt=F)
+                normal       = normal_loss(target, source, alt=F)
                 chamfer      = chamfer_loss(target, source)
+                cratio       = target_total / total
 
                 catag = nsc + '-r' + str(rate)
                 print('  > rate: %d, tag: %s' % (rate, catag))
                 print('    > DPM: %f' % dpm)
                 print('    > DNormal: %f' % dnormal)
                 print('    > Render: %f' % render)
+                print('    > Normal: %f' % normal)
                 print('    > Chamfer: %f' % chamfer)
+                print('    > Size: %d KB' % (total/1024))
 
-                write(catag, dpm, dnormal, render, chamfer, size=total)
+                # TODO: pass dict
+                write(catag, dpm, dnormal, render, normal, chamfer, size=total, cratio=cratio)

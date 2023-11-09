@@ -16,6 +16,14 @@ regexes = []
 for pattern in patterns:
     regexes.append(re.compile(pattern))
 
+# TeX formatting
+sns.set()
+sns.color_palette("hls", 8)
+
+plt.rcParams['text.usetex'] = True
+def textsc(str):
+    return r'\textsc{' + str + '}'
+
 def get_secondary_atomic_parents(data, catag=''):
     if not isinstance(data, dict):
         assert False, 'Empty data'
@@ -57,8 +65,7 @@ with open(db) as f:
     second_level_parents = get_secondary_atomic_parents(data)
     print(second_level_parents)
 
-    sns.set()
-    fig, ax = plt.subplots(2, 2, figsize=(20, 15))
+    fig, ax = plt.subplots(1, 3, figsize=(20, 8))
 
     fig.suptitle(key + ' metrics')
 
@@ -70,44 +77,21 @@ with open(db) as f:
 
         l = []
         for k, v in resolutions.items():
-            dpm = v['dpm']
-            size = v['size']/1024
-            # l.append((size, -np.log10(dpm)))
-            l.append((size, dpm))
+            normal = v['normal']
+            # size = v['size']/1024
+            cratio = v['cratio']
+            l.append((cratio, normal))
 
         l.sort(key=lambda x: x[0])
         x, y = zip(*l)
-        ax[0][0].plot(x, y, label=catag, marker='o')
+        ax[0].plot(x, y, label=catag, marker='o')
 
-    ax[0][0].set_title('dpm vs size')
-    # ax[0][0].set_ylabel('dpm')
-    ax[0][0].set_xlabel('size (KB)')
-    ax[0][0].set_xscale('log')
-    ax[0][0].set_yscale('log')
-    ax[0][0].legend()
-
-    # Plot the atomic elements (dnormal vs size)
-    for catag, resolutions in second_level_parents:
-        if not any(regex.match(catag) for regex in regexes):
-            continue
-
-        l = []
-        for k, v in resolutions.items():
-            dnormal = v['dnormal']
-            size = v['size']/1024
-            # l.append((size, -np.log10(dnormal)))
-            l.append((size, dnormal))
-
-        l.sort(key=lambda x: x[0])
-        x, y = zip(*l)
-        ax[0][1].plot(x, y, label=catag, marker='o')
-
-    ax[0][1].set_title('dnormal vs size')
-    # ax[0][1].set_ylabel('dnormal')
-    ax[0][1].set_xlabel('size (KB)')
-    ax[0][1].set_xscale('log')
-    ax[0][1].set_yscale('log')
-    ax[0][1].legend()
+    ax[0].set_title('Normal vs Size')
+    ax[0].set_xlabel('Compression Ratio')
+    # ax[0].set_xlabel('size (KB)')
+    # ax[0].set_xscale('log')
+    ax[0].set_yscale('log')
+    ax[0].legend()
 
     # Plot the atomic elements (render vs size)
     for catag, resolutions in second_level_parents:
@@ -117,20 +101,20 @@ with open(db) as f:
         l = []
         for k, v in resolutions.items():
             render = v['render']
-            size = v['size']/1024
-            # l.append((size, -np.log10(render)))
-            l.append((size, render))
+            # size = v['size']/1024
+            cratio = v['cratio']
+            l.append((cratio, render))
 
         l.sort(key=lambda x: x[0])
         x, y = zip(*l)
-        ax[1][0].plot(x, y, label=catag, marker='o')
+        ax[1].plot(x, y, label=catag, marker='o')
 
-    ax[1][0].set_title('render vs size')
-    # ax[1][0].set_ylabel('render')
-    ax[1][0].set_xlabel('size (KB)')
-    ax[1][0].set_xscale('log')
-    ax[1][0].set_yscale('log')
-    ax[1][0].legend()
+    ax[1].set_title('Render vs Size')
+    ax[1].set_xlabel('Compression Ratio')
+    # ax[1].set_xlabel('size (KB)')
+    # ax[1].set_xscale('log')
+    ax[1].set_yscale('log')
+    ax[1].legend()
 
     # Plot the atomic elements (chamfer vs size)
     for catag, resolutions in second_level_parents:
@@ -140,21 +124,21 @@ with open(db) as f:
         l = []
         for k, v in resolutions.items():
             chamfer = v['chamfer']
-            size = v['size']/1024
-            # l.append((size, -np.log10(chamfer)))
-            l.append((size, chamfer))
+            # size = v['size']/1024
+            cratio = v['cratio']
+            l.append((cratio, chamfer))
 
         l.sort(key=lambda x: x[0])
         x, y = zip(*l)
-        ax[1][1].plot(x, y, label=catag, marker='o')
+        ax[2].plot(x, y, label=catag, marker='o')
 
-    ax[1][1].set_title('chamfer vs size')
-    # ax[1][1].set_ylabel('chamfer')
-    ax[1][1].set_xlabel('size (KB)')
-    ax[1][1].set_xscale('log')
-    ax[1][1].set_yscale('log')
-    ax[1][1].legend()
+    ax[2].set_title('Chamfer vs Size')
+    ax[2].set_xlabel('Compression Ratio')
+    # ax[2].set_xlabel('Size (KB)')
+    # ax[2].set_xscale('log')
+    ax[2].set_yscale('log')
+    ax[2].legend()
 
     fig.tight_layout()
-    plt.savefig(key + '_metrics.pdf', format='pdf', backend='pgf')
+    plt.savefig(key + '_metrics.pdf', format='pdf')
     plt.show()
