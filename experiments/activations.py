@@ -3,11 +3,13 @@ import numpy as np
 import polyscope as ps
 import seaborn as sns
 import matplotlib.pyplot as plt
+import sys
 
 from tqdm import trange
+
+sys.path.append('..')
 from mlp import *
 from util import *
-
 from scripts.geometry import *
 
 sns.set()
@@ -136,23 +138,22 @@ experiments = {
     'linear': linear,
     # 'curved':   curved,
     'perlin':   perlin,
-    # 'tiles':    textured('images/tiles.png'),
-    # 'fabric':   textured('images/fabric.png'),
-    'wicker':   textured('images/wicker.png'),
-    'column':   textured('images/column.png'),
+    # 'tiles':    textured('../images/tiles.png'),
+    # 'fabric':   textured('../images/fabric.png'),
+    'wicker':   textured('../images/wicker.png'),
+    'column':   textured('../images/column.png'),
 }
 
 models = {
     # 'simple':     MLP_Simple,
     'relu':     MLP_Positional_Encoding,
-    'siren':    MLP_Positional_Siren_Encoding,
+    'elu':      MLP_Positional_Elu_Encoding,
+    # 'siren':    MLP_Positional_Siren_Encoding,
     'gauss':    MLP_Positional_Gaussian_Encoding,
     'sinc':     MLP_Positional_Sinc_Encoding,
-    'morlet':   MLP_Positional_Morlet_Encoding,
-    # 'rexin':    MLP_Positional_Rexin_Encoding,
+    # 'morlet':   MLP_Positional_Morlet_Encoding,
+    'rexin':    MLP_Positional_Rexin_Encoding,
     'onion':    MLP_Positional_Onion_Encoding,
-    # 'diced':    MLP_Positional_Diced_Encoding,
-    # 'feat-enc':   MLP_Feature_Sinusoidal_Encoding,
 }
 
 # TODO: also the lerp functions; separate file tho...

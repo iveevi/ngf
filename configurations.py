@@ -1,8 +1,11 @@
 from mlp import *
 
 models = {
-        # TODO: we dont need too many here...
-        'pos'    : MLP_Positional_Encoding,
+        'relu'   : MLP_Positional_Encoding,
+        'elu'    : MLP_Positional_Elu_Encoding,
+        'siren'  : MLP_Positional_Siren_Encoding,
+        'gauss'  : MLP_Positional_Gaussian_Encoding,
+        'sinc'   : MLP_Positional_Sinc_Encoding,
         'onion'  : MLP_Positional_Onion_Encoding,
         'morlet' : MLP_Positional_Morlet_Encoding,
 }

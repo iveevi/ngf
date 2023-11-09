@@ -1,0 +1,80 @@
+{
+	"name": "benchmark",
+	"target": "meshes/benchmark/target.obj",
+	"directory": "results/benchmark",
+	"backup": [
+		{
+			"name": "relu-linear",
+			"source": "meshes/benchmark/source.obj",
+			"method": "relu/linear",
+			"clusters": 50,
+			"batch": 10,
+			"resolution": 16
+		},
+		
+		{
+			"name": "siren-linear",
+			"source": "meshes/benchmark/source.obj",
+			"method": "siren/linear",
+			"clusters": 50,
+			"batch": 10,
+			"resolution": 16
+		},
+		
+		{
+			"name": "sinc-linear",
+			"source": "meshes/benchmark/source.obj",
+			"method": "sinc/linear",
+			"clusters": 50,
+			"batch": 10,
+			"resolution": 16
+		},
+
+		{
+			"name": "morlet-linear",
+			"source": "meshes/benchmark/source.obj",
+			"method": "morlet/linear",
+			"clusters": 50,
+			"batch": 10,
+			"resolution": 16
+		},
+
+		{
+			"name": "onion-linear",
+			"source": "meshes/benchmark/source.obj",
+			"method": "onion/linear",
+			"clusters": 50,
+			"batch": 10,
+			"resolution": 16
+		}
+
+	],
+	"experiments": [
+		{
+			"name": "gauss-linear",
+			"source": "meshes/benchmark/source.obj",
+			"method": "gauss/linear",
+			"clusters": 50,
+			"batch": 10,
+			"resolution": 16
+		},
+
+		{
+			"name": "morlet-linear",
+			"source": "meshes/benchmark/source.obj",
+			"method": "morlet/linear",
+			"clusters": 50,
+			"batch": 10,
+			"resolution": 16
+		},
+		
+		{
+			"name": "elu-linear",
+			"source": "meshes/benchmark/source.obj",
+			"method": "elu/linear",
+			"clusters": 50,
+			"batch": 10,
+			"resolution": 16
+		}
+	]
+}

@@ -215,3 +215,35 @@ class NVDRenderer:
         result = dr.antialias(torch.where(rast[..., -1:] != 0, col, bgs), rast, v_ndc, f, pos_gradient_boost=self.boost)
 
         return result
+
+    def render_normals(self, v, n, f, view_mats):
+        """
+        Render the scene in a differentiable way.
+
+        Parameters
+        ----------
+        v : torch.Tensor
+            Vertex positions
+        n : torch.Tensor
+            Vertex normals
+        f : torch.Tensor
+            Model faces
+
+        Returns
+        -------
+        result : torch.Tensor
+            The array of renderings from all given viewpoints
+        """
+
+        # TODO: pass rotational offset on background...
+        mvps = self.proj_mat @ view_mats
+        v_hom = torch.nn.functional.pad(v, (0,1), 'constant', 1.0)
+        v_ndc = torch.matmul(v_hom, mvps.transpose(1,2))
+        rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
+
+        # Sample envmap at each vertex using the SH approximation
+        col = dr.interpolate(n * 0.5 + 0.5, rast, f)[0]
+        bgs = torch.ones_like(col)
+        result = dr.antialias(torch.where(rast[..., -1:] != 0, col, bgs), rast, v_ndc, f)
+
+        return result
