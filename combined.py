@@ -29,9 +29,13 @@ assert len(sys.argv) == 8, 'Usage: python combined.py <target> <source> <method>
 target     = sys.argv[1]
 source     = sys.argv[2]
 method     = sys.argv[3].split('/')
-batch      = int(sys.argv[5])
+batch      = eval(sys.argv[5])
 resolution = int(sys.argv[6])
 result     = sys.argv[7]
+
+if type(batch) == int:
+    batch_size = batch
+    batch = lambda r: batch_size
 
 assert len(method) == 2, 'Method must be of the form <activation + encoding>/<interpolation>'
 
@@ -196,6 +200,9 @@ ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
 
 # TODO: tone mapping
 
+compute_Fn = torch.compile(compute_face_normals, mode='reduce-overhead')
+compute_N = torch.compile(compute_vertex_normals, mode='reduce-overhead')
+
 def inverse_render(V, F, sample_rate=4):
     steps     = 1_000  # Number of optimization steps
     step_size = 3e-2   # Step size
@@ -219,15 +226,16 @@ def inverse_render(V, F, sample_rate=4):
     print('b:', b.shape, 'opp_b:', opp_b.shape)
 
     # Optimization loop
+    batch_size = batch(sample_rate)
     for it in trange(steps):
         # Batch the views into disjoint sets
-        assert len(all_views) % batch == 0
-        views = torch.split(all_views, batch, dim=0)
+        assert len(all_views) % batch_size == 0
+        views = torch.split(all_views, batch_size, dim=0)
         for i, view_mats in enumerate(views):
             V = from_differential(M, U, 'Cholesky')
 
-            Fn = compute_face_normals(V, F)
-            N = compute_vertex_normals(V, F, Fn)
+            Fn = compute_Fn(V, F)
+            N = compute_N(V, F, Fn)
 
             opt_imgs = renderer.render(V, N, F, view_mats)
             ref_imgs = renderer.render(v_ref, n_ref, f_ref, view_mats)
@@ -256,10 +264,11 @@ from configurations import *
 
 m = models[method[0]]().cuda()
 c = clerp(lerps[method[1]])
+s = sampler(kernel=c)
 
 opt = torch.optim.Adam(list(m.parameters()) + [ features ], 1e-2)
 for _ in trange(1000):
-    lerped_points, lerped_features = sample(complexes, points, features, 4, kernel=c)
+    lerped_points, lerped_features = s(complexes, points, features, 4)
     V = m(points=lerped_points, features=lerped_features)
     loss = (V - base).abs().mean()
     opt.zero_grad()
@@ -287,21 +296,22 @@ def inverse_render_nsc(sample_rate, losses, lr, aux_strength=1.0):
     remap    = optext.generate_remapper(complexes.cpu(), cmap, base.shape[0], sample_rate)
     vgraph   = None
 
+    batch_size = batch(sample_rate)
     for i in trange(1_000):
         # Batch the views into disjoint sets
-        assert len(all_views) % batch == 0
-        views = torch.split(all_views, batch, dim=0)
+        assert len(all_views) % batch_size == 0
+        views = torch.split(all_views, batch_size, dim=0)
 
         if i % 50 == 0:
             # print('Rebuilding vgraph...')
-            lerped_points, lerped_features = sample(complexes, points, features, sample_rate)
+            lerped_points, lerped_features = s(complexes, points, features, sample_rate)
             V = m(points=lerped_points, features=lerped_features)
             indices = optext.triangulate_shorted(V, complexes.shape[0], sample_rate)
             F = remap.remap_device(indices)
             vgraph = optext.vertex_graph(F.cpu())
 
         for view_mats in views:
-            lerped_points, lerped_features = sample(complexes, points, features, sample_rate, kernel=c)
+            lerped_points, lerped_features = s(complexes, points, features, sample_rate)
             V = m(points=lerped_points, features=lerped_features)
 
             indices = optext.triangulate_shorted(V, complexes.shape[0], sample_rate)
@@ -330,22 +340,16 @@ def inverse_render_nsc(sample_rate, losses, lr, aux_strength=1.0):
 
     return V.detach(), F, losses
 
-V, F, losses = inverse_render_nsc(4, {}, 1e-3)
-indices = quadify(complexes.cpu().numpy(), 4)
-ps.register_surface_mesh('model-phase2-4', V.cpu().numpy(), indices)
-# ps.show()
+r = 4
+aux_strength = 1.0
+while r <= resolution:
+    V, F, losses = inverse_render_nsc(r, {}, 1e-3, aux_strength)
+    aux_strength *= 0.5
+    r *= 2
 
-V, F, losses = inverse_render_nsc(8, losses, 1e-3, 5e-2)
-indices = quadify(complexes.cpu().numpy(), 8)
-ps.register_surface_mesh('model-phase2-8', V.cpu().numpy(), indices)
-# ps.show()
-
-V, F, losses = inverse_render_nsc(16, losses, 1e-3, 1e-2)
-indices = quadify(complexes.cpu().numpy(), 16)
-ps.register_surface_mesh('model-phase2-16', V.cpu().numpy(), indices)
-# ps.show()
-
-# TODO: 32 by 32 resolution
+    # indices = quadify(complexes.cpu().numpy(), r)
+    # ps.register_surface_mesh(f'model-phase2-{r}', V.cpu().numpy(), indices)
+    # ps.show()
 
 # Save data
 print('Saving model to', result)
