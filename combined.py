@@ -23,7 +23,7 @@ from util import *
 
 sns.set()
 
-assert len(sys.argv) == 8, 'Usage: python combined.py <target> <source> <method> <clusters> <batch> <resolution> <result>'
+assert len(sys.argv) == 9, 'Usage: python combined.py <target> <source> <method> <clusters> <batch> <resolution> <result> <fixed>'
 
 # Parse all the arguments
 target     = sys.argv[1]
@@ -32,10 +32,14 @@ method     = sys.argv[3].split('/')
 batch      = eval(sys.argv[5])
 resolution = int(sys.argv[6])
 result     = sys.argv[7]
+fixed      = (sys.argv[8] == 'True')
 
 if type(batch) == int:
     batch_size = batch
     batch = lambda r: batch_size
+
+if fixed:
+    torch.manual_seed(0)
 
 assert len(method) == 2, 'Method must be of the form <activation + encoding>/<interpolation>'
 
@@ -168,6 +172,7 @@ complexes = torch.from_numpy(f).int().cuda()
 features = torch.zeros((points.shape[0], POINT_ENCODING_SIZE), requires_grad=True, device='cuda')
 
 points = normalize(points)
+points.requires_grad = True
 
 # Setup the rendering backend
 renderer = NVDRenderer(scene_parameters, shading=True, boost=3)
@@ -177,10 +182,10 @@ import polyscope as ps
 
 base, _ = sample(complexes, points, features, 4)
 
-base_indices = shorted_indices(base.cpu().numpy(), complexes.cpu().numpy(), 4)
+base_indices = shorted_indices(base.detach().cpu().numpy(), complexes.cpu().numpy(), 4)
 tch_base_indices = torch.from_numpy(base_indices).int()
 
-cmap = make_cmap(complexes, points, base, 4)
+cmap = make_cmap(complexes, points.detach(), base, 4)
 remap = optext.generate_remapper(complexes.cpu(), cmap, base.shape[0], 4)
 F = remap.remap(tch_base_indices).cuda()
 print('F:', F.shape)
@@ -192,7 +197,7 @@ ps.init()
 indices = quadify(complexes.cpu().numpy(), 4)
 
 ps.register_surface_mesh('reference', v_ref.cpu().numpy(), f_ref.cpu().numpy())
-ps.register_surface_mesh('base-original', base.cpu().numpy(), indices)
+ps.register_surface_mesh('base-original', base.detach().cpu().numpy(), indices)
 ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
         .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
 
@@ -256,7 +261,7 @@ def inverse_render(V, F, sample_rate=4):
 
     return V
 
-base = inverse_render(base, F)
+base = inverse_render(base.detach(), F)
 base = remap.scatter(base.cpu()).cuda()
 
 # Train model to the base first
@@ -266,7 +271,7 @@ m = models[method[0]]().cuda()
 c = clerp(lerps[method[1]])
 s = sampler(kernel=c)
 
-opt = torch.optim.Adam(list(m.parameters()) + [ features ], 1e-2)
+opt = torch.optim.Adam(list(m.parameters()) + [ features, points ], 1e-2)
 for _ in trange(1000):
     lerped_points, lerped_features = s(complexes, points, features, 4)
     V = m(points=lerped_points, features=lerped_features)
@@ -290,9 +295,9 @@ ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
 
 # Get the reference images
 def inverse_render_nsc(sample_rate, losses, lr, aux_strength=1.0):
-    opt      = torch.optim.Adam(list(m.parameters()) + [ features ], lr)
+    opt      = torch.optim.Adam(list(m.parameters()) + [ features, points ], lr)
     base, _  = sample(complexes, points, features, sample_rate)
-    cmap     = make_cmap(complexes, points, base, sample_rate)
+    cmap     = make_cmap(complexes, points.detach(), base, sample_rate)
     remap    = optext.generate_remapper(complexes.cpu(), cmap, base.shape[0], sample_rate)
     vgraph   = None
 
@@ -344,12 +349,14 @@ r = 4
 aux_strength = 1.0
 while r <= resolution:
     V, F, losses = inverse_render_nsc(r, {}, 1e-3, aux_strength)
+
+    indices = quadify(complexes.cpu().numpy(), r)
+    ps.register_surface_mesh(f'model-phase2-{r}', V.cpu().numpy(), indices)
+
     aux_strength *= 0.5
     r *= 2
 
-    # indices = quadify(complexes.cpu().numpy(), r)
-    # ps.register_surface_mesh(f'model-phase2-{r}', V.cpu().numpy(), indices)
-    # ps.show()
+    ps.show()
 
 # Save data
 print('Saving model to', result)

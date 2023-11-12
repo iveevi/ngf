@@ -60,6 +60,9 @@ for config in sorted(configs):
         clusters = experiment['clusters']
         batch = experiment['batch']
         resolution = experiment['resolution']
+        fixed = experiment['fixed']
+
+        assert type(fixed) == bool
 
         print('  > Experiment:       ', name)
         print('    > Source:         ', source)
@@ -67,12 +70,13 @@ for config in sorted(configs):
         print('    > Clusters:       ', clusters)
         print('    > Batch size:     ', batch)
         print('    > Resolution:     ', resolution)
+        print('    > Fixed:          ', fixed)
 
         # TODO: also mark name with source object LOD
         result = os.path.join(directory, name + '.pt')
         print('    > Result:         ', result)
 
-        cmd = f'{PYTHON} {PROGRAM} {target} {source} {method} {clusters} {batch} {resolution} {result}'
+        cmd = f'{PYTHON} {PROGRAM} {target} {source} {method} {clusters} {batch} {resolution} {result} {fixed}'
         print('    > Command:        ', cmd, end='\n\n')
         commands.append(cmd)
 

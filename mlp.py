@@ -35,11 +35,11 @@ class MLP_Positional_Encoding(nn.Module):
         X = torch.cat(X, dim=-1)
 
         X = self.encoding_linears[0](X)
-        X = F.relu(self.s0 * X)
+        X = F.leaky_relu(self.s0 * X)
         X = self.encoding_linears[1](X)
-        X = F.relu(self.s1 * X)
+        X = F.leaky_relu(self.s1 * X)
         X = self.encoding_linears[2](X)
-        X = F.relu(self.s2 * X)
+        X = F.leaky_relu(self.s2 * X)
         X = self.encoding_linears[3](X)
 
         return bases + X
@@ -121,6 +121,67 @@ class MLP_Positional_Siren_Encoding(nn.Module):
         X = self.encoding_linears[3](X)
 
         return bases + X
+
+class MLP_Positional_Reencoding(nn.Module):
+    def __init__(self) -> None:
+        super(MLP_Positional_Reencoding, self).__init__()
+
+        # Pass configuration as constructor arguments
+        self.encoding_linears = [
+            nn.Linear(POINT_ENCODING_SIZE + 6 * 3, 24),
+            nn.Linear(144, 24),
+            nn.Linear(144, 24),
+            nn.Linear(144, 3)
+        ]
+
+        self.encoding_linears = nn.ModuleList(self.encoding_linears)
+
+        self.s0 = nn.Parameter(torch.tensor(1.0))
+        self.s1 = nn.Parameter(torch.tensor(1.0))
+        self.s2 = nn.Parameter(torch.tensor(1.0))
+
+        self.morlet = lambda x, s: torch.exp(-x ** 2/s) * torch.sin(s * x)
+        self.morlet = torch.compile(self.morlet, mode='reduce-overhead')
+
+    def encoding(self, x):
+        # TODO: alternate cos and sin to phase shift?
+        return torch.cat([
+            x,
+            torch.sin(x),
+            torch.sin(2 * x),
+            torch.sin(4 * x),
+            torch.sin(8 * x),
+            torch.sin(16 * x),
+        ], dim=-1)
+
+    def forward(self, **kwargs):
+        bases = kwargs['points']
+        features = kwargs['features']
+
+        X = torch.cat([ features, self.encoding(bases) ], dim=-1)
+        X = self.encoding_linears[0](X)
+        X = self.morlet(X, self.s0)
+        X = self.encoding(X)
+        X = self.encoding_linears[1](X)
+        X = self.morlet(X, self.s1)
+        X = self.encoding(X)
+        X = self.encoding_linears[2](X)
+        X = self.morlet(X, self.s2)
+        X = self.encoding(X)
+        X = self.encoding_linears[3](X)
+
+        return bases + X
+
+    # Avoid pickling the compiled function
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        del state['morlet']
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.morlet = lambda x, s: torch.exp(-x ** 2/s) * torch.sin(s * x)
+        self.morlet = torch.compile(self.morlet, mode='reduce-overhead')
 
 class MLP_Positional_Gaussian_Encoding(nn.Module):
     L = 10
@@ -325,7 +386,6 @@ class MLP_Positional_Rexin_Encoding(nn.Module):
         self.s0 = nn.Parameter(torch.tensor(1.0))
         self.s1 = nn.Parameter(torch.tensor(1.0))
         self.s2 = nn.Parameter(torch.tensor(1.0))
-        self.s3 = nn.Parameter(torch.tensor(1.0))
 
         self.onion = lambda x, s: torch.log(1 + torch.exp(s * x)) * torch.sin(s * x) * torch.exp(-x ** 2/s)
         self.onion = torch.compile(self.onion, mode='reduce-overhead')
@@ -342,11 +402,10 @@ class MLP_Positional_Rexin_Encoding(nn.Module):
         X = self.encoding_linears[0](X)
         X = self.onion(X, self.s0)
         X = self.encoding_linears[1](X)
-        X = self.onion(X, self.s1)
+        X = F.relu(self.s1 * X)
         X = self.encoding_linears[2](X)
-        X = self.onion(X, self.s2)
+        X = F.relu(self.s2 * X)
         X = self.encoding_linears[3](X)
-        X = self.onion(X, self.s3)
 
         return bases + X
 
@@ -358,5 +417,6 @@ class MLP_Positional_Rexin_Encoding(nn.Module):
 
     def __setstate__(self, state):
         self.__dict__.update(state)
+
         self.onion = lambda x, s: torch.log(1 + torch.exp(s * x)) * torch.sin(s * x) * torch.exp(-x ** 2/s)
         self.onion = torch.compile(self.onion, mode='reduce-overhead')

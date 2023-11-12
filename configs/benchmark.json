@@ -2,32 +2,35 @@
 	"name": "benchmark",
 	"target": "meshes/benchmark/target.obj",
 	"directory": "results/benchmark",
-	"backup": [
-		{
-			"name": "relu-linear",
-			"source": "meshes/benchmark/source.obj",
-			"method": "relu/linear",
-			"clusters": 50,
-			"batch": 10,
-			"resolution": 16
-		},
-		
-		{
-			"name": "siren-linear",
-			"source": "meshes/benchmark/source.obj",
-			"method": "siren/linear",
-			"clusters": 50,
-			"batch": 10,
-			"resolution": 16
-		},
-		
+	"experiments": [
 		{
 			"name": "sinc-linear",
 			"source": "meshes/benchmark/source.obj",
 			"method": "sinc/linear",
 			"clusters": 50,
 			"batch": 10,
-			"resolution": 16
+			"resolution": 32,
+			"fixed": true
+		},
+
+		{
+			"name": "relu-linear",
+			"source": "meshes/benchmark/source.obj",
+			"method": "relu/linear",
+			"clusters": 50,
+			"batch": 10,
+			"resolution": 32,
+			"fixed": true
+		},
+
+		{
+			"name": "siren-linear",
+			"source": "meshes/benchmark/source.obj",
+			"method": "siren/linear",
+			"clusters": 50,
+			"batch": 10,
+			"resolution": 32,
+			"fixed": true
 		},
 
 		{
@@ -36,7 +39,8 @@
 			"method": "morlet/linear",
 			"clusters": 50,
 			"batch": 10,
-			"resolution": 16
+			"resolution": 32,
+			"fixed": true
 		},
 
 		{
@@ -45,36 +49,48 @@
 			"method": "onion/linear",
 			"clusters": 50,
 			"batch": 10,
-			"resolution": 16
-		}
+			"resolution": 32,
+			"fixed": true
+		},
 
-	],
-	"experiments": [
 		{
 			"name": "gauss-linear",
 			"source": "meshes/benchmark/source.obj",
 			"method": "gauss/linear",
 			"clusters": 50,
 			"batch": 10,
-			"resolution": 16
+			"resolution": 32,
+			"fixed": true
 		},
 
-		{
-			"name": "morlet-linear",
-			"source": "meshes/benchmark/source.obj",
-			"method": "morlet/linear",
-			"clusters": 50,
-			"batch": 10,
-			"resolution": 16
-		},
-		
 		{
 			"name": "elu-linear",
 			"source": "meshes/benchmark/source.obj",
 			"method": "elu/linear",
 			"clusters": 50,
 			"batch": 10,
-			"resolution": 16
+			"resolution": 32,
+			"fixed": true
+		},
+
+		{
+			"name": "rexin-linear",
+			"source": "meshes/benchmark/source.obj",
+			"method": "rexin/linear",
+			"clusters": 50,
+			"batch": 10,
+			"resolution": 32,
+			"fixed": true
+		},
+
+		{
+			"name": "reenc-linear",
+			"source": "meshes/benchmark/source.obj",
+			"method": "reenc/linear",
+			"clusters": 50,
+			"batch": 5,
+			"resolution": 32,
+			"fixed": true
 		}
 	]
 }

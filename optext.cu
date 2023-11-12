@@ -1566,7 +1566,7 @@ torch::Tensor triangulate_shorted(const torch::Tensor &vertices, size_t complex_
 }
 
 __global__
-void remapper_kernel(int32_t *map, glm::ivec3 *__restrict__ triangles, size_t size)
+void remapper_kernel(const int32_t *__restrict__ map, glm::ivec3 *__restrict__ triangles, size_t size)
 {
 	size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 	size_t stride = blockDim.x * gridDim.x;
@@ -1575,6 +1575,18 @@ void remapper_kernel(int32_t *map, glm::ivec3 *__restrict__ triangles, size_t si
 		triangles[i].x = map[triangles[i].x];
 		triangles[i].y = map[triangles[i].y];
 		triangles[i].z = map[triangles[i].z];
+	}
+}
+
+__global__
+void scatter_kernel(const int32_t *__restrict__ map, const glm::vec3 *__restrict__ data, glm::vec3 *__restrict__ dst, size_t size)
+{
+	size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+	size_t stride = blockDim.x * gridDim.x;
+
+	for (size_t i = tid; i < size; i += stride) {
+		int32_t index = map[i];
+		dst[i] = data[index];
 	}
 }
 
@@ -1651,6 +1663,30 @@ struct remapper : std::unordered_map <int32_t, int32_t> {
 			auto it = this->find(i);
 			assert(it != this->end());
 			out_ptr[i] = vertices_ptr[it->second];
+		}
+
+		return out;
+	}
+
+	torch::Tensor scatter_device(const torch::Tensor &vertices) const {
+		assert(vertices.dtype() == torch::kFloat32);
+		assert(vertices.dim() == 2 && vertices.size(1) == 3);
+		assert(vertices.is_cuda());
+
+		torch::Tensor out = torch::zeros_like(vertices);
+		glm::vec3 *out_ptr = (glm::vec3 *) out.data_ptr <float> ();
+		glm::vec3 *vertices_ptr = (glm::vec3 *) vertices.data_ptr <float> ();
+
+		dim3 block(256);
+		dim3 grid((vertices.size(0) + block.x - 1) / block.x);
+
+		scatter_kernel <<< grid, block >>> (dev_map, vertices_ptr, out_ptr, vertices.size(0));
+
+		cudaDeviceSynchronize();
+		cudaError_t err = cudaGetLastError();
+		if (err != cudaSuccess) {
+			std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
+			exit(1);
 		}
 
 		return out;
@@ -1798,7 +1834,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 	py::class_ <remapper> (m, "remapper")
 		.def("remap", &remapper::remap, "Remap indices")
 		.def("remap_device", &remapper::remap_device, "Remap indices")
-		.def("scatter", &remapper::scatter, "Scatter vertices");
+		.def("scatter", &remapper::scatter, "Scatter vertex data")
+		.def("scatter_device", &remapper::scatter_device, "Scatter vertex data");
 
 	m.def("conformal_graph", &conformal_graph);
 	m.def("cluster_geometry", &cluster_geometry);

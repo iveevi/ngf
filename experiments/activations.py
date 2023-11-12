@@ -135,11 +135,11 @@ def indices(C, sample_rate=16):
 
 experiments = {
     # 'flat':   flat,
-    'linear': linear,
+    # 'linear': linear,
     # 'curved':   curved,
-    'perlin':   perlin,
+    # 'perlin':   perlin,
     # 'tiles':    textured('../images/tiles.png'),
-    # 'fabric':   textured('../images/fabric.png'),
+    'fabric':   textured('../images/fabric.png'),
     'wicker':   textured('../images/wicker.png'),
     'column':   textured('../images/column.png'),
 }
@@ -147,11 +147,12 @@ experiments = {
 models = {
     # 'simple':     MLP_Simple,
     'relu':     MLP_Positional_Encoding,
-    'elu':      MLP_Positional_Elu_Encoding,
+    # 'elu':      MLP_Positional_Elu_Encoding,
     # 'siren':    MLP_Positional_Siren_Encoding,
-    'gauss':    MLP_Positional_Gaussian_Encoding,
-    'sinc':     MLP_Positional_Sinc_Encoding,
-    # 'morlet':   MLP_Positional_Morlet_Encoding,
+    'reenc':    MLP_Positional_Siren_Reencoding,
+    # 'gauss':    MLP_Positional_Gaussian_Encoding,
+    # 'sinc':     MLP_Positional_Sinc_Encoding,
+    'morlet':   MLP_Positional_Morlet_Encoding,
     'rexin':    MLP_Positional_Rexin_Encoding,
     'onion':    MLP_Positional_Onion_Encoding,
 }
@@ -226,6 +227,8 @@ for i, (name, experiment) in enumerate(experiments.items()):
     nrm_vizes = []
     nrm_viz_max = 0.0
 
+    # TODO: plot gradients... aim for most stable gradients?
+
     for j, (model_name, M) in enumerate(models.items()):
         # Load the model and parameters
         torch.manual_seed(0)
@@ -239,7 +242,7 @@ for i, (name, experiment) in enumerate(experiments.items()):
         optimizer = torch.optim.Adam(list(m.parameters()) + [ tch_encodings ], lr=1e-3)
 
         history = {}
-        for _ in trange(10_000):
+        for _ in trange(2_500):
             LP, LE, UV = sample(tch_complexes, tch_corners, tch_encodings, sample_rate)
             V = m(points=LP, features=LE)
 
@@ -247,9 +250,9 @@ for i, (name, experiment) in enumerate(experiments.items()):
             normals_pred = compute_vertex_normals(V, tch_triangles, normals_pred)
 
             vertex_loss = torch.mean(torch.norm(V - tch_target, dim=1))
-            normal_loss = 1e-1 * torch.mean(torch.norm(normals_true - normals_pred, dim=1))
+            normal_loss = torch.mean(torch.norm(normals_true - normals_pred, dim=1))
 
-            loss = vertex_loss + normal_loss
+            loss = vertex_loss + 0.1 * normal_loss
 
             optimizer.zero_grad()
             loss.backward()

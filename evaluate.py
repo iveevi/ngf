@@ -457,7 +457,7 @@ for root, dirs, files in os.walk(directory):
                 I = shorted_indices(vertices.cpu().numpy(), c, rate)
                 I = torch.from_numpy(I).int()
 
-                cmap = make_cmap(c, p, lerped_points, rate)
+                cmap = make_cmap(c, p.detach(), lerped_points.detach(), rate)
                 remap = optext.generate_remapper(c.cpu(), cmap, lerped_points.shape[0], rate)
                 F = remap.remap(I).cuda()
 

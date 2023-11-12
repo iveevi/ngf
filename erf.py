@@ -86,7 +86,8 @@ for filename in os.listdir(directory):
     smplr    = m['kernel']
 
     # Sample points
-    resolution = 16
+    # TODO: use no grad in all this...
+    resolution = 32
     LP, LF = smplr(complexes, points, features, resolution)
     V = model(points=LP, features=LF).detach()
 
@@ -95,7 +96,7 @@ for filename in os.listdir(directory):
     I = shorted_indices(V.cpu().numpy(), complexes, resolution)
     I = torch.from_numpy(I).int()
 
-    cmap = make_cmap(complexes, points, LP, resolution)
+    cmap = make_cmap(complexes, points.detach(), LP.detach(), resolution)
     remap = optext.generate_remapper(complexes.cpu(), cmap, LP.shape[0], resolution)
     F = remap.remap(I).cuda()
 
@@ -113,9 +114,10 @@ for filename in os.listdir(directory):
     models.append((V, N, F, m))
 
 # Preferred order of models
-ordering = [ 'relu', 'elu', 'siren', 'gauss', 'sinc', 'morlet', 'onion' ]
-reorder = lambda x: ordering.index(x[3]['name'].split('-')[0])
-models.sort(key=reorder)
+# TODO: only fi all the keys are present...
+# ordering = [ 'relu', 'elu', 'siren', 'gauss', 'sinc', 'rexin', 'morlet', 'onion' ]
+# reorder = lambda x: ordering.index(x[3]['name'].split('-')[0])
+# models.sort(key=reorder)
 
 # Load scene cameras
 from scripts.render import NVDRenderer
@@ -200,7 +202,8 @@ normal_losses = []
 for i, model in enumerate(models):
     V, N, F, m = model
 
-    name = m['name'].split('-')[0]
+    name = m['name'].split('-')
+    name = name[0] + '/' + name[1]
 
     # Render figures
     ax = plt.subplot(4, plots, i + 2)

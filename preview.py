@@ -64,7 +64,7 @@ import polyscope as ps
 
 ps.init()
 
-resolution = 16
+resolution = 32
 ps.register_surface_mesh('target', target.points, target.cells_dict['triangle'])
 
 def quadify(C, sample_rate=16):
@@ -114,7 +114,7 @@ def callback():
         instantiate()
 
     if imgui.Button('Increase resolution'):
-        resolution = min(16, resolution * 2)
+        resolution = min(32, resolution * 2)
         instantiate()
 
 ps.set_user_callback(callback)
