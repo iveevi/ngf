@@ -76,7 +76,7 @@ for filename in os.listdir(directory):
     print('kernel:', m['kernel'])
 
     m['name'] = os.path.splitext(filename)[0]
-    m['kernel'] = sampler(kernel=clerp(lerps[m['kernel']]))
+    m['kernel'] = sampler(kernel=lerps[m['kernel']])
     print('sampler:', m['kernel'])
 
     model = m['model']
@@ -133,7 +133,7 @@ environment = torch.cat((environment, alpha), dim=-1)
 
 scene['res_x'] = 1024
 scene['res_y'] = 640
-scene['fov'] = 45.0
+scene['fov'] = 30.0
 scene['near_clip'] = 0.1
 scene['far_clip'] = 1000.0
 # scene['view_mats'] = torch.stack(scene['view_mats'], dim=0)
@@ -143,7 +143,7 @@ scene['envmap_scale'] = 1.0
 renderer = NVDRenderer(scene)
 
 # Set up a camera in front on the mesh
-position = torch.tensor([ -2.0, 0.0, 3.0 ], device='cuda')/2
+position = torch.tensor([ 0.0, 0.0, 10.0 ], device='cuda')/2
 camera = lookat(position,
     torch.tensor([ 0.0, 0.0, 0.0 ], device='cuda'),
     torch.tensor([ 0.0, 1.0, 0.0 ], device='cuda')
