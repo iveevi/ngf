@@ -1,10 +1,12 @@
 import json
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-import numpy as np
+import os
 import re
 import seaborn as sns
 import sys
+
+from prettytable import PrettyTable
 
 # TODO: pass catags with argparse
 assert len(sys.argv) >= 3, 'Usage: python plot.py <database> <key>'
@@ -76,6 +78,9 @@ with open(db) as f:
     second_level_parents = get_secondary_atomic_parents(data)
     print(second_level_parents)
 
+    # Dictionary for the table
+    table = {}
+
     fig, ax = plt.subplots(3, 1, figsize=(10, 8), sharex=True, layout='constrained')
 
     # fig.suptitle(refmt(key + '-metrics'))
@@ -99,6 +104,7 @@ with open(db) as f:
         l.sort(key=lambda x: x[0])
         x, y = zip(*l)
         ax[0].plot(x, y, label=(refmt(catag)), marker='o')
+        table.setdefault('Normal Loss', {})[catag] = normal
 
     # ax[0].set_title('Normal vs Size')
     # ax[0].set_xlabel('Compression Ratio')
@@ -127,6 +133,7 @@ with open(db) as f:
         l.sort(key=lambda x: x[0])
         x, y = zip(*l)
         ax[1].plot(x, y, label=(refmt(catag)), marker='o')
+        table.setdefault('Render Loss', {})[catag] = render
 
     # ax[1].set_title('Render vs Size')
     # ax[1].set_xlabel('Compression Ratio')
@@ -155,6 +162,7 @@ with open(db) as f:
         l.sort(key=lambda x: x[0])
         x, y = zip(*l)
         ax[2].plot(x, y, label=(refmt(catag)), marker='o')
+        table.setdefault('Chamfer Distance', {})[catag] = chamfer
 
     # ax[2].set_title('Chamfer vs Size')
     ax[2].set_xlabel('Compression Ratio')
@@ -173,13 +181,6 @@ with open(db) as f:
     # Collect all the labels to put in the figure legend
     handles, labels = ax[0].get_legend_handles_labels()
 
-    # handles2, labels2 = ax[1].get_legend_handles_labels()
-    # handles3, labels3 = ax[2].get_legend_handles_labels()
-    # handles.extend(handles2)
-    # handles.extend(handles3)
-    # labels.extend(labels2)
-    # labels.extend(labels3)
-
     # Plot the legend
     # TODO: also alter the color palette
     fig.legend(handles, labels, loc='outside upper center', ncol=len(handles), fancybox=True, framealpha=1, shadow=True, borderpad=1, markerscale=0, fontsize='small')
@@ -188,3 +189,11 @@ with open(db) as f:
 
     plt.savefig(os.path.join('figures', key + '_metrics.pdf'), format='pdf')
     plt.show()
+
+    # Create and print the table
+    t = PrettyTable()
+    t.field_names = ['Catagory'] + labels
+    for k, v in table.items():
+        t.add_row([k] + list(v.values()))
+
+    print(t)

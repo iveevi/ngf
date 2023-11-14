@@ -13,13 +13,13 @@ from util import *
 from configurations import *
 
 # Arguments
-assert len(sys.argv) == 3, 'evaluate.py <reference> <directory>'
+assert len(sys.argv) == 3, 'evaluate.py <meshes> <results>'
 
-reference = sys.argv[1]
-directory = sys.argv[2]
+meshes = sys.argv[1]
+results = sys.argv[2]
 
-assert reference is not None
-assert directory is not None
+assert meshes is not None
+assert results is not None
 
 # Load all necessary extensions
 if not os.path.exists('build'):
@@ -35,37 +35,36 @@ optext = load(name='optext',
 print('Loaded optimization extension')
 
 # Create a directory specifically for the unpacked meshes
-new_directory = os.path.join(directory, 'unpacked')
+new_directory = os.path.join(results, 'unpacked')
 if os.path.exists(new_directory):
     shutil.rmtree(new_directory)
 os.makedirs(new_directory)
 
 # Copy the reference mesh to the new directory
-# shutil.copyfile(reference, os.path.join(new_directory, 'ref.obj'))
-
-mesh = meshio.read(reference)
-v_ref = mesh.points
-f_ref = mesh.cells_dict['triangle']
-min = np.min(v_ref, axis=0)
-max = np.max(v_ref, axis=0)
+target = os.path.join(meshes, 'target.obj')
+mesh   = meshio.read(target)
+v_ref  = mesh.points
+f_ref  = mesh.cells_dict['triangle']
+min    = np.min(v_ref, axis=0)
+max    = np.max(v_ref, axis=0)
 center = (min + max) / 2.0
-# extent = (max - min).square().sum().sqrt() / 2.0
 extent = np.linalg.norm(max - min) / 2.0
-print('Reference mesh center:', center)
-print('Reference mesh size:', max - min)
-print('Reference mesh #vertices:', v_ref.shape[0])
-print('Reference mesh #faces:', f_ref.shape[0])
-
-print('Extent:', extent)
 
 normalize = lambda x: (x - center) / extent
 
-v_ref = normalize(v_ref)
-print('new min:', np.min(v_ref, axis=0))
-print('new max:', np.max(v_ref, axis=0))
+for root, dirs, files in os.walk(meshes):
+    for file in files:
+        if not file.endswith('.obj'):
+            continue
 
-mesh = meshio.Mesh(v_ref, [ ('triangle', f_ref) ])
-meshio.write(os.path.join(new_directory, 'ref.obj'), mesh)
+        print('Loading mesh: %s' % file)
+
+        mesh = meshio.read(os.path.join(root, file))
+        v = mesh.points
+        v = normalize(v)
+
+        mesh = meshio.Mesh(v, mesh.cells)
+        meshio.write(os.path.join(new_directory, file), mesh)
 
 def shorted_quads(V, C, sample_rate=16):
     quads = []
@@ -81,7 +80,7 @@ def shorted_quads(V, C, sample_rate=16):
     return np.array(quads)
 
 # Recursively find all simple meshes and model configurations
-for root, dirs, files in os.walk(directory):
+for root, dirs, files in os.walk(results):
     for file in files:
         if not file.endswith('.pt'):
             continue
@@ -129,7 +128,7 @@ for root, dirs, files in os.walk(directory):
         I = shorted_quads(vertices.cpu().numpy(), c, rate)
         I = torch.from_numpy(I).int()
 
-        cmap = make_cmap(c, p, lerped_points, rate)
+        cmap = make_cmap(c, p.detach(), lerped_points.detach(), rate)
         remap = optext.generate_remapper(c.cpu(), cmap, lerped_points.shape[0], rate)
         F = remap.remap(I).cuda()
 

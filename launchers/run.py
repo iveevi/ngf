@@ -60,7 +60,7 @@ for config in sorted(configs):
         clusters = experiment['clusters']
         batch = experiment['batch']
         resolution = experiment['resolution']
-        fixed = experiment['fixed']
+        fixed = experiment['fixed'] if 'fixed' in experiment else False
 
         assert type(fixed) == bool
 
