@@ -1,10 +1,11 @@
+# Packages for training
+import imageio
+import meshio
 import os
 import seaborn as sns
+import subprocess
 import sys
 import torch
-import matplotlib.pyplot as plt
-import meshio
-import imageio
 
 from scripts.geometry import compute_vertex_normals, compute_face_normals
 from scripts.load_xml import load_scene
@@ -21,8 +22,6 @@ from scripts.render import NVDRenderer
 from mlp import *
 from util import *
 from configurations import *
-
-sns.set()
 
 assert len(sys.argv) == 9, 'Usage: python combined.py <target> <source> <method> <clusters> <batch> <resolution> <result> <fixed>'
 
@@ -44,6 +43,12 @@ if fixed:
 
 assert len(method) == 2, 'Method must be of the form <activation + encoding>/<interpolation>'
 
+# Check if we are headless
+proc = os.path.join(os.path.dirname(__file__), 'build', 'headless')
+proc = subprocess.run(proc)
+headless = (proc.returncode == 1)
+
+# Dump configuration
 print('Training neural subdivision complexes with the following configuration')
 print('  > Target:    ', target)
 print('  > Source:    ', source)
@@ -51,6 +56,7 @@ print('  > Method:    ', method)
 print('  > Batch:     ', batch)
 print('  > Resolution:', resolution)
 print('  > Result:    ', result)
+print('  > Headless:  ', headless)
 
 # Load all necessary extensions
 if not os.path.exists('build'):
@@ -178,39 +184,31 @@ points.requires_grad = True
 # Setup the rendering backend
 renderer = NVDRenderer(scene_parameters, shading=True, boost=3)
 
-# Initial (4x4) optimization
-import polyscope as ps
-
+# Initial (Gamma-4) optimization
 base, _ = sample(complexes, points, features, 4)
-
 base_indices = shorted_indices(base.detach().cpu().numpy(), complexes.cpu().numpy(), 4)
 tch_base_indices = torch.from_numpy(base_indices).int()
-
-cmap = make_cmap(complexes, points.detach(), base, 4)
+cmap  = make_cmap(complexes, points.detach(), base, 4)
 remap = optext.generate_remapper(complexes.cpu(), cmap, base.shape[0], 4)
-F = remap.remap(tch_base_indices).cuda()
-print('F:', F.shape)
-
-# Fi = optext.triangulate_shorted(base, complexes.shape[0], 4)
-
-ps.init()
-
+F     = remap.remap(tch_base_indices).cuda()
 indices = quadify(complexes.cpu().numpy(), 4)
 
-ps.register_surface_mesh('reference', v_ref.cpu().numpy(), f_ref.cpu().numpy())
-ps.register_surface_mesh('base-original', base.detach().cpu().numpy(), indices)
-ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
-        .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
+if not headless:
+    import dpolyscope as ps
 
-# ps.show()
+    ps.init()
+    ps.register_surface_mesh('reference', v_ref.cpu().numpy(), f_ref.cpu().numpy())
+    ps.register_surface_mesh('base-original', base.detach().cpu().numpy(), indices)
+    ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
+            .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
+    # ps.show()
 
 # TODO: tone mapping
-
 compute_Fn = torch.compile(compute_face_normals, mode='reduce-overhead')
 compute_N = torch.compile(compute_vertex_normals, mode='reduce-overhead')
 
 def inverse_render(V, F, sample_rate=4):
-    steps     = 1_000  # Number of optimization steps
+    steps     = 1_0  # Number of optimization steps
     step_size = 3e-2   # Step size
     lambda_   = 10     # Hyperparameter lambda of our method, used to compute the matrix (I + lambda_ * L)
 
@@ -281,18 +279,15 @@ for _ in trange(1000):
     loss.backward()
     opt.step()
 
-# base_indices = shorted_indices(base.cpu().numpy(), complexes.cpu().numpy(), 4)
-
 V = V.detach().cpu().numpy()
-# indices = shorted_indices(V.cpu().numpy(), complexes.cpu().numpy(), 4)
 indices = quadify(complexes.cpu().numpy(), 4)
 
-ps.register_surface_mesh('model-phase1', V, indices)
-ps.register_surface_mesh('base', base.cpu().numpy(), indices)
-ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
-        .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
-
-# ps.show()
+if not headless:
+    ps.register_surface_mesh('model-phase1', V, indices)
+    ps.register_surface_mesh('base', base.cpu().numpy(), indices)
+    ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
+            .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
+    # ps.show()
 
 # Get the reference images
 def inverse_render_nsc(sample_rate, losses, lr, aux_strength=1.0):
@@ -303,7 +298,7 @@ def inverse_render_nsc(sample_rate, losses, lr, aux_strength=1.0):
     vgraph   = None
 
     batch_size = batch(sample_rate)
-    for i in trange(1_000):
+    for i in trange(1_0):
         # Batch the views into disjoint sets
         assert len(all_views) % batch_size == 0
         views = torch.split(all_views, batch_size, dim=0)
@@ -350,14 +345,14 @@ r = 4
 aux_strength = 1.0
 while r <= resolution:
     V, F, losses = inverse_render_nsc(r, {}, 1e-3, aux_strength)
-
     indices = quadify(complexes.cpu().numpy(), r)
-    ps.register_surface_mesh(f'model-phase2-{r}', V.cpu().numpy(), indices)
+
+    if not headless:
+        ps.register_surface_mesh(f'model-phase2-{r}', V.cpu().numpy(), indices)
+        ps.show()
 
     aux_strength *= 0.5
     r *= 2
-
-    ps.show()
 
 # Save data
 print('Saving model to', result)
