@@ -175,8 +175,8 @@ def indices(C, sample_rate=16):
 # TODO: test different texture maps
 
 experiments = {
-    'flat':   flat,
-    # 'linear': linear,
+    # 'flat':   flat,
+    'linear': linear,
     # 'curved': curved,
     'perlin': perlin,
     # 'tiles':  textured('../images/tiles.png'),
@@ -185,12 +185,7 @@ experiments = {
     'column': textured('../images/column.png'),
 }
 
-kernels = {
-        'linear' : clerp(lerps['linear']),
-        'floor'  : clerp(lerps['floor']),
-        'sin'    : clerp(lerps['sin']),
-        'sincos' : clerp(lerps['sincos']),
-}
+kernels = lerps
 
 # TODO: also the lerp functions; separate file tho...
 # morlet and onion seems to get rid of the ripple artifacts
@@ -205,14 +200,15 @@ plt.rcParams['text.usetex'] = True
 plt.rcParams['figure.dpi']  = 600
 
 N = len(kernels)
-fig_viz, axs_viz = plt.subplots(len(experiments), N, figsize=(30, 20), gridspec_kw={ 'wspace': 0.05, 'hspace': 0.01 })
-fig_nrm, axs_nrm = plt.subplots(len(experiments), 2 * N + 1, figsize=(22, 7), gridspec_kw={ 'wspace': 0.05, 'hspace': 0.01 })
+fig_viz, axs_viz = plt.subplots(len(experiments), N, figsize=(30, 20), layout='constrained')
+fig_nrm, axs_nrm = plt.subplots(len(experiments), 2 * N + 1, figsize=(22, 7), layout='constrained')
+fig,     axs     = plt.subplots(1, len(experiments) + 1, figsize=(25, 5), layout='constrained')
 
 from torchmetrics.image import PeakSignalNoiseRatio
 psnr = PeakSignalNoiseRatio().cuda()
 
-sample_rate       = 64
-complexes_size    = 4
+sample_rate       = 6
+complexes_size    = 2
 super_sample_rate = complexes_size * sample_rate
 deduped_triangles = None
 F, remap          = None, None
@@ -235,7 +231,6 @@ for i, (name, experiment) in enumerate(experiments.items()):
         cmap = make_cmap(tch_complexes, tch_corners, LP, sample_rate)
         remap = optext.generate_remapper(tch_complexes.cpu(), cmap, LP.shape[0], sample_rate)
         F = remap.remap_device(tch_triangles)
-        print('diffs:', (F - tch_triangles).sum())
 
     # Precompute normals
     tch_target = torch.from_numpy(target).float().cuda()
@@ -265,7 +260,7 @@ for i, (name, experiment) in enumerate(experiments.items()):
     for j, (kernel_name, K) in enumerate(kernels.items()):
         # Load the model and parameters
         torch.manual_seed(0)
-        m = MLP_Positional_Onion_Encoding().cuda()
+        m = MLP_Positional_Morlet_Encoding().cuda()
         s = sampler(kernel=K)
 
         tch_complexes = torch.from_numpy(complexes).int().cuda()
@@ -275,7 +270,9 @@ for i, (name, experiment) in enumerate(experiments.items()):
         # Train the model
         optimizer = torch.optim.Adam(list(m.parameters()) + [ tch_encodings ], lr=1e-3)
 
-        for _ in trange(1_000):
+        loss_history = []
+        morlet_history = []
+        for _ in trange(1_00):
             LP, LE = s(tch_complexes, tch_corners, tch_encodings, sample_rate)
             V = m(points=LP, features=LE)
 
@@ -284,13 +281,19 @@ for i, (name, experiment) in enumerate(experiments.items()):
             normals_pred = remap.scatter_device(normals_pred)
 
             vertex_loss = torch.mean(torch.norm(V - tch_target, dim=1))
-            normal_loss = torch.mean(torch.norm(normals_true - normals_pred, dim=1))/sample_rate
+            normal_loss = torch.mean(torch.norm(normals_true - normals_pred, dim=1))
 
-            loss = vertex_loss + normal_loss
+            loss = vertex_loss + 1e-2 * normal_loss
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            # optimizer.zero_grad()
+            # loss.backward()
+            # optimizer.step()
+
+            loss_history.append(loss.item())
+
+            if kernel_name == 'morlet':
+                f, g = tch_encodings[0, 0].item(), tch_encodings[0, 1].item()
+                morlet_history.append((f, g))
 
         # Final evaluation and visualization
         LP, LE = s(tch_complexes, tch_corners, tch_encodings, sample_rate)
@@ -359,6 +362,21 @@ for i, (name, experiment) in enumerate(experiments.items()):
         if j == 0:
             axs_viz[i, 0].set_ylabel(f'\\textsc{{{name}}}')
 
+        # Plot losses
+        axs[i].plot(loss_history, label=kernel_name)
+        axs[i].set_yscale('log')
+        axs[i].set_xlabel('Epoch')
+        axs[i].set_ylabel('Loss')
+
+        # If morlet, record teh frequencies
+        if kernel_name == 'morlet':
+            fs = [ m[0] for m in morlet_history ]
+            gs = [ m[1] for m in morlet_history ]
+
+            # Mark the end only with a separate dot
+            l = axs[-1].plot(fs, gs, ls='-', label=f'\\textsc{{{name}}}', alpha=0.5)
+            axs[-1].plot(fs[-1], gs[-1], 'o', color=l[0].get_color())
+
     for k in range(N):
         vizes[k].set_clim(0, viz_max)
         vizes[k].set_cmap('inferno')
@@ -370,7 +388,13 @@ for i, (name, experiment) in enumerate(experiments.items()):
     fig_viz.colorbar(vizes[N - 1], ax=axs_viz[i, :], shrink=0.7, pad=0.01, format='%.2f')
     fig_nrm.colorbar(nrm_vizes[N - 1], ax=axs_nrm[i, :], shrink=0.7, pad=0.01, format='%.2f')
 
+    axs[i].legend()
+    axs[i].set_title(f'\\textsc{{{name}}}')
+
+axs[-1].legend()
+
 ps.show()
 
 fig_viz.savefig('kernels-pos.png', bbox_inches='tight')
 fig_nrm.savefig('kernels-nrm.png', bbox_inches='tight')
+fig.savefig('kernels.png', bbox_inches='tight')

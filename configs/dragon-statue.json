@@ -4,17 +4,44 @@
 	"directory": "results/dragon-statue",
 	"experiments": [
 		{
-			"name": "pos-linear",
-			"source": "meshes/dragon-statue/source.obj",
-			"method": "pos/linear",
+			"name": "onion-linear",
+			"source": "meshes/dragon-statue/source-lod4.obj",
+			"method": "onion/linear",
 			"clusters": 250,
 			"batch": 10,
 			"resolution": 16
 		},
-		
+
 		{
 			"name": "onion-linear",
-			"source": "meshes/dragon-statue/source.obj",
+			"source": "meshes/dragon-statue/source-lod3.obj",
+			"method": "onion/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		},
+
+		{
+			"name": "onion-linear",
+			"source": "meshes/dragon-statue/source-lod2.obj",
+			"method": "onion/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		},
+
+		{
+			"name": "onion-linear",
+			"source": "meshes/dragon-statue/source-lod1.obj",
+			"method": "onion/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		},
+
+		{
+			"name": "onion-linear",
+			"source": "meshes/dragon-statue/source-lod0.obj",
 			"method": "onion/linear",
 			"clusters": 250,
 			"batch": 10,

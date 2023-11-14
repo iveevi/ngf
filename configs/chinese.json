@@ -4,17 +4,44 @@
 	"directory": "results/chinese",
 	"experiments": [
 		{
-			"name": "pos-linear",
-			"source": "meshes/chinese/source.obj",
-			"method": "pos/linear",
+			"name": "onion-linear",
+			"source": "meshes/chinese/source-lod4.obj",
+			"method": "onion/linear",
 			"clusters": 250,
 			"batch": 10,
 			"resolution": 16
 		},
-		
+
 		{
 			"name": "onion-linear",
-			"source": "meshes/chinese/source.obj",
+			"source": "meshes/chinese/source-lod3.obj",
+			"method": "onion/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		},
+
+		{
+			"name": "onion-linear",
+			"source": "meshes/chinese/source-lod2.obj",
+			"method": "onion/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		},
+
+		{
+			"name": "onion-linear",
+			"source": "meshes/chinese/source-lod1.obj",
+			"method": "onion/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		},
+
+		{
+			"name": "onion-linear",
+			"source": "meshes/chinese/source-lod0.obj",
 			"method": "onion/linear",
 			"clusters": 250,
 			"batch": 10,

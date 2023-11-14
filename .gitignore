@@ -1,7 +1,7 @@
-.nsc
 *.obj
 *.tar.gz
 .cache/
+.nsc
 .polyscope.ini
 .vscode/
 __pycache__/
@@ -9,6 +9,7 @@ build/
 compile_commands.json
 data/
 db.json
+experiments/*.png
 experiments/meshes
 experiments/results
 export/

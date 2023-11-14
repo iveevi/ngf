@@ -1,42 +1,87 @@
 {
-	"name": "nefertiti",
-	"target": "meshes/nefertiti/target.obj",
-	"directory": "results/nefertiti",
+	"name": "skull",
+	"target": "meshes/skull/target.obj",
+	"directory": "results/skull",
 	"experiments": [
 		{
-			"name": "pos-linear",
-			"source": "meshes/nefertiti/source-lod0.obj",
-			"method": "pos/linear",
-			"clusters": 100,
+			"name": "relu-linear",
+			"source": "meshes/skull/source.obj",
+			"method": "relu/linear",
+			"clusters": 250,
 			"batch": 10,
-			"resolution": 16
+			"resolution": 32
 		},
-		
+
+		{
+			"name": "elu-linear",
+			"source": "meshes/skull/source.obj",
+			"method": "elu/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 32
+		},
+
+		{
+			"name": "siren-linear",
+			"source": "meshes/skull/source.obj",
+			"method": "siren/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 32
+		},
+
+		{
+			"name": "gauss-linear",
+			"source": "meshes/skull/source.obj",
+			"method": "gauss/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 32
+		},
+
+		{
+			"name": "sinc-linear",
+			"source": "meshes/skull/source.obj",
+			"method": "sinc/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 32
+		},
+
 		{
 			"name": "morlet-linear",
-			"source": "meshes/nefertiti/source-lod0.obj",
+			"source": "meshes/skull/source.obj",
 			"method": "morlet/linear",
-			"clusters": 100,
+			"clusters": 250,
 			"batch": 10,
-			"resolution": 16
+			"resolution": 32
 		},
-		
+
+		{
+			"name": "rexin-linear",
+			"source": "meshes/skull/source.obj",
+			"method": "rexin/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 32
+		},
+
+		{
+			"name": "reenc-linear",
+			"source": "meshes/skull/source.obj",
+			"method": "reenc/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 32
+		},
+
 		{
 			"name": "onion-linear",
-			"source": "meshes/nefertiti/source-lod0.obj",
+			"source": "meshes/skull/source.obj",
 			"method": "onion/linear",
-			"clusters": 100,
+			"clusters": 250,
 			"batch": 10,
-			"resolution": 16
-		},
-		
-		{
-			"name": "feat-linear",
-			"source": "meshes/nefertiti/source-lod0.obj",
-			"method": "feat/linear",
-			"clusters": 100,
-			"batch": 10,
-			"resolution": 16
+			"resolution": 32
 		}
 	]
 }

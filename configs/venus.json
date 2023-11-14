@@ -4,17 +4,44 @@
 	"directory": "results/venus",
 	"experiments": [
 		{
-			"name": "pos-linear",
-			"source": "meshes/venus/source.obj",
-			"method": "pos/linear",
+			"name": "onion-linear",
+			"source": "meshes/venus/source-lod4.obj",
+			"method": "onion/linear",
 			"clusters": 250,
 			"batch": 10,
 			"resolution": 16
 		},
-		
+
 		{
 			"name": "onion-linear",
-			"source": "meshes/venus/source.obj",
+			"source": "meshes/venus/source-lod3.obj",
+			"method": "onion/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		},
+
+		{
+			"name": "onion-linear",
+			"source": "meshes/venus/source-lod2.obj",
+			"method": "onion/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		},
+
+		{
+			"name": "onion-linear",
+			"source": "meshes/venus/source-lod1.obj",
+			"method": "onion/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		},
+
+		{
+			"name": "onion-linear",
+			"source": "meshes/venus/source-lod0.obj",
 			"method": "onion/linear",
 			"clusters": 250,
 			"batch": 10,
