@@ -20,6 +20,7 @@ from scripts.render import NVDRenderer
 
 from mlp import *
 from util import *
+from configurations import *
 
 sns.set()
 
@@ -268,7 +269,7 @@ base = remap.scatter(base.cpu()).cuda()
 from configurations import *
 
 m = models[method[0]]().cuda()
-c = clerp(lerps[method[1]])
+c = lerps[method[1]]
 s = sampler(kernel=c)
 
 opt = torch.optim.Adam(list(m.parameters()) + [ features, points ], 1e-2)

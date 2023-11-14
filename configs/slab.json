@@ -1,0 +1,36 @@
+{
+	"name": "slab",
+	"target": "meshes/slab/target.obj",
+	"directory": "results/slab",
+	"experiments": [
+		{
+			"name": "morlet-morlet",
+			"source": "meshes/slab/source.obj",
+			"method": "morlet/morlet",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 32,
+			"fixed": true
+		},
+
+		{
+			"name": "morlet-linear",
+			"source": "meshes/slab/source.obj",
+			"method": "morlet/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 32,
+			"fixed": true
+		},
+
+		{
+			"name": "morlet-floor",
+			"source": "meshes/slab/source.obj",
+			"method": "morlet/floor",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 32,
+			"fixed": true
+		}
+	]
+}

@@ -4,10 +4,10 @@ import numpy as np
 from mlp import *
 
 def lerp(X, U, V):
-    lp00 = X[:, 0, :].unsqueeze(1) * U.unsqueeze(-1) * V.unsqueeze(-1)
-    lp01 = X[:, 1, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * V.unsqueeze(-1)
-    lp10 = X[:, 3, :].unsqueeze(1) * U.unsqueeze(-1) * (1.0 - V.unsqueeze(-1))
-    lp11 = X[:, 2, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * (1.0 - V.unsqueeze(-1))
+    lp00 = X[:, 0, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * (1.0 - V.unsqueeze(-1))
+    lp01 = X[:, 1, :].unsqueeze(1) * U.unsqueeze(-1) * (1.0 - V.unsqueeze(-1))
+    lp10 = X[:, 3, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * V.unsqueeze(-1)
+    lp11 = X[:, 2, :].unsqueeze(1) * U.unsqueeze(-1) * V.unsqueeze(-1)
     return lp00 + lp01 + lp10 + lp11
 
 def sample(complexes, points, features, sample_rate, kernel=lerp):
@@ -135,15 +135,6 @@ def triangle_areas(v, f):
     v01 = v1 - v0
     v02 = v2 - v0
     return 0.5 * torch.norm(torch.cross(v01, v02), dim=1)
-
-def clerp(f=lambda x: x):
-    def ftn(X, U, V):
-        lp00 = X[:, 0, :].unsqueeze(1) * f(U.unsqueeze(-1)) * f(V.unsqueeze(-1))
-        lp01 = X[:, 1, :].unsqueeze(1) * f(1.0 - U.unsqueeze(-1)) * f(V.unsqueeze(-1))
-        lp10 = X[:, 3, :].unsqueeze(1) * f(U.unsqueeze(-1)) * f(1.0 - V.unsqueeze(-1))
-        lp11 = X[:, 2, :].unsqueeze(1) * f(1.0 - U.unsqueeze(-1)) * f(1.0 - V.unsqueeze(-1))
-        return lp00 + lp01 + lp10 + lp11
-    return ftn
 
 def sampler(kernel=lerp):
     def ftn(complexes, points, features, sample_rate):
