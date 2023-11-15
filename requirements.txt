@@ -1,0 +1,11 @@
+cmake
+gdown
+imageio
+largesteps
+matplotlib
+meshio
+nvdiffrast @ git+https://github.com/NVlabs/nvdiffrast
+polyscope
+pymeshlab
+seaborn
+tqdm
