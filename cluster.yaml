@@ -15,7 +15,10 @@ spec:
   containers:
     - name: nsc
       image: vedavamadathil/nsc:latest
-      command: [ "sleep", "infinity" ]
+      command:
+        - sh
+        - -c
+        - "cd /opt/repo/nsc && sleep infinity"
       resources:
         requests:
           memory: 16Gi
@@ -25,4 +28,24 @@ spec:
           memory: 16Gi
           cpu: 8
           nvidia.com/gpu: 1
+      volumeMounts:
+            - name: git-repo
+              mountPath: /opt/repo
+            # - name: results
+            #   mountPath: /opt/results
+  initContainers:
+    - name: init-clone-repo
+      image: alpine/git
+      args:
+        - clone
+        - https://github.com/vedavamadathil/nsc
+        - /opt/repo/nsc
+      volumeMounts:
+        - name: git-repo
+          mountPath: /opt/repo
+  volumes:
+      - name: git-repo
+        emptyDir: {}
+      # - name: results
+      #   emptyDir: {}
   restartPolicy: Never
