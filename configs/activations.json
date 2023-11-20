@@ -9,7 +9,7 @@
 			"method": "relu/linear",
 			"clusters": 250,
 			"batch": 10,
-			"resolution": 32
+			"resolution": 16
 		},
 
 		{
@@ -18,7 +18,7 @@
 			"method": "elu/linear",
 			"clusters": 250,
 			"batch": 10,
-			"resolution": 32
+			"resolution": 16
 		},
 
 		{
@@ -27,7 +27,7 @@
 			"method": "siren/linear",
 			"clusters": 250,
 			"batch": 10,
-			"resolution": 32
+			"resolution": 16
 		},
 
 		{
@@ -36,7 +36,7 @@
 			"method": "gauss/linear",
 			"clusters": 250,
 			"batch": 10,
-			"resolution": 32
+			"resolution": 16
 		},
 
 		{
@@ -45,7 +45,7 @@
 			"method": "sinc/linear",
 			"clusters": 250,
 			"batch": 10,
-			"resolution": 32
+			"resolution": 16
 		},
 
 		{
@@ -54,7 +54,7 @@
 			"method": "morlet/linear",
 			"clusters": 250,
 			"batch": 10,
-			"resolution": 32
+			"resolution": 16
 		},
 
 		{
@@ -63,7 +63,7 @@
 			"method": "rexin/linear",
 			"clusters": 250,
 			"batch": 10,
-			"resolution": 32
+			"resolution": 16
 		},
 
 		{
@@ -72,7 +72,7 @@
 			"method": "reenc/linear",
 			"clusters": 250,
 			"batch": 10,
-			"resolution": 32
+			"resolution": 16
 		},
 
 		{
@@ -81,7 +81,7 @@
 			"method": "onion/linear",
 			"clusters": 250,
 			"batch": 10,
-			"resolution": 32
+			"resolution": 16
 		}
 	]
 }

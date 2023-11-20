@@ -102,7 +102,7 @@ for root, dirs, files in os.walk(results):
         lerper = file.split('-')[1]
         print('  > lerper: %s' % lerper)
 
-        ker = clerp(lerps[lerper])
+        ker = lerps[lerper]
         print('  > clerp: %s' % ker)
 
         # Compute byte size of the representation

@@ -435,7 +435,7 @@ for root, dirs, files in os.walk(directory):
             print('  > f:', f.shape)
             print('  > l:', l)
 
-            ker = clerp(lerps[l])
+            ker = lerps[l]
             print('  > clerp:', ker)
 
             # Compute byte size of the representation

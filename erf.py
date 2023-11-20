@@ -143,7 +143,7 @@ scene['envmap_scale'] = 1.0
 renderer = NVDRenderer(scene)
 
 # Set up a camera in front on the mesh
-position = torch.tensor([ 0.0, 0.0, 10.0 ], device='cuda')/2
+position = torch.tensor([ 0.0, 0.0, 3.0 ], device='cuda')
 camera = lookat(position,
     torch.tensor([ 0.0, 0.0, 0.0 ], device='cuda'),
     torch.tensor([ 0.0, 1.0, 0.0 ], device='cuda')
@@ -157,13 +157,14 @@ import seaborn as sns
 sns.set()
 
 plt.rcParams['text.usetex'] = True
+plt.rcParams['figure.constrained_layout.use'] = True
 
 def textsc(str):
     return r'\textsc{' + str + '}'
 
 # TODO: TeX formatting...
 
-fig = plt.figure(figsize=(25, 10))
+fig = plt.figure(figsize=(30, 15))
 
 plots = 1 + len(models)
 
@@ -266,6 +267,25 @@ ax.set_xlabel(r'$\mathbf{' + clabel[2:-2] + '}$')
 ax = plt.subplot(4, plots, normal_min + 2 + 3 * plots)
 clabel = ax.get_xlabel()
 ax.set_xlabel(r'$\mathbf{' + clabel[2:-2] + '}$')
+
+# index = 0
+# for filename in os.listdir(directory):
+#     # Only parse .pt.losses
+#     if not filename.endswith('.pt.losses'):
+#         continue
+#
+#     print('loss file:', filename)
+#     losses = []
+#
+#     path = os.path.join(directory, filename)
+#     with open(path, 'r') as f:
+#         losses = f.read().split(',')
+#         losses = [ float(l) for l in losses ]
+#
+#     ax = plt.subplot(5, plots, 2 + index + 4 * plots)
+#     ax.plot(losses)
+#     ax.set_yscale('log')
+#     index += 1
 
 plt.savefig('figures/activations.pdf', dpi=300, bbox_inches='tight')
 plt.show()

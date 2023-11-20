@@ -145,6 +145,7 @@ for cluster in clusters:
     centroids = (v0 + v1 + v2) / 3.0
     centroids = centroids.mean(dim=0)
 
+
     normals = torch.cross(v1 - v0, v2 - v0)
     normals = normals.mean(dim=0)
     normals = normals / torch.norm(normals)
@@ -194,7 +195,7 @@ F     = remap.remap(tch_base_indices).cuda()
 indices = quadify(complexes.cpu().numpy(), 4)
 
 if not headless:
-    import dpolyscope as ps
+    import polyscope as ps
 
     ps.init()
     ps.register_surface_mesh('reference', v_ref.cpu().numpy(), f_ref.cpu().numpy())
@@ -208,7 +209,7 @@ compute_Fn = torch.compile(compute_face_normals, mode='reduce-overhead')
 compute_N = torch.compile(compute_vertex_normals, mode='reduce-overhead')
 
 def inverse_render(V, F, sample_rate=4):
-    steps     = 1_0  # Number of optimization steps
+    steps     = 1_000  # Number of optimization steps
     step_size = 3e-2   # Step size
     lambda_   = 10     # Hyperparameter lambda of our method, used to compute the matrix (I + lambda_ * L)
 
@@ -290,7 +291,10 @@ if not headless:
     # ps.show()
 
 # Get the reference images
-def inverse_render_nsc(sample_rate, losses, lr, aux_strength=1.0):
+losses = []
+def inverse_render_nsc(sample_rate, iterations, lr, aux_strength=1.0):
+    global losses
+
     opt      = torch.optim.Adam(list(m.parameters()) + [ features, points ], lr)
     base, _  = sample(complexes, points, features, sample_rate)
     cmap     = make_cmap(complexes, points.detach(), base, sample_rate)
@@ -298,7 +302,7 @@ def inverse_render_nsc(sample_rate, losses, lr, aux_strength=1.0):
     vgraph   = None
 
     batch_size = batch(sample_rate)
-    for i in trange(1_0):
+    for i in trange(iterations):
         # Batch the views into disjoint sets
         assert len(all_views) % batch_size == 0
         views = torch.split(all_views, batch_size, dim=0)
@@ -311,6 +315,7 @@ def inverse_render_nsc(sample_rate, losses, lr, aux_strength=1.0):
             F = remap.remap_device(indices)
             vgraph = optext.vertex_graph(F.cpu())
 
+        render_loss_sum = 0
         for view_mats in views:
             lerped_points, lerped_features = s(complexes, points, features, sample_rate)
             V = m(points=lerped_points, features=lerped_features)
@@ -334,30 +339,43 @@ def inverse_render_nsc(sample_rate, losses, lr, aux_strength=1.0):
             area_loss = triangle_areas(V, F).mean()
             loss = render_loss + aux_strength * (area_loss + laplacian_loss)
 
+            render_loss_sum += render_loss.item()
+
             # Optimization step
             opt.zero_grad()
             loss.backward()
             opt.step()
 
-    return V.detach(), F, losses
+        losses.append(render_loss_sum)
+
+    return V.detach(), F
 
 r = 4
 aux_strength = 1.0
 while r <= resolution:
-    V, F, losses = inverse_render_nsc(r, {}, 1e-3, aux_strength)
+    V, F = inverse_render_nsc(r, 50 * r, 1e-3, aux_strength)
     indices = quadify(complexes.cpu().numpy(), r)
 
     if not headless:
         ps.register_surface_mesh(f'model-phase2-{r}', V.cpu().numpy(), indices)
-        ps.show()
+        # ps.show()
 
     aux_strength *= 0.5
     r *= 2
 
 # Save data
 print('Saving model to', result)
+
 directory = os.path.dirname(result)
 os.makedirs(directory, exist_ok=True)
+
+# result_base = os.path.basename(result)
+result_losses = result + '.losses'
+result_losses_txt = ','.join([ f'{x:.5f}' for x in losses ])
+print(result_losses_txt)
+
+with open(result_losses, 'w') as file:
+    file.write(result_losses_txt)
 
 model = {
     'model': m,
