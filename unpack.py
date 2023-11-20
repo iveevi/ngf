@@ -99,11 +99,11 @@ for root, dirs, files in os.walk(results):
         print('  > f:', f.shape)
 
         file = file.split('.')[0]
-        lerper = file.split('-')[1]
-        print('  > lerper: %s' % lerper)
 
-        ker = lerps[lerper]
-        print('  > clerp: %s' % ker)
+        ker = data['kernel']
+        print('  > kernel:', ker)
+        ker = lerps[ker]
+        print('  > clerp:', ker)
 
         # Compute byte size of the representation
         feature_bytes = f.numel() * f.element_size()
