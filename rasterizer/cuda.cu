@@ -1,427 +1,238 @@
 #include "common.hpp"
 
-// TODO: batch by each (or several complexes; set some maximum cache/interim memory amt)
-// CUDA error checking
-#define CUDA_CHECK_ERROR()                                                     				\
-	{                                                                            			\
-		cudaError_t e = cudaGetLastError();                                        		\
-		ulog_assert(e == cudaSuccess, "CUDA_CHECK_ERROR", "CUDA error %d: %s [%s:%d]\n", e, 	\
-			cudaGetErrorString(e), __FILE__, __LINE__);					\
-	}
+// CUDA interpolation kernel
+// Batch size should be (complexes [grid.x], sample rate [block.x], sample rate [block.y])
+struct interpolate_kernel_info {
+	glm::vec3        *__restrict__ lp;
+	float            *__restrict__ lf;
 
-// CUDA MLP input lerping and embedding for all complexes
-struct EmbedInfo {
-	uint32_t                feature_count;
-	uint32_t                complex_count;
-	const glm::vec3 *__restrict__ vertices;
-	const float     *__restrict__ features;
+	const glm::ivec4 *__restrict__ complexes;
+	const glm::vec3  *__restrict__ vertices;
+	const float      *__restrict__ features;
+
+	uint32_t                       sample_rate;
+	uint32_t                       feature_size;
 };
 
 __global__
-void lerp_and_embed(float *__restrict__ embedded, EmbedInfo info, glm::uvec4 complex, uint32_t sample_rate)
+static void interpolate_kernel(interpolate_kernel_info kinfo)
 {
-	// TODO: shared memomory the features and vertices in the complex
-	// Simple 2D work group
-	uint32_t i = threadIdx.x;
-	uint32_t j = threadIdx.y;
-	uint32_t b = blockIdx.x;
+	uint32_t cid = blockIdx.x;
+	uint32_t ix  = threadIdx.x;
+	uint32_t iy  = threadIdx.y;
 
-	if (i >= sample_rate || j >= sample_rate) {
-		constexpr uint32_t L   = 8;
-		uint32_t embedded_size = info.feature_count + 3 * (2 * L + 1);
-		uint32_t offset        = (i * sample_rate + j) * embedded_size;
+	const glm::ivec4 complex = kinfo.complexes[cid];
 
-		for (uint32_t k = 0; k < embedded_size; k++)
-			embedded[offset + k] = 0.0f;
+	const glm::vec3 v00 = kinfo.vertices[complex.x];
+	const glm::vec3 v10 = kinfo.vertices[complex.y];
+	const glm::vec3 v01 = kinfo.vertices[complex.w];
+	const glm::vec3 v11 = kinfo.vertices[complex.z];
 
-		return;
+	const float *f00 = &kinfo.features[complex.x * kinfo.feature_size];
+	const float *f10 = &kinfo.features[complex.y * kinfo.feature_size];
+	const float *f01 = &kinfo.features[complex.w * kinfo.feature_size];
+	const float *f11 = &kinfo.features[complex.z * kinfo.feature_size];
+
+	float u = (float) ix / (kinfo.sample_rate - 1);
+	float v = (float) iy / (kinfo.sample_rate - 1);
+
+	// Destination index
+	uint32_t did = (cid * kinfo.sample_rate + ix) * kinfo.sample_rate + iy;
+
+	// Vertex interpolation
+	glm::vec3 lp00 = v00 * (1 - u) * (1 - v);
+	glm::vec3 lp10 = v10 * u * (1 - v);
+	glm::vec3 lp01 = v01 * (1 - u) * v;
+	glm::vec3 lp11 = v11 * u * v;
+
+	kinfo.lp[did] = lp00 + lp10 + lp01 + lp11;
+
+	// Feature interpolation
+	for (uint32_t k = 0; k < kinfo.feature_size; k++) {
+		float f00k = f00[k] * (1 - u) * (1 - v);
+		float f10k = f10[k] * u * (1 - v);
+		float f01k = f01[k] * (1 - u) * v;
+		float f11k = f11[k] * u * v;
+		kinfo.lf[did * kinfo.feature_size + k] = f00k + f10k + f01k + f11k;
 	}
+}
 
-	glm::vec3 v00 = info.vertices[complex.x];
-	glm::vec3 v10 = info.vertices[complex.y];
-	glm::vec3 v01 = info.vertices[complex.z];
-	glm::vec3 v11 = info.vertices[complex.w];
+// End to end evaluation
+// Batch size should be (batch [grid.x], batch size [block.x]) [total to vertex count]
+struct eval_kernel_info {
+	glm::vec3   *__restrict__ lp;
+	const float *__restrict__ lf;
+	const float *__restrict__ Wm_c[4];
 
-	float u = (float) i / (float) (sample_rate - 1);
-	float v = (float) j / (float) (sample_rate - 1);
+	float                     s0;
+	float                     s1;
+	float                     s2;
 
-	// Compute the lerped feature and put into the embedded buffer
-	constexpr uint32_t L   = 8;
-	uint32_t embedded_size = info.feature_count + 3 * (2 * L + 1);
-	uint32_t offset        = (i * sample_rate + j) * embedded_size;
+	uint32_t                  feature_size;
+	uint32_t                  vertex_count;
+};
 
-	for (size_t k = 0; k < info.feature_count; k++) {
-		float f00k = info.features[complex.x * info.feature_count + k];
-		float f10k = info.features[complex.y * info.feature_count + k];
-		float f11k = info.features[complex.w * info.feature_count + k];
-		float f01k = info.features[complex.z * info.feature_count + k];
-		embedded[offset + k] = f00k * u * v
-			+ f10k * (1.0f - u) * v
-			+ f11k * u * (1.0f - v)
-			+ f01k * (1.0f - u) * (1.0f - v);
+__forceinline__ __device__
+static void matmul(const float *__restrict__ Wm_c, const float *__restrict__ X, float *__restrict__ Y, uint32_t in, uint32_t out)
+{
+	for (uint32_t i = 0; i < out; i++) {
+		float sum = Wm_c[i * (in + 1) + in];
+		for (uint32_t j = 0; j < in; j++)
+			sum += Wm_c[i * (in + 1) + j] * X[j];
+		Y[i] = sum;
 	}
+}
 
-	// Lerp the vertex position
-	glm::vec3 P = v00 * u * v
-		      + v10 * (1.0f - u) * v
-		      + v11 * u * (1.0f - v)
-		      + v01 * (1.0f - u) * (1.0f - v);
-
-	// Fill the rest of the embedded buffer with the positional encoding
-	embedded[offset + info.feature_count + 0] = P.x;
-	embedded[offset + info.feature_count + 1] = P.y;
-	embedded[offset + info.feature_count + 2] = P.z;
-
-	#pragma unroll
-	for (uint32_t k = 0; k < L; k++) {
-		float x = P.x * powf(2.0f, (float) k);
-		float y = P.y * powf(2.0f, (float) k);
-		float z = P.z * powf(2.0f, (float) k);
-
-		embedded[offset + info.feature_count + 6 * k + 3] = sinf(x);
-		embedded[offset + info.feature_count + 6 * k + 4] = sinf(y);
-		embedded[offset + info.feature_count + 6 * k + 5] = sinf(z);
-		embedded[offset + info.feature_count + 6 * k + 6] = cosf(x);
-		embedded[offset + info.feature_count + 6 * k + 7] = cosf(y);
-		embedded[offset + info.feature_count + 6 * k + 8] = cosf(z);
+__forceinline__ __device__
+static void activate(float *__restrict__ Y, float s, uint32_t N)
+{
+	for (uint32_t i = 0; i < N; i++) {
+		float x = Y[i];
+		float softplus = log(1 + exp(s * x));
+		float sin = sinf(s * x);
+		float gauss = exp(-x * x / s);
+		Y[i] = softplus * sin * gauss;
 	}
 }
 
 __global__
-void lerp_and_embed_parallel(float *__restrict__ embedded, EmbedInfo info, glm::uvec4 *complexes, uint32_t sample_rate)
+static void eval_kernel(eval_kernel_info kinfo)
 {
-	// TODO: shared memomory the features and vertices in the complex
-	// Simple 2D work group
-	uint32_t i = threadIdx.x;
-	uint32_t j = threadIdx.y;
-	uint32_t b = blockIdx.x;
+	uint32_t vid = blockIdx.x * blockDim.x + threadIdx.x;
 
-	if (i >= sample_rate || j >= sample_rate)
-		return;
+	// Intermediary variables
+	// TODO: or split into smaller blocks at a time?
+	float embedding[83];
+	float layer1[64];
+	float layer2[64];
+	float layer3[64];
+	float layer4[3];
 
-	if (b >= info.complex_count)
-		return;
+	// TODO: size verification?
 
-	glm::uvec4 complex = complexes[b];
+	// Fill the embedding
+	glm::vec3    p = kinfo.lp[vid];
+	const float *f = &kinfo.lf[vid * kinfo.feature_size];
 
-	glm::vec3 v00 = info.vertices[complex.x];
-	glm::vec3 v10 = info.vertices[complex.y];
-	glm::vec3 v01 = info.vertices[complex.z];
-	glm::vec3 v11 = info.vertices[complex.w];
+	uint32_t j = 0;
+	for (uint32_t i = 0; i < kinfo.feature_size; i++)
+		embedding[j++] = f[i];
 
-	float u = (float) i / (float) (sample_rate - 1);
-	float v = (float) j / (float) (sample_rate - 1);
+	embedding[j++] = p.x;
+	embedding[j++] = p.y;
+	embedding[j++] = p.z;
 
-	// Compute the lerped feature and put into the embedded buffer
-	constexpr uint32_t L   = 8;
-	uint32_t embedded_size = info.feature_count + 3 * (2 * L + 1);
-	uint32_t complex_offset = b * sample_rate * sample_rate;
-	uint32_t offset        = (i * sample_rate + j) * embedded_size + complex_offset * embedded_size;
+	for (uint32_t L = 0; L < FREQUENCIES; L++) {
+		float x = p.x * powf(2, L);
+		float y = p.y * powf(2, L);
+		float z = p.z * powf(2, L);
 
-	for (size_t k = 0; k < info.feature_count; k++) {
-		float f00k = info.features[complex.x * info.feature_count + k];
-		float f10k = info.features[complex.y * info.feature_count + k];
-		float f11k = info.features[complex.w * info.feature_count + k];
-		float f01k = info.features[complex.z * info.feature_count + k];
-		embedded[offset + k] = f00k * u * v
-			+ f10k * (1.0f - u) * v
-			+ f11k * u * (1.0f - v)
-			+ f01k * (1.0f - u) * (1.0f - v);
+		embedding[j++] = sinf(x);
+		embedding[j++] = sinf(y);
+		embedding[j++] = sinf(z);
+		embedding[j++] = cosf(x);
+		embedding[j++] = cosf(y);
+		embedding[j++] = cosf(z);
 	}
 
-	// Lerp the vertex position
-	glm::vec3 P = v00 * u * v
-		      + v10 * (1.0f - u) * v
-		      + v11 * u * (1.0f - v)
-		      + v01 * (1.0f - u) * (1.0f - v);
+	// Compute each of the layers
+	matmul(kinfo.Wm_c[0], embedding, layer1, 83, 64);
+	activate(layer1, kinfo.s0, 64);
 
-	// Fill the rest of the embedded buffer with the positional encoding
-	embedded[offset + info.feature_count + 0] = P.x;
-	embedded[offset + info.feature_count + 1] = P.y;
-	embedded[offset + info.feature_count + 2] = P.z;
+	matmul(kinfo.Wm_c[1], layer1, layer2, 64, 64);
+	activate(layer2, kinfo.s1, 64);
 
-	#pragma unroll
-	for (uint32_t k = 0; k < L; k++) {
-		float x = P.x * powf(2.0f, (float) k);
-		float y = P.y * powf(2.0f, (float) k);
-		float z = P.z * powf(2.0f, (float) k);
+	matmul(kinfo.Wm_c[2], layer2, layer3, 64, 64);
+	activate(layer3, kinfo.s2, 64);
 
-		embedded[offset + info.feature_count + 6 * k + 3] = sinf(x);
-		embedded[offset + info.feature_count + 6 * k + 4] = sinf(y);
-		embedded[offset + info.feature_count + 6 * k + 5] = sinf(z);
-		embedded[offset + info.feature_count + 6 * k + 6] = cosf(x);
-		embedded[offset + info.feature_count + 6 * k + 7] = cosf(y);
-		embedded[offset + info.feature_count + 6 * k + 8] = cosf(z);
-	}
+	matmul(kinfo.Wm_c[3], layer3, layer4, 64, 3);
+
+	// Add the displacement to the vertex
+	kinfo.lp[vid] += glm::vec3(layer4[0], layer4[1], layer4[2]);
 }
 
-void lerp_and_embed(uint32_t sample_rate)
+// Evaluate the neural network (on CUDA device)
+std::vector <glm::vec3> eval_cuda(uint32_t sample_rate)
 {
-	constexpr uint32_t L = 8;
+	// Cache context
+	struct {
+		glm::vec3 *lp = nullptr;
+		float     *lf = nullptr;
+	} static context;
 
-	// Always start with the first interim buffer
-	float *d_embedded = g_dnn.d_embedded;
-	ulog_info("lerped_and_embed", "embedding %d complexes\n", g_sdc.complex_count);
+	ulog_info("eval_cuda", "sample_rate = %u\n", sample_rate);
 
-	uint32_t embedded_size = g_sdc.feature_count + 3 * (2 * L + 1);
+	// Allocate memory on CUDA device
+	// glm::vec3 *lp;
+	// float     *lf;
 
-	EmbedInfo info = {
-		.feature_count = g_sdc.feature_count,
-		.complex_count = g_sdc.complex_count,
-		.vertices = g_sdc.d_vertices,
-		.features = g_sdc.d_features,
-	};
+	uint32_t vertex_count = sample_rate * sample_rate * g_sdc.complex_count;
+	if (context.lp == nullptr || context.lf == nullptr) {
+		ulog_info("eval_cuda", "Allocating memory for context\n");
 
-	dim3 block_dim(sample_rate, sample_rate);
-	dim3 grid_dim(g_sdc.complex_count);
-
-	lerp_and_embed_parallel <<< grid_dim, block_dim >>> (d_embedded, info, g_sdc.d_complexes, sample_rate);
-
-	cudaDeviceSynchronize();
-	CUDA_CHECK_ERROR();
-}
-
-template <float (*act)(float)>
-__global__
-void matmul_biased_parallel(float *__restrict__ dst_base, const float *__restrict__ W_base, const float *__restrict__ X_base, uint32_t in, uint32_t out, uint32_t sample_rate)
-{
-	// Assumes that X is a batch of dimension in x batch_size
-	// Assumes that W is a matrix of dimension out x (in + 1)
-
-	// TODO: try putting the matrix into closer shared memory instead of constant memory
-	// or into constant cache...
-
-	// Computes as many output features as there are threads (horizontal parallelism)
-	uint32_t i = threadIdx.x;
-	uint32_t j = blockIdx.x;
-
-	// Register the input
-	float X_local[64];
-	const float *X = &X_base[in * i + j * sample_rate * sample_rate * in];
-	for (size_t k = 0; k < in; k++)
-		X_local[k] = X[k];
-
-	// TODO: shared input...
-	float *dst = dst_base + i * out + j * sample_rate * sample_rate * out;
-
-	for (size_t n = 0; n < out; n++) {
-		const float *W = &W_base[n * (in + 1)];
-
-		float sum = W[in];
-		for (size_t k = 0; k < in; k++)
-			sum += W[k] * X_local[k];
-
-		if constexpr (act == nullptr)
-			dst[n] = sum;
-		else
-			dst[n] = act(sum);
-	}
-}
-
-__global__
-void displace(float *embedded_base, float *displacement_base, uint32_t embedded_size, uint32_t feature_count, uint32_t vertex_count)
-{
-	uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-	uint32_t stride = blockDim.x * gridDim.x;
-
-	// Writes to the displacement buffer
-	for (uint32_t k = i; k < vertex_count; k += stride) {
-		float *displacement = displacement_base + k * 3;
-		float *embedded = embedded_base + k * embedded_size + feature_count;
-
-		displacement[0] += embedded[0];
-		displacement[1] += embedded[1];
-		displacement[2] += embedded[2];
-	}
-}
-
-#include <glm/gtx/string_cast.hpp>
-
-eval_cuda_result eval_cuda(const glm::mat4 &proj, const glm::mat4 &view, uint32_t sample_rate)
-{
-	constexpr uint32_t L = 8;
-
-	uint32_t embedded_size = g_sdc.feature_count + 3 * (2 * L + 1);
-
-	// Evaluate sampling rates for each complex (min 2, max 16)
-	glm::mat4 model(1.0f); // assuming idle model matrix
-
-	std::vector <uint32_t> sample_rates(g_sdc.complex_count);
-
-	float resolution = 1000.0f;
-	for (uint32_t i = 0; i < g_sdc.complex_count; i++) {
-		const glm::uvec4 &complex = g_sdc.complexes[i];
-
-		glm::vec4 v0(g_sdc.vertices[complex.x], 1.0f);
-		glm::vec4 v1(g_sdc.vertices[complex.y], 1.0f);
-		glm::vec4 v2(g_sdc.vertices[complex.z], 1.0f);
-		glm::vec4 v3(g_sdc.vertices[complex.w], 1.0f);
-
-		// Get distnce from camera to the center of the quad
-		// glm::vec3 center = (v0 + v1 + v2 + v3) / 4.0f;
-		//
-		// glm::vec3 center_view = glm::vec3(view[3][0], view[3][1], view[3][2]);
-		// float distance = glm::length(center - center_view);
-		//
-		// // Get sampling rate as a function of distance
-		// float rate = std::clamp(log2f(resolution/distance), 4.0f, 16.0f);
-
-		// // Project vertices
-		v0 = proj * view * model * v0;
-		v1 = proj * view * model * v1;
-		v2 = proj * view * model * v2;
-		v3 = proj * view * model * v3;
-
-		// Compute area of the resulting quad
-		glm::vec2 pv0 = glm::vec2(v0) / v0.w;
-		glm::vec2 pv1 = glm::vec2(v1) / v1.w;
-		glm::vec2 pv2 = glm::vec2(v2) / v2.w;
-		glm::vec2 pv3 = glm::vec2(v3) / v3.w;
-
-		glm::vec2 e0 = pv1 - pv0;
-		glm::vec2 e1 = pv2 - pv1;
-		glm::vec2 e2 = pv0 - pv2;
-
-		// Triangle 1 (0 -- 1 -- 2)
-		float a0 = glm::length(e0) * glm::length(e1) * 0.5f;
-
-		// Triangle 2 (0 -- 2 -- 3)
-		float a1 = glm::length(e2) * glm::length(e0) * 0.5f;
-
-		// Compute the sampling rate
-		float area = a0 + a1;
-		float pixels = area * resolution * resolution;
-		// float pixels_per_triangle = pixels / (2.0f *
-		// printf("area: %f, pixels: %f\n", area, pixels);
-
-		// Find smallest resolution which results in at least 1-4 pixels per triangles
-		uint32_t rate = 2;
-		while (pixels/(2.0f * rate * rate) > 256.0f && rate < 16)
-			rate++;
-
-		sample_rates[i] = rate;
-
-		// TODO: also do frustum culling here?
-
-		// printf("complex: %d pixels, rate %d\n", (int) pixels, rate);
+		cudaMalloc(&context.lp, vertex_count * sizeof(glm::vec3));
+		cudaMalloc(&context.lf, vertex_count * g_sdc.feature_size * sizeof(float));
 	}
 
-	// TODO: reset log timer manaully here?
-	// ulog_info("eval_cuda", "embedding %d complexes\n", g_sdc.complex_count);
-	// lerp_and_embed(sample_rate);
-	// cudaDeviceSynchronize();
-	// CUDA_CHECK_ERROR();
+	// Prepare for kernel and launch it
+	interpolate_kernel_info iinfo;
+	iinfo.lp = context.lp;
+	iinfo.lf = context.lf;
 
-	// Compute triangle indices (TODO: atomic additions from CUDA kernel)
-	std::vector <std::array <uint32_t, 3>> triangles;
-	for (uint32_t i = 0; i < g_sdc.complex_count; i++) {
-		uint32_t rate = sample_rates[i];
+	iinfo.complexes = g_sdc.d_complexes;
+	iinfo.vertices  = g_sdc.d_vertices;
+	iinfo.features  = g_sdc.d_features;
 
-		// Compute triangle indices
-		// TODO: this is using uniform evaluation...
-		uint32_t offset = i * sample_rate * sample_rate;
-		for (uint32_t j = 0; j < rate - 1; j++) {
-			for (uint32_t k = 0; k < rate - 1; k++) {
-				uint32_t i0 = offset + j * rate + k;
-				uint32_t i1 = i0 + 1;
-				uint32_t i2 = offset + (j + 1) * rate + k;
-				uint32_t i3 = i2 + 1;
-
-				triangles.push_back({ i0, i1, i2 });
-				triangles.push_back({ i1, i2, i3 });
-			}
-		}
-	}
+	iinfo.sample_rate = sample_rate;
+	iinfo.feature_size = g_sdc.feature_size;
 
 	{
-		// Always start with the first interim buffer
-		float *d_embedded = g_dnn.d_embedded;
-		ulog_info("lerped_and_embed", "embedding %d complexes\n", g_sdc.complex_count);
+		ulog_info("eval_cuda", "interpolate_kernel\n");
 
-		uint32_t embedded_size = g_sdc.feature_count + 3 * (2 * L + 1);
+		// TODO: scoped timer
+		dim3 grid  (g_sdc.complex_count);
+		dim3 block (sample_rate, sample_rate);
 
-		EmbedInfo info = {
-			.feature_count = g_sdc.feature_count,
-			.complex_count = g_sdc.complex_count,
-			.vertices = g_sdc.d_vertices,
-			.features = g_sdc.d_features,
-		};
-
-		for (size_t i = 0; i < g_sdc.complex_count; i++) {
-			glm::uvec4 complex = g_sdc.complexes[i];
-
-			dim3 block_dim(sample_rates[i], sample_rates[i]);
-			dim3 grid_dim(1, 1);
-
-			lerp_and_embed <<< grid_dim, block_dim >>> (d_embedded, info, complex, sample_rates[i]);
-
-			d_embedded += sample_rate * sample_rate * embedded_size;
-		}
-
-		cudaDeviceSynchronize();
-		CUDA_CHECK_ERROR();
+		interpolate_kernel <<<grid, block>>> (iinfo);
+		CUDA_CHECK_SYNCED();
 	}
 
-	// Evaluate the first layer
-	ulog_info("eval_cuda", "evaluating first layer\n");
+	// Evaluate the neural network
+	eval_kernel_info einfo;
+	einfo.lp = context.lp;
+	einfo.lf = context.lf;
 
-	dim3 block_dim(sample_rate * sample_rate);
-	dim3 grid_dim(g_sdc.complex_count);
+	einfo.Wm_c[0] = g_dnn.d_Wm_c[0];
+	einfo.Wm_c[1] = g_dnn.d_Wm_c[1];
+	einfo.Wm_c[2] = g_dnn.d_Wm_c[2];
+	einfo.Wm_c[3] = g_dnn.d_Wm_c[3];
 
-	float *d_out = g_dnn.d_interim_two;
-	float *d_in = g_dnn.d_embedded;
+	einfo.s0 = g_dnn.constants[0];
+	einfo.s1 = g_dnn.constants[1];
+	einfo.s2 = g_dnn.constants[2];
 
-	matmul_biased_parallel <sinf> <<< grid_dim, block_dim >>> (d_out, g_dnn.d_Wm0c, d_in, embedded_size, g_dnn.W0, sample_rate);
+	einfo.feature_size = g_sdc.feature_size;
+	einfo.vertex_count = vertex_count;
 
-	cudaDeviceSynchronize();
-	CUDA_CHECK_ERROR();
+	{
+		ulog_info("eval_cuda", "eval_kernel\n");
 
-	// Evaluate the second layer
-	ulog_info("eval_cuda", "evaluating second layer\n");
+		dim3 grid  (g_sdc.complex_count);
+		dim3 block (sample_rate * sample_rate);
 
-	d_out = g_dnn.d_interim_one;
-	d_in = g_dnn.d_interim_two;
+		eval_kernel <<<grid, block>>> (einfo);
+		CUDA_CHECK_SYNCED();
+	}
 
-	matmul_biased_parallel <sinf> <<< grid_dim, block_dim >>> (d_out, g_dnn.d_Wm1c, d_in, g_dnn.W0, g_dnn.W1, sample_rate);
+	// TODO: cache context
+	ulog_info("eval_cuda", "finished computations, doing final memory transactions\n");
 
-	cudaDeviceSynchronize();
-	CUDA_CHECK_ERROR();
+	std::vector <glm::vec3> result(vertex_count);
+	cudaMemcpy(result.data(), context.lp, vertex_count * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+	CUDA_CHECK_SYNCED();
 
-	// Evaluate the final layer
-	ulog_info("eval_cuda", "evaluating final layer\n");
+	// cudaFree(lp);
+	// cudaFree(lf);
 
-	d_out = g_dnn.d_interim_two;
-	d_in = g_dnn.d_interim_one;
-
-	matmul_biased_parallel <nullptr> <<< grid_dim, block_dim >>> (d_out, g_dnn.d_Wm2c, d_in, g_dnn.W1, g_dnn.W2, sample_rate);
-
-	cudaDeviceSynchronize();
-	CUDA_CHECK_ERROR();
-
-	// Combine with original vertices
-	ulog_info("eval_cuda", "combining with original vertices\n");
-
-	// TODO: whiy is this part slow? time all the parts...
-	uint32_t vertex_count = sample_rate * sample_rate * g_sdc.complex_count;
-	block_dim = 256;
-	grid_dim = (vertex_count + block_dim.x - 1) / block_dim.x;
-
-	printf("vertex_count = %u\n", vertex_count);
-	printf("  block_dim = %u\n", block_dim.x);
-	printf("  grid_dim = %u\n", grid_dim.x);
-
-	displace <<< grid_dim, block_dim >>> (g_dnn.d_embedded, g_dnn.d_interim_two, embedded_size, g_sdc.feature_count, vertex_count);
-	cudaDeviceSynchronize();
-	CUDA_CHECK_ERROR();
-
-	std::vector <glm::vec3> buffer;
-	buffer.resize(g_sdc.complex_count * sample_rate * sample_rate);
-	cudaMemcpy(buffer.data(), g_dnn.d_interim_two, buffer.size() * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
-
-	printf("displacements[0] = %f %f %f\n", buffer[0].x, buffer[0].y, buffer[0].z);
-
-	ulog_info("eval_cuda", "finished evaluation\n");
-
-	return { buffer, triangles, triangles.size() };
+	return result;
 }
-

@@ -21,134 +21,168 @@ std::vector <float> combine(const std::vector <float> &W, const std::vector <flo
 	return Wc;
 }
 
-// TODO: Automatic resolution derived from the projected area of the complex
-
 void dnn_read(FILE *file)
 {
 	// Read neural network data
 	ulog_info("dnn_read", "Neural Network:\n");
 
-	uint32_t W0 = 0;
-	uint32_t H0 = 0;
+	// Prepare references
+	struct layer_info {
+		std::vector <float> Wm;
+		std::vector <float> Bs;
+		std::vector <float> Wm_c;
 
-	fread((char *) &W0, sizeof(W0), 1, file);
-	fread((char *) &H0, sizeof(H0), 1, file);
-	ulog_info("dnn_read", "  > Layer 1: %d x %d + %d\n", W0, H0, W0);
-	ulog_assert(W0 <= DNN_INTERIM_SIZE, "dnn_read", "W0 too large\n");
-	ulog_assert(H0 <= DNN_INTERIM_SIZE, "dnn_read", "H0 too large\n");
+		uint32_t W;
+		uint32_t H;
+	};
 
-	std::vector <float> Wm0(W0 * H0);
-	std::vector <float> Bs0(W0);
+	std::array <layer_info, 4> layers;
 
-	fread((char *) Wm0.data(), sizeof(float), W0 * H0, file);
-	fread((char *) Bs0.data(), sizeof(float), W0, file);
+	// Read all the weight matrices
+	for (uint32_t i = 0; i < layers.size(); i++) {
+		uint32_t W = 0;
+		uint32_t H = 0;
 
-	// Combined layer (as one matrix)
-	std::vector <float> Wm0c = combine(Wm0, Bs0);
+		fread((char *) &W, sizeof(W), 1, file);
+		fread((char *) &H, sizeof(H), 1, file);
 
-	uint32_t W1 = 0;
-	uint32_t H1 = 0;
+		ulog_info("dnn_read", "  > Layer %d: %d x %d\n", i, W, H, W);
 
-	fread((char *) &W1, sizeof(W1), 1, file);
-	fread((char *) &H1, sizeof(H1), 1, file);
-	ulog_info("dnn_read", "  > Layer 2: %d x %d + %d\n", W1, H1, W1);
-	ulog_assert(W1 <= DNN_INTERIM_SIZE, "dnn_read", "W1 too large\n");
-	ulog_assert(H1 <= DNN_INTERIM_SIZE, "dnn_read", "H1 too large\n");
+		layers[i].Wm = std::vector <float> (W * H);
+		layers[i].W  = W;
+		layers[i].H  = H;
+		fread((char *) layers[i].Wm.data(), sizeof(float), W * H, file);
+	}
 
-	std::vector <float> Wm1(W1 * H1);
-	std::vector <float> Bs1(W1);
+	// Read all the biases
+	for (uint32_t i = 0; i < layers.size(); i++) {
+		uint32_t W = 0;
 
-	fread((char *) Wm1.data(), sizeof(float), W1 * H1, file);
-	fread((char *) Bs1.data(), sizeof(float), W1, file);
+		fread((char *) &W, sizeof(W), 1, file);
 
-	std::vector <float> Wm1c = combine(Wm1, Bs1);
+		// Verify that the dimensions match
+		ulog_assert(W == layers[i].W, "dnn_read", "H (%d) != H (%d)\n", W, layers[i].W);
 
-	uint32_t W2 = 0;
-	uint32_t H2 = 0;
+		layers[i].Bs = std::vector <float> (W);
+		fread((char *) layers[i].Bs.data(), sizeof(float), W, file);
 
-	fread((char *) &W2, sizeof(W2), 1, file);
-	fread((char *) &H2, sizeof(H2), 1, file);
-	ulog_info("dnn_read", "  > Layer 3: %d x %d + %d\n", W2, H2, W2);
-	ulog_assert(W2 <= DNN_INTERIM_SIZE, "dnn_read", "W2 too large\n");
-	ulog_assert(H2 <= DNN_INTERIM_SIZE, "dnn_read", "H2 too large\n");
+		// Combine weights and biases into a single matrix
+		layers[i].Wm_c = combine(layers[i].Wm, layers[i].Bs);
+	}
 
-	std::vector <float> Wm2(W2 * H2);
-	std::vector <float> Bs2(W2);
+	// Verify sizes and transfer properties
+	uint32_t ffwd_size = g_sdc.ffwd_size();
+	for (uint32_t i = 0; i < layers.size(); i++) {
+		auto &layer = layers[i];
 
-	fread((char *) Wm2.data(), sizeof(float), W2 * H2, file);
-	fread((char *) Bs2.data(), sizeof(float), W2, file);
+		g_dnn.Wm_c[i] = layer.Wm_c;
+		g_dnn.Wm[i]   = layer.Wm;
+		g_dnn.Bs[i]   = layer.Bs;
+		g_dnn.Ws[i]   = layer.W;
+		g_dnn.Hs[i]   = layer.H;
 
-	std::vector <float> Wm2c = combine(Wm2, Bs2);
+		ulog_assert(layer.H == ffwd_size, "dnn_read", "H (%d) != ffwd_size (%d)\n", layer.H, ffwd_size);
+                ulog_assert(layer.Wm_c.size() % (ffwd_size + 1) == 0,
+                            "dnn_read",
+                            "Wm_c.size() (%d) %% (ffwd_size + 1) (%d) != 0 "
+                            "(incompatible weight matrix)\n",
+                            layer.Wm_c.size(), ffwd_size + 1);
 
-	g_dnn.W0 = W0;
-	g_dnn.H0 = H0;
+                ffwd_size = layer.W;
+	}
 
-	g_dnn.W1 = W1;
-	g_dnn.H1 = H1;
+	ulog_assert(ffwd_size == 3, "dnn_read", "ffwd_size (%d) != 3 (vertex size)\n", ffwd_size);
 
-	g_dnn.W2 = W2;
-	g_dnn.H2 = H2;
+	// Allocating and copying to device
+	for (uint32_t i = 0; i < layers.size(); i++) {
+		auto &layer = layers[i];
 
-	g_dnn.Wm0c = Wm0c;
-	g_dnn.Wm1c = Wm1c;
-	g_dnn.Wm2c = Wm2c;
+		cudaMalloc(&g_dnn.d_Wm_c[i], layer.Wm_c.size() * sizeof(float));
+		cudaMemcpy(g_dnn.d_Wm_c[i], layer.Wm_c.data(), layer.Wm_c.size() * sizeof(float), cudaMemcpyHostToDevice);
 
-	// Transfer to device
-	cudaMalloc((void **) &g_dnn.d_Wm0c, Wm0c.size() * sizeof(float));
-	cudaMalloc((void **) &g_dnn.d_Wm1c, Wm1c.size() * sizeof(float));
-	cudaMalloc((void **) &g_dnn.d_Wm2c, Wm2c.size() * sizeof(float));
-
-	cudaMemcpy(g_dnn.d_Wm0c, Wm0c.data(), Wm0c.size() * sizeof(float), cudaMemcpyHostToDevice);
-	cudaMemcpy(g_dnn.d_Wm1c, Wm1c.data(), Wm1c.size() * sizeof(float), cudaMemcpyHostToDevice);
-	cudaMemcpy(g_dnn.d_Wm2c, Wm2c.data(), Wm2c.size() * sizeof(float), cudaMemcpyHostToDevice);
+		CUDA_CHECK_SYNCED();
+	}
 }
 
 void sdc_read(FILE *file)
 {
+	ulog_info("sdc_read", "Neural Subdivision Complexes:\n");
+
+	// Read top level constants
+	// float constants[3];
+	fread((char *) g_dnn.constants.data(), sizeof(float), 3, file);
+
+	// TODO: make host device...
+	float s0 = g_dnn.constants[0];
+	float s1 = g_dnn.constants[1];
+	float s2 = g_dnn.constants[2];
+
+	g_dnn.activations = {
+		[s0](float x) {
+			float softplus = log(1 + exp(s0 * x));
+			float sin = sinf(s0 * x);
+			float gauss = exp(-x * x / s0);
+			return softplus * sin * gauss;
+		},
+
+		[s1](float x) {
+			float softplus = log(1 + exp(s1 * x));
+			float sin = sinf(s1 * x);
+			float gauss = exp(-x * x / s1);
+			return softplus * sin * gauss;
+		},
+
+		[s2](float x) {
+			float softplus = log(1 + exp(s2 * x));
+			float sin = sinf(s2 * x);
+			float gauss = exp(-x * x / s2);
+			return softplus * sin * gauss;
+		}
+	};
+
+	ulog_info("sdc_read", "  > %f %f %f\n", s0, s1, s2);
+
 	// Read size data
 	uint32_t sizes[3];
 	fread((char *) sizes, sizeof(uint32_t), 3, file);
 
 	g_sdc.complex_count = sizes[0];
 	g_sdc.vertex_count = sizes[1];
-	g_sdc.feature_count = sizes[2];
+	g_sdc.feature_size = sizes[2];
 
 	ulog_info("sdc_read", "Neural Subdivision Complexes:\n");
 	ulog_info("sdc_read", "  > %4d complexes\n", g_sdc.complex_count);
 	ulog_info("sdc_read", "  > %4d vertices\n", g_sdc.vertex_count);
-	ulog_info("sdc_read", "  > %4d encoding features\n", g_sdc.feature_count);
+	ulog_info("sdc_read", "  > %4d features [%2d]\n", g_sdc.vertex_count, g_sdc.feature_size);
 
 	// Read complexes data
-	std::vector <glm::uvec4> complexes(g_sdc.complex_count);
-	fread((char *) complexes.data(), sizeof(glm::uvec4), g_sdc.complex_count, file);
+	std::vector <glm::ivec4> complexes(g_sdc.complex_count);
+	fread((char *) complexes.data(), sizeof(glm::ivec4), g_sdc.complex_count, file);
 
 	// Read corner vertices, normals, and their features
 	std::vector <glm::vec3> vertices(g_sdc.vertex_count);
 	fread((char *) vertices.data(), sizeof(glm::vec3), g_sdc.vertex_count, file);
 
 	// Corner feature vectors
-	std::vector <float> features(g_sdc.vertex_count * g_sdc.feature_count);
-	fread((char *) features.data(), sizeof(float), g_sdc.vertex_count * g_sdc.feature_count, file);
+	std::vector <float> features(g_sdc.vertex_count * g_sdc.feature_size);
+	fread((char *) features.data(), sizeof(float), g_sdc.vertex_count * g_sdc.feature_size, file);
 
 	g_sdc.complexes = complexes;
 	g_sdc.vertices = vertices;
 	g_sdc.features = features;
 
 	// Transfer to device
-	cudaMalloc(&g_sdc.d_complexes, g_sdc.complex_count * sizeof(glm::uvec4));
+	cudaMalloc(&g_sdc.d_complexes, g_sdc.complex_count * sizeof(glm::ivec4));
 	cudaMalloc(&g_sdc.d_vertices, g_sdc.vertex_count * sizeof(glm::vec3));
-	cudaMalloc(&g_sdc.d_features, g_sdc.vertex_count * g_sdc.feature_count * sizeof(float));
+	cudaMalloc(&g_sdc.d_features, g_sdc.vertex_count * g_sdc.feature_size* sizeof(float));
 
-	cudaMemcpy(g_sdc.d_complexes, complexes.data(), g_sdc.complex_count * sizeof(glm::uvec4), cudaMemcpyHostToDevice);
+	cudaMemcpy(g_sdc.d_complexes, complexes.data(), g_sdc.complex_count * sizeof(glm::ivec4), cudaMemcpyHostToDevice);
 	cudaMemcpy(g_sdc.d_vertices, vertices.data(), g_sdc.vertex_count * sizeof(glm::vec3), cudaMemcpyHostToDevice);
-	cudaMemcpy(g_sdc.d_features, features.data(), g_sdc.vertex_count * g_sdc.feature_count * sizeof(float), cudaMemcpyHostToDevice);
+	cudaMemcpy(g_sdc.d_features, features.data(), g_sdc.vertex_count * g_sdc.feature_size * sizeof(float), cudaMemcpyHostToDevice);
+}
 
-	// Allocate the intermediate buffers
-	// cudaMalloc((void **) &g_dnn.d_interim_one, DNN_INTERIM_SIZE * sizeof(float));
-	// cudaMalloc((void **) &g_dnn.d_interim_two, DNN_INTERIM_SIZE * sizeof(float));
-
-	// TODO: reduce to only a few complexes
-	cudaMalloc((void **) &g_dnn.d_embedded, DNN_INTERIM_SIZE * sizeof(float) * sizes[0] * COMPLEX_BATCH_SIZE);
-	cudaMalloc((void **) &g_dnn.d_interim_one, DNN_INTERIM_SIZE * sizeof(float) * sizes[0] * COMPLEX_BATCH_SIZE);
-	cudaMalloc((void **) &g_dnn.d_interim_two, DNN_INTERIM_SIZE * sizeof(float) * sizes[0] * COMPLEX_BATCH_SIZE);
+void read(FILE *file)
+{
+	sdc_read(file);
+	dnn_read(file);
 }

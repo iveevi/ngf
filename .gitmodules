@@ -1,9 +1,9 @@
 [submodule "glm"]
-	path = glm
+	path = rasterizer/glm
 	url = https://github.com/g-truc/glm
 [submodule "littlevk"]
-	path = littlevk
+	path = rasterizer/littlevk
 	url = https://github.com/vedavamadathil/littlevk.git
 [submodule "imgui"]
-	path = imgui
+	path = rasterizer/imgui
 	url = https://github.com/ocornut/imgui.git

@@ -1,7 +1,6 @@
 #include "common.hpp"
 
 // TODO: benchmark execution times, and also in CUDA
-
 // TODO: group the complexes by proximity and batch the culling and drawing processes...
 
 std::vector <std::array <uint32_t, 3>> nsc_indices(const std::vector <glm::vec3> &vertices, size_t complexe_count, size_t sample_rate)
@@ -82,10 +81,11 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	sdc_read(file);
-	dnn_read(file);
+	// Read neural subdivision complex
+	read(file);
 
 	constexpr uint32_t rate = 16;
+
 	// TODO: verbose logging
 	static_assert(rate <= MAXIMUM_SAMPLE_RATE, "rate > MAXIMUM_SAMPLE_RATE");
 
@@ -99,18 +99,23 @@ int main(int argc, char *argv[])
 	vk::PhysicalDevice phdev;
 	phdev = littlevk::pick_physical_device(predicate);
 
-	Renderer renderer;
-	renderer.from(phdev);
+	Renderer renderer(phdev);
+	// renderer.from(phdev);
 
 	// Evaluate the surface
-	// std::vector <glm::vec3> vertices = eval_cuda(renderer.push_constants.proj, renderer.push_constants.view, rate);
-	std::vector <glm::vec3> vertices(g_sdc.complex_count * rate * rate);
-	std::vector <std::array <uint32_t, 3>> indices = nsc_indices(vertices, g_sdc.complex_count, rate);
-	std::vector <glm::vec3> normals = vertex_normals(vertices, indices);
 
-	printf("vertices: %d\n", vertices.size());
-	printf("normals: %d\n", normals.size());
-	printf("indices: %d\n", indices.size());
+	// std::vector <glm::vec3> vertices = eval_cuda(renderer.push_constants.proj, renderer.push_constants.view, rate);
+	// std::vector <glm::vec3> vertices(g_sdc.complex_count * rate * rate);
+
+	std::vector <glm::vec3> vertices = eval_cuda(rate);
+	std::vector <std::array <uint32_t, 3>> triangles = nsc_indices(vertices, g_sdc.complex_count, rate);
+	std::vector <glm::vec3> normals = vertex_normals(vertices, triangles);
+
+	// eval_cuda(rate);
+
+	printf("vertices:  %d\n", vertices.size());
+	printf("normals:   %d\n", normals.size());
+	printf("triangles: %d\n", triangles.size());
 
 	std::vector <glm::vec3> interleaved;
 	for (size_t i = 0; i < vertices.size(); i++) {
@@ -137,7 +142,7 @@ int main(int argc, char *argv[])
 			renderer.mem_props).unwrap(renderer.dal);
 
 	index_buffer = littlevk::buffer(renderer.device,
-			indices,
+			triangles,
 			vk::BufferUsageFlagBits::eIndexBuffer,
 			renderer.mem_props).unwrap(renderer.dal);
 
@@ -152,7 +157,7 @@ int main(int argc, char *argv[])
 	RenderMode mode = Wireframe;
 	RenderMode ref_mode = Shaded;
 
-	uint32_t nsc_triangle_count = vertices.size() / 3;
+	uint32_t nsc_triangle_count = triangles.size();
 
 	auto point_hook = [&](const vk::CommandBuffer &cmd) {
 		if (mode != Point)
@@ -164,7 +169,6 @@ int main(int argc, char *argv[])
 		cmd.pushConstants <Renderer::push_constants_struct> (renderer.point.pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0, *pc);
 		cmd.bindVertexBuffers(0, { vertex_buffer.buffer }, { 0 });
 		cmd.bindIndexBuffer(index_buffer.buffer, 0, vk::IndexType::eUint32);
-		// cmd.drawIndexed(nsc_triangle_count * 3, 1, 0, 0, 0);
 		cmd.draw(vertices.size(), 1, 0, 0);
 	};
 
@@ -253,7 +257,7 @@ int main(int argc, char *argv[])
 
 	// Translate to a Vulkan mesh
 	Transform ref_model_transform {
-		.position = glm::vec3 { 1.0f, 0.0f, 4.0f },
+		.position = glm::vec3 { 2.0f, 0.0f, 0.0f },
 	};
 
 	littlevk::Buffer ref_vertex_buffer;
@@ -298,24 +302,8 @@ int main(int argc, char *argv[])
 	renderer.hooks.push_back(ref_normal_hook);
 	renderer.hooks.push_back(ref_shaded_hook);
 
+	// TODO: time each call...
 	while (!renderer.should_close()) {
-		auto [vertices, triangles, count] = eval_cuda(renderer.push_constants.proj, renderer.push_constants.view, rate);
-
-		std::vector <glm::vec3> normals = vertex_normals(vertices, triangles);
-
-		std::vector <glm::vec3> interleaved;
-		for (size_t i = 0; i < vertices.size(); i++) {
-			interleaved.push_back(vertices[i]);
-			interleaved.push_back(normals[i]);
-		}
-
-		littlevk::upload(renderer.device, interleaved_buffer, interleaved);
-		littlevk::upload(renderer.device, vertex_buffer, vertices);
-		littlevk::upload(renderer.device, index_buffer, triangles);
-		nsc_triangle_count = count;
-
-		printf("triangles: %d/%d\n", triangles.size(), indices.size());
-
 		renderer.render();
 		renderer.poll();
 	}

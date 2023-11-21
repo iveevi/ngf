@@ -69,7 +69,7 @@ layout (location = 0) out vec4 fragment;
 
 void main()
 {
-	fragment = vec4(1.0);
+	fragment = vec4(0.0);
 }
 )";
 
@@ -295,6 +295,7 @@ void Renderer::configure_point()
 	pipeline_info.render_pass = render_pass;
 	pipeline_info.fill_mode = vk::PolygonMode::ePoint;
 	pipeline_info.cull_mode = vk::CullModeFlagBits::eNone;
+	pipeline_info.dynamic_viewport = true;
 
 	point.pipeline = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
 }
@@ -345,6 +346,7 @@ void Renderer::configure_wireframe()
 	pipeline_info.render_pass = render_pass;
 	pipeline_info.fill_mode = vk::PolygonMode::eLine;
 	pipeline_info.cull_mode = vk::CullModeFlagBits::eNone;
+	pipeline_info.dynamic_viewport = true;
 
 	wireframe.pipeline = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
 }
@@ -394,6 +396,7 @@ void Renderer::configure_solid()
 	pipeline_info.pipeline_layout = solid.pipeline_layout;
 	pipeline_info.render_pass = render_pass;
 	pipeline_info.cull_mode = vk::CullModeFlagBits::eNone;
+	pipeline_info.dynamic_viewport = true;
 
 	solid.pipeline = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
 }
@@ -446,6 +449,7 @@ void Renderer::configure_normal()
 	pipeline_info.pipeline_layout = normal.pipeline_layout;
 	pipeline_info.render_pass = render_pass;
 	pipeline_info.cull_mode = vk::CullModeFlagBits::eNone;
+	pipeline_info.dynamic_viewport = true;
 
 	normal.pipeline = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
 }
@@ -498,15 +502,15 @@ void Renderer::configure_shaded()
 	pipeline_info.pipeline_layout = shaded.pipeline_layout;
 	pipeline_info.render_pass = render_pass;
 	pipeline_info.cull_mode = vk::CullModeFlagBits::eNone;
+	pipeline_info.dynamic_viewport = true;
 
 	shaded.pipeline = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
 }
 
-void Renderer::from(const vk::PhysicalDevice& phdev_)
+Renderer::Renderer(const vk::PhysicalDevice& phdev_) : phdev(phdev_)
 {
-	phdev = phdev_;
 	mem_props = phdev.getMemoryProperties();
-	skeletonize(phdev, { 1000, 1000 }, "zzz");
+	skeletonize(phdev, { 1000, 1000 }, "Neural Subdivision Complexes");
 
 	dal = new littlevk::Deallocator(device);
 
@@ -570,38 +574,44 @@ void Renderer::from(const vk::PhysicalDevice& phdev_)
 	glfwSetCursorPosCallback(window->handle, cursor_callback);
 }
 
+Renderer::~Renderer()
+{
+	// TODO: clean up imgui
+	device.waitIdle();
+	delete dal;
+}
+
 void Renderer::render()
 {
 	// Handle input
 	handle_key_input();
 
 	// Update camera state before passing to render hooks
+	camera.aspect = aspect_ratio();
 	push_constants.view = camera.view_matrix(camera_transform);
 	push_constants.proj = camera.perspective_matrix();
 
 	// Get next image
 	littlevk::SurfaceOperation op;
-	op = littlevk::acquire_image(device, swapchain.swapchain, sync, frame);
+	op = littlevk::acquire_image(device, swapchain.swapchain, sync[frame]);
+	if (op.status == littlevk::SurfaceOperation::eResize) {
+		resize();
+		return;
+	}
 
 	// Record command buffer
 	vk::CommandBuffer &cmd = command_buffers[frame];
 
-	// vk::RenderPassBeginInfo render_pass_info = littlevk::default_rp_begin_info <2>
-	// 		(render_pass, framebuffers[op.index], window);
-
-	std::array <vk::ClearValue, 2> clear_values {
-		vk::ClearColorValue { std::array <float, 4> { 0.0f, 0.0f, 0.0f, 1.0f } },
-		vk::ClearDepthStencilValue { 1.0f, 0 }
-	};
-
-	vk::RenderPassBeginInfo render_pass_info {
-		render_pass, framebuffers[op.index],
-		{ { 0, 0 }, window->extent },
-		clear_values
-	};
+	const auto &rpbi = littlevk::default_rp_begin_info <2>
+		(render_pass, framebuffers[op.index], window)
+		.clear_value(0, vk::ClearColorValue {
+			std::array <float, 4> { 1.0f, 1.0f, 1.0f, 1.0f }
+		});
 
 	cmd.begin(vk::CommandBufferBeginInfo {});
-	cmd.beginRenderPass(render_pass_info, vk::SubpassContents::eInline);
+	cmd.beginRenderPass(rpbi, vk::SubpassContents::eInline);
+
+	littlevk::viewport_and_scissor(cmd, littlevk::RenderArea(window));
 
 	ImGui_ImplVulkan_NewFrame();
 	ImGui_ImplGlfw_NewFrame();
@@ -630,8 +640,39 @@ void Renderer::render()
 	graphics_queue.submit(submit_info, sync.in_flight[frame]);
 
 	// Send image to the screen
-	op = littlevk::present_image(present_queue, swapchain.swapchain, sync, op.index);
+	op = littlevk::present_image(present_queue, swapchain.swapchain, sync[frame], op.index);
+	if (op.status == littlevk::SurfaceOperation::eResize)
+		resize();
+
 	frame = 1 - frame;
+}
+
+void Renderer::resize()
+{
+	littlevk::Skeleton::resize();
+
+	// Recreate the depth buffer
+	littlevk::ImageCreateInfo depth_info {
+		window->extent.width,
+		window->extent.height,
+		vk::Format::eD32Sfloat,
+		vk::ImageUsageFlagBits::eDepthStencilAttachment,
+		vk::ImageAspectFlagBits::eDepth,
+	};
+
+	littlevk::Image depth_buffer = littlevk::image(
+		device,
+		depth_info, mem_props
+	).unwrap(dal);
+
+	// Recreate framebuffers from the swapchain
+	littlevk::FramebufferSetInfo fb_info;
+	fb_info.swapchain = &swapchain;
+	fb_info.render_pass = render_pass;
+	fb_info.extent = window->extent;
+	fb_info.depth_buffer = &depth_buffer.view;
+
+	framebuffers = littlevk::framebuffers(device, fb_info).unwrap(dal);
 }
 
 void Renderer::handle_key_input()

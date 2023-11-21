@@ -26,8 +26,21 @@
 
 // Global constants
 constexpr size_t MAXIMUM_SAMPLE_RATE = 16;
-constexpr size_t COMPLEX_BATCH_SIZE = MAXIMUM_SAMPLE_RATE * MAXIMUM_SAMPLE_RATE;
-constexpr size_t DNN_INTERIM_SIZE = 128;
+constexpr size_t COMPLEX_BATCH_SIZE  = MAXIMUM_SAMPLE_RATE * MAXIMUM_SAMPLE_RATE;
+constexpr size_t DNN_INTERIM_SIZE    = 128;
+constexpr size_t FREQUENCIES         = 10;
+
+// Error handling
+#define CUDA_CHECK(call) { \
+	cudaError_t status = call; \
+	ulog_assert(status == cudaSuccess, "CUDA", "%s\n", cudaGetErrorString(status)); \
+}
+
+#define CUDA_CHECK_SYNCED() { \
+	cudaDeviceSynchronize(); \
+	cudaError_t status = cudaGetLastError(); \
+	ulog_assert(status == cudaSuccess, "CUDA", "%s\n", cudaGetErrorString(status)); \
+}
 
 struct Transform {
 	glm::vec3 position = glm::vec3(0.0f);
@@ -129,7 +142,8 @@ struct Renderer : littlevk::Skeleton {
 		float last_y = 0.0f;
 	} mouse;
 
-	void from(const vk::PhysicalDevice &);
+	Renderer(const vk::PhysicalDevice &);
+	~Renderer();
 
 	// Render hooks for rendering
 	using RenderHook = std::function <void (const vk::CommandBuffer &)>;
@@ -141,6 +155,7 @@ struct Renderer : littlevk::Skeleton {
 	size_t frame = 0;
 
 	void render();
+	void resize();
 
 	// Keyboard input
 	float last_time = 0.0f;
@@ -177,57 +192,51 @@ struct loader {
 // Global state structures
 struct neural_network {
 	// Host buffers
-	std::vector <float> Wm0c;
-	std::vector <float> Wm1c;
-	std::vector <float> Wm2c;
+	std::array <std::vector <float>, 4> Wm_c;
+	std::array <std::vector <float>, 4> Wm;
+	std::array <std::vector <float>, 4> Bs;
 
 	// Device (CUDA) buffers
-	float *d_Wm0c;
-	float *d_Wm1c;
-	float *d_Wm2c;
+	std::array <float *, 4> d_Wm_c;
 
-	float *d_embedded;
-	float *d_interim_one;
-	float *d_interim_two;
+	// Dimensions
+	std::array <uint32_t, 4> Ws;
+	std::array <uint32_t, 4> Hs;
 
-	uint32_t W0;
-	uint32_t H0;
-
-	uint32_t W1;
-	uint32_t H1;
-
-	uint32_t W2;
-	uint32_t H2;
+	// Activation functions
+	std::array <std::function <float (float)>, 3> activations;
+	std::array <float, 3>                         constants;
 } extern g_dnn;
 
 struct subdivision_complexes {
 	// Host buffers
-	std::vector <glm::uvec4> complexes;
+	std::vector <glm::ivec4> complexes;
 	std::vector <glm::vec3>  vertices;
 	std::vector <float>      features;
 
 	// Device (CUDA) buffers
-	glm::uvec4	         *d_complexes;
+	glm::ivec4	         *d_complexes;
 	glm::vec3	         *d_vertices;
 	float		         *d_features;
 
 	uint32_t	         complex_count;
 	uint32_t	         vertex_count;
-	uint32_t                 feature_count;
+	uint32_t                 feature_size;
+
+	uint32_t ffwd_size() const {
+		return 3 * (2 * FREQUENCIES + 1) + feature_size;
+	}
+
+	constexpr uint32_t vertex_encoding_size() const {
+		return 3 * (2 * FREQUENCIES + 1);
+	}
 } extern g_sdc;
 
-void dnn_read(FILE *);
-void sdc_read(FILE *);
+// Reading data
+void read(FILE *);
 
+// Evaluation
 std::vector <glm::vec3> eval(uint32_t);
-std::vector <glm::vec3> eval_normals(uint32_t);
+// std::vector <glm::vec3> eval_normals(uint32_t);
 
-// std::vector <glm::vec3> eval_cuda(const glm::mat4 &, const glm::mat4 &, uint32_t);
-
-struct eval_cuda_result {
-	std::vector <glm::vec3> vertices;
-	std::vector <std::array <uint32_t, 3>> indices;
-	uint32_t triangle_count;
-};
-
-eval_cuda_result eval_cuda(const glm::mat4 &, const glm::mat4 &, uint32_t);
+std::vector <glm::vec3> eval_cuda(uint32_t);

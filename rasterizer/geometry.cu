@@ -20,6 +20,7 @@ std::vector <float> interleave_attributes(const geometry &geometry)
 loader::loader(const std::filesystem::path &path)
 {
 	Assimp::Importer importer;
+	ulog_assert(std::filesystem::exists(path), "loader", "File \"%s\" does not exist\n", path.c_str());
 
 	// Read scene
 	const aiScene *scene;
