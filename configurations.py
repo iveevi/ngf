@@ -1,14 +1,14 @@
 from mlp import *
 
 models = {
-        'relu'   : MLP_Positional_Encoding,
+        'relu'   : MLP_Positional_ReLU_Encoding,
+        'lrelu'  : MLP_Positional_LeakyReLU_Encoding,
         'elu'    : MLP_Positional_Elu_Encoding,
+        'lelu'   : MLP_Positional_LeakyElu_Encoding,
         'siren'  : MLP_Positional_Siren_Encoding,
         'gauss'  : MLP_Positional_Gaussian_Encoding,
         'sinc'   : MLP_Positional_Sinc_Encoding,
-        'wavy' : MLP_Positional_Morlet_Encoding,
-        'rexin'  : MLP_Positional_Rexin_Encoding,
-        'reenc'  : MLP_Positional_Reencoding,
+        'morlet' : MLP_Positional_Morlet_Encoding,
         'onion'  : MLP_Positional_Onion_Encoding,
 }
 

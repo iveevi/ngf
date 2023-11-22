@@ -13,9 +13,27 @@
 		},
 
 		{
+			"name": "lrelu-linear",
+			"source": "meshes/skull/source.obj",
+			"method": "lrelu/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		},
+
+		{
 			"name": "elu-linear",
 			"source": "meshes/skull/source.obj",
 			"method": "elu/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		},
+		
+		{
+			"name": "lelu-linear",
+			"source": "meshes/skull/source.obj",
+			"method": "lelu/linear",
 			"clusters": 250,
 			"batch": 10,
 			"resolution": 16
@@ -52,24 +70,6 @@
 			"name": "morlet-linear",
 			"source": "meshes/skull/source.obj",
 			"method": "morlet/linear",
-			"clusters": 250,
-			"batch": 10,
-			"resolution": 16
-		},
-
-		{
-			"name": "rexin-linear",
-			"source": "meshes/skull/source.obj",
-			"method": "rexin/linear",
-			"clusters": 250,
-			"batch": 10,
-			"resolution": 16
-		},
-
-		{
-			"name": "reenc-linear",
-			"source": "meshes/skull/source.obj",
-			"method": "reenc/linear",
 			"clusters": 250,
 			"batch": 10,
 			"resolution": 16

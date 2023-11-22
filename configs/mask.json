@@ -1,0 +1,15 @@
+{
+	"name": "mask",
+	"target": "meshes/mask/target.obj",
+	"directory": "results/mask",
+	"experiments": [
+		{
+			"name": "full",
+			"source": "meshes/mask/source.obj",
+			"method": "onion/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		}
+	]
+}

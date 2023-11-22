@@ -307,7 +307,7 @@ def inverse_render_nsc(sample_rate, iterations, lr, aux_strength=1.0):
         assert len(all_views) % batch_size == 0
         views = torch.split(all_views, batch_size, dim=0)
 
-        if i % 50 == 0:
+        if i % 10 == 0:
             # print('Rebuilding vgraph...')
             lerped_points, lerped_features = s(complexes, points, features, sample_rate)
             V = m(points=lerped_points, features=lerped_features)
@@ -337,7 +337,7 @@ def inverse_render_nsc(sample_rate, iterations, lr, aux_strength=1.0):
             render_loss = (opt_imgs - ref_imgs).abs().mean()
             laplacian_loss = (V - V_smoothed).abs().mean()
             area_loss = triangle_areas(V, F).mean()
-            loss = render_loss + aux_strength * (area_loss + laplacian_loss)
+            loss = render_loss + aux_strength * laplacian_loss
 
             render_loss_sum += render_loss.item()
 
@@ -360,7 +360,7 @@ while r <= resolution:
         ps.register_surface_mesh(f'model-phase2-{r}', V.cpu().numpy(), indices)
         # ps.show()
 
-    aux_strength *= 0.5
+    # aux_strength *= 0.5
     r *= 2
 
 # Save data
