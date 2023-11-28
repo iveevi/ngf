@@ -143,7 +143,7 @@ scene['envmap_scale'] = 1.0
 renderer = NVDRenderer(scene)
 
 # Set up a camera in front on the mesh
-position = torch.tensor([ 0.0, 0.0, 3.0 ], device='cuda')
+position = torch.tensor([ 0.1, 0.0, 1.5 ], device='cuda')
 camera = lookat(position,
     torch.tensor([ 0.0, 0.0, 0.0 ], device='cuda'),
     torch.tensor([ 0.0, 1.0, 0.0 ], device='cuda')

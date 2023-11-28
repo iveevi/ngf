@@ -29,7 +29,7 @@
 			"batch": 10,
 			"resolution": 16
 		},
-		
+
 		{
 			"name": "lelu-linear",
 			"source": "meshes/skull/source.obj",

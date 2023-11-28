@@ -205,6 +205,14 @@ if not headless:
     # ps.show()
 
 # TODO: tone mapping
+# From NVIDIA
+def tonemap_srgb(f):
+    return torch.where(f > 0.0031308, torch.pow(torch.clamp(f, min=0.0031308), 1.0/2.4) * 1.055 - 0.055, 12.92 * f)
+
+def alpha_blend(img):
+    alpha = img[..., 3:]
+    return img[..., :3] * alpha + (1.0 - alpha)
+
 compute_Fn = torch.compile(compute_face_normals, mode='reduce-overhead')
 compute_N = torch.compile(compute_vertex_normals, mode='reduce-overhead')
 
@@ -232,11 +240,11 @@ def inverse_render(V, F, sample_rate=4):
 
     # Optimization loop
     batch_size = batch(sample_rate)
-    for it in trange(steps):
+    for _ in trange(steps):
         # Batch the views into disjoint sets
         assert len(all_views) % batch_size == 0
         views = torch.split(all_views, batch_size, dim=0)
-        for i, view_mats in enumerate(views):
+        for view_mats in views:
             V = from_differential(M, U, 'Cholesky')
 
             Fn = compute_Fn(V, F)
@@ -244,6 +252,12 @@ def inverse_render(V, F, sample_rate=4):
 
             opt_imgs = renderer.render(V, N, F, view_mats)
             ref_imgs = renderer.render(v_ref, n_ref, f_ref, view_mats)
+
+            opt_imgs = alpha_blend(opt_imgs)
+            ref_imgs = alpha_blend(ref_imgs)
+
+            opt_imgs = tonemap_srgb(torch.log(torch.clamp(opt_imgs, min=0, max=65535) + 1))
+            ref_imgs = tonemap_srgb(torch.log(torch.clamp(ref_imgs, min=0, max=65535) + 1))
 
             V_smoothed = vgraph.smooth_device(V, 1.0)
             V_smoothed = vgraph.smooth_device(V_smoothed, 1.0)
@@ -271,7 +285,7 @@ m = models[method[0]]().cuda()
 c = lerps[method[1]]
 s = sampler(kernel=c)
 
-opt = torch.optim.Adam(list(m.parameters()) + [ features, points ], 1e-2)
+opt = torch.optim.Adam(list(m.parameters()) + [ features, points ], 1e-3)
 for _ in trange(1000):
     lerped_points, lerped_features = s(complexes, points, features, 4)
     V = m(points=lerped_points, features=lerped_features)
@@ -295,7 +309,7 @@ losses = []
 def inverse_render_nsc(sample_rate, iterations, lr, aux_strength=1.0):
     global losses
 
-    opt      = torch.optim.Adam(list(m.parameters()) + [ features, points ], lr)
+    # opt      = torch.optim.Adam(list(m.parameters()) + [ features, points ], lr)
     base, _  = sample(complexes, points, features, sample_rate)
     cmap     = make_cmap(complexes, points.detach(), base, sample_rate)
     remap    = optext.generate_remapper(complexes.cpu(), cmap, base.shape[0], sample_rate)
@@ -329,6 +343,12 @@ def inverse_render_nsc(sample_rate, iterations, lr, aux_strength=1.0):
             opt_imgs = renderer.render(V, N, F, view_mats)
             ref_imgs = renderer.render(v_ref, n_ref, f_ref, view_mats)
 
+            opt_imgs = alpha_blend(opt_imgs)
+            ref_imgs = alpha_blend(ref_imgs)
+
+            opt_imgs = tonemap_srgb(torch.log(torch.clamp(opt_imgs, min=0, max=65535) + 1))
+            ref_imgs = tonemap_srgb(torch.log(torch.clamp(ref_imgs, min=0, max=65535) + 1))
+
             V_smoothed = vgraph.smooth_device(V, 1.0)
             V_smoothed = vgraph.smooth_device(V_smoothed, 1.0)
 
@@ -336,7 +356,6 @@ def inverse_render_nsc(sample_rate, iterations, lr, aux_strength=1.0):
             # TODO: tone mapping from NVIDIA paper
             render_loss = (opt_imgs - ref_imgs).abs().mean()
             laplacian_loss = (V - V_smoothed).abs().mean()
-            area_loss = triangle_areas(V, F).mean()
             loss = render_loss + aux_strength * laplacian_loss
 
             render_loss_sum += render_loss.item()
@@ -353,14 +372,14 @@ def inverse_render_nsc(sample_rate, iterations, lr, aux_strength=1.0):
 r = 4
 aux_strength = 1.0
 while r <= resolution:
-    V, F = inverse_render_nsc(r, 50 * r, 1e-3, aux_strength)
+    V, F = inverse_render_nsc(r, 100 * r, 1e-3, aux_strength)
     indices = quadify(complexes.cpu().numpy(), r)
 
     if not headless:
         ps.register_surface_mesh(f'model-phase2-{r}', V.cpu().numpy(), indices)
         # ps.show()
 
-    # aux_strength *= 0.5
+    aux_strength *= 0.75
     r *= 2
 
 # Save data

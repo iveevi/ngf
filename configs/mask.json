@@ -4,9 +4,9 @@
 	"directory": "results/mask",
 	"experiments": [
 		{
-			"name": "full",
+			"name": "log-srgb",
 			"source": "meshes/mask/source.obj",
-			"method": "onion/linear",
+			"method": "lrelu/linear",
 			"clusters": 250,
 			"batch": 10,
 			"resolution": 16

@@ -6,7 +6,7 @@
 		{
 			"name": "lod4",
 			"source": "meshes/lucy/source-lod4.obj",
-			"method": "onion/linear",
+			"method": "lrelu/linear",
 			"clusters": 250,
 			"batch": 10,
 			"resolution": 16
@@ -15,7 +15,7 @@
 		{
 			"name": "lod3",
 			"source": "meshes/lucy/source-lod3.obj",
-			"method": "onion/linear",
+			"method": "lrelu/linear",
 			"clusters": 250,
 			"batch": 10,
 			"resolution": 16
@@ -24,7 +24,7 @@
 		{
 			"name": "lod2",
 			"source": "meshes/lucy/source-lod2.obj",
-			"method": "onion/linear",
+			"method": "lrelu/linear",
 			"clusters": 250,
 			"batch": 10,
 			"resolution": 16
@@ -33,7 +33,7 @@
 		{
 			"name": "lod1",
 			"source": "meshes/lucy/source-lod1.obj",
-			"method": "onion/linear",
+			"method": "lrelu/linear",
 			"clusters": 250,
 			"batch": 10,
 			"resolution": 16
@@ -42,7 +42,7 @@
 		{
 			"name": "lod0",
 			"source": "meshes/lucy/source-lod0.obj",
-			"method": "onion/linear",
+			"method": "lrelu/linear",
 			"clusters": 250,
 			"batch": "lambda r: 10 if r < 16 else 2",
 			"resolution": 16
