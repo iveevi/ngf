@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR})
 
 # MAx CUDA optimization
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xptxas -O3")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --use_fast_math -lineinfo -Xptxas -O3")
 
 # Set architecture to 7.0+
 set(CMAKE_CUDA_ARCHITECTURES 80)
@@ -46,4 +46,4 @@ target_link_libraries(rasterizer
 	Vulkan::Vulkan
 )
 
-include_directories(. glm imgui)
+include_directories(. ../thirdparty/glm imgui)

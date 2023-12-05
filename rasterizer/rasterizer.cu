@@ -1,5 +1,8 @@
 #include "common.hpp"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb/stb_image_write.h>
+
 // TODO: benchmark execution times, and also in CUDA
 // TODO: group the complexes by proximity and batch the culling and drawing processes...
 
@@ -61,6 +64,24 @@ std::vector <glm::vec3> vertex_normals(const std::vector <glm::vec3> &vertice, c
 	return normals;
 }
 
+// Utilities
+template <typename T, uint32_t N>
+struct rolling_window {
+	static_assert(std::is_floating_point_v <T>, "rolling_window only works with floating types");
+
+	T data[N] = { 0 };
+	T average = 0;
+	uint32_t index = 0;
+
+	T push(T value) {
+		average -= data[index] / N;
+		data[index] = value;
+		average += value / N;
+		index = (index + 1) % N;
+		return average;
+	}
+};
+
 int main(int argc, char *argv[])
 {
 	// Expect a filename
@@ -100,7 +121,13 @@ int main(int argc, char *argv[])
 	phdev = littlevk::pick_physical_device(predicate);
 
 	Renderer renderer(phdev);
-	// renderer.from(phdev);
+
+	// Create a Vulkan query pool
+	vk::QueryPoolCreateInfo query_pool_create_info = {};
+	query_pool_create_info.queryType = vk::QueryType::eTimestamp;
+	query_pool_create_info.queryCount = 4;
+
+	vk::QueryPool query_pool = renderer.device.createQueryPool(query_pool_create_info);
 
 	// Evaluate the surface
 
@@ -108,6 +135,7 @@ int main(int argc, char *argv[])
 	// std::vector <glm::vec3> vertices(g_sdc.complex_count * rate * rate);
 
 	std::vector <glm::vec3> vertices = eval_cuda(rate);
+	// std::vector <glm::vec3> vertices = eval(rate);
 	std::vector <std::array <uint32_t, 3>> triangles = nsc_indices(vertices, g_sdc.complex_count, rate);
 	std::vector <glm::vec3> normals = vertex_normals(vertices, triangles);
 
@@ -129,7 +157,7 @@ int main(int argc, char *argv[])
 	littlevk::Buffer interleaved_buffer;
 	littlevk::Buffer index_buffer;
 
-	// TODO: make CUDA interop work
+	// TODO: make CUDA interop work (shared vertex buffer)
 
 	vertex_buffer = littlevk::buffer(renderer.device,
 			vertices,
@@ -158,6 +186,12 @@ int main(int argc, char *argv[])
 	RenderMode ref_mode = Shaded;
 
 	uint32_t nsc_triangle_count = triangles.size();
+
+	auto prerender_hook = [&](const vk::CommandBuffer &cmd) {
+		cmd.resetQueryPool(query_pool, 0, 4);
+	};
+
+	renderer.prerender_hooks.push_back(prerender_hook);
 
 	auto point_hook = [&](const vk::CommandBuffer &cmd) {
 		if (mode != Point)
@@ -225,11 +259,73 @@ int main(int argc, char *argv[])
 		cmd.drawIndexed(nsc_triangle_count * 3, 1, 0, 0, 0);
 	};
 
+	// Screen capture
+	bool screenshot = false;
+
+	littlevk::Buffer staging;
+	auto screenshot_hook = [&](const vk::CommandBuffer &cmd, const vk::Image &image) {
+		if (!screenshot)
+			return;
+
+		const vk::Extent2D &extent = renderer.window->extent;
+		size_t expected_size = sizeof(uint32_t) * extent.width * extent.height; // TODO: make sure # of bytes for channels is correct
+
+		printf("screenshot_hook: %zu %zu\n", staging.device_size(), expected_size);
+		if (staging.device_size() != expected_size) {
+			printf("Allocating staging buffer for screenshot\n");
+			vk::BufferUsageFlags usage = vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst;
+			staging = littlevk::buffer(renderer.device,
+				expected_size, usage,
+				renderer.mem_props).unwrap(renderer.dal);
+		}
+
+		// Pipeline barrier
+		littlevk::transition(cmd, image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferSrcOptimal);
+		littlevk::copy_image_to_buffer(cmd, image, staging, extent, vk::ImageLayout::eTransferSrcOptimal);
+		littlevk::transition(cmd, image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::ePresentSrcKHR);
+	};
+
+	uint32_t screenshot_counter = 0;
+	auto screenshot_save_hook = [&]() {
+		if (!screenshot)
+			return;
+
+		const vk::Extent2D &extent = renderer.window->extent;
+
+		// Wait to finish
+		renderer.device.waitIdle();
+
+		std::vector <uint32_t> pixels;
+		pixels.resize(extent.width * extent.height);
+		littlevk::download(renderer.device, staging, pixels);
+
+		// Convert from BGRA to RGBA
+		for (size_t i = 0; i < pixels.size(); i++) {
+			uint32_t &pixel = pixels[i];
+			uint8_t *bytes = (uint8_t *) &pixel;
+			std::swap(bytes[0], bytes[2]);
+		}
+
+		// stbi_write_png("screenshot.png", extent.width, extent.height, 4, pixels.data(), extent.width * sizeof(uint32_t));
+		std::string filename = "screenshot_" + std::to_string(screenshot_counter++) + ".png";
+		stbi_write_png(filename.c_str(), extent.width, extent.height, 4, pixels.data(), extent.width * sizeof(uint32_t));
+
+		screenshot = false;
+	};
+
+	renderer.postrender_hooks.push_back(screenshot_hook);
+	renderer.postsubmit_hooks.push_back(screenshot_save_hook);
+
+	// User interface
+	rolling_window <float, 60> frame_time_window;
+
 	auto ui_hook = [&](const vk::CommandBuffer &cmd) {
-		float frame_time = ImGui::GetIO().DeltaTime;
+		float frame_time = frame_time_window.push(ImGui::GetIO().DeltaTime);
+
 		ImGui::Begin("Info");
 
-		ImGui::Text("Frame time: %f ms", frame_time * 1000.0f);
+		ImGui::Text("Frame time %.2f ms", frame_time * 1000.0f);
+		ImGui::Text("Framerate  %.2f fps", 1.0f / frame_time);
 		ImGui::Separator();
 
 		// TODO: radio buttons
@@ -244,16 +340,55 @@ int main(int argc, char *argv[])
 		ImGui::Text("Reference:");
 		ImGui::RadioButton("Normal##ref",    (int *) &ref_mode, Normal);
 		ImGui::RadioButton("Shaded##ref",    (int *) &ref_mode, Shaded);
+		ImGui::Separator();
+
+		if (ImGui::Button("Screenshot framebuffer")) {
+			screenshot = true;
+			printf("Screenshot requested\n");
+		}
 
 		ImGui::End();
 	};
+
+	renderer.hooks.push_back(ui_hook);
+
+	// Timing hooks
+	auto query_start_hook = [&](const vk::CommandBuffer &cmd) {
+		cmd.writeTimestamp(vk::PipelineStageFlagBits::eTopOfPipe, query_pool, 0);
+	};
+
+	auto query_end_hook = [&](const vk::CommandBuffer &cmd) {
+		cmd.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, query_pool, 1);
+	};
+
+	// Order the hooks
+	renderer.hooks.push_back(query_start_hook);
 
 	renderer.hooks.push_back(point_hook);
 	renderer.hooks.push_back(wireframe_hook);
 	renderer.hooks.push_back(solid_hook);
 	renderer.hooks.push_back(normal_hook);
 	renderer.hooks.push_back(shaded_hook);
-	renderer.hooks.push_back(ui_hook);
+
+	renderer.hooks.push_back(query_end_hook);
+
+	// Retrieve the query results
+	std::array <uint64_t, 2> query_results;
+
+	vk::PhysicalDeviceProperties properties = renderer.phdev.getProperties();
+	uint64_t timestamp_period = properties.limits.timestampPeriod;
+
+	auto query_retrieval_hook = [&]() {
+		renderer.device.getQueryPoolResults(query_pool, 0, 2,
+			query_results.size() * sizeof(uint64_t),
+			query_results.data(), sizeof(uint64_t),
+			vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
+
+		float time = (query_results[1] - query_results[0]) * timestamp_period/1e6f;
+		// printf("Neural Subdivision Complexes time: %.2f ms\n", time);
+	};
+
+	renderer.postsubmit_hooks.push_back(query_retrieval_hook);
 
 	// Translate to a Vulkan mesh
 	Transform ref_model_transform {
@@ -299,11 +434,52 @@ int main(int argc, char *argv[])
 		cmd.drawIndexed(reference.indices.size() * 3, 1, 0, 0, 0);
 	};
 
-	renderer.hooks.push_back(ref_normal_hook);
-	renderer.hooks.push_back(ref_shaded_hook);
+	// More query hooks
+	auto ref_query_start_hook = [&](const vk::CommandBuffer &cmd) {
+		cmd.writeTimestamp(vk::PipelineStageFlagBits::eTopOfPipe, query_pool, 2);
+	};
+
+	auto ref_query_end_hook = [&](const vk::CommandBuffer &cmd) {
+		cmd.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, query_pool, 3);
+	};
+
+	// renderer.hooks.push_back(ref_query_start_hook);
+	//
+	// renderer.hooks.push_back(ref_normal_hook);
+	// renderer.hooks.push_back(ref_shaded_hook);
+	//
+	// renderer.hooks.push_back(ref_query_end_hook);
+
+	// Retrieve the query results
+	std::array <uint64_t, 2> ref_query_results;
+
+	auto ref_query_retrieval_hook = [&]() {
+		renderer.device.getQueryPoolResults(query_pool, 2, 2,
+			ref_query_results.size() * sizeof(uint64_t),
+			ref_query_results.data(), sizeof(uint64_t),
+			vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
+
+		float time = (ref_query_results[1] - ref_query_results[0]) * timestamp_period/1e6f;
+		// printf("Reference time: %.2f ms\n", time);
+	};
+
+	// renderer.postsubmit_hooks.push_back(ref_query_retrieval_hook);
 
 	// TODO: time each call...
 	while (!renderer.should_close()) {
+		// printf("Difference in vertex count: %lu vs %lu\n", vertices.size(), reference.vertices.size());
+
+		std::vector <glm::vec3> vertices = eval_cuda(rate);
+
+		std::vector <glm::vec3> interleaved;
+		for (size_t i = 0; i < vertices.size(); i++) {
+			interleaved.push_back(vertices[i]);
+			interleaved.push_back(normals[i]);
+		}
+
+		littlevk::upload(renderer.device, vertex_buffer, vertices);
+		littlevk::upload(renderer.device, interleaved_buffer, interleaved);
+
 		renderer.render();
 		renderer.poll();
 	}

@@ -97,10 +97,8 @@ void dnn_read(FILE *file)
 	for (uint32_t i = 0; i < layers.size(); i++) {
 		auto &layer = layers[i];
 
-		cudaMalloc(&g_dnn.d_Wm_c[i], layer.Wm_c.size() * sizeof(float));
-		cudaMemcpy(g_dnn.d_Wm_c[i], layer.Wm_c.data(), layer.Wm_c.size() * sizeof(float), cudaMemcpyHostToDevice);
-
-		CUDA_CHECK_SYNCED();
+		CUDA_CHECK(cudaMalloc(&g_dnn.d_Wm_c[i], layer.Wm_c.size() * sizeof(float)));
+		CUDA_CHECK(cudaMemcpy(g_dnn.d_Wm_c[i], layer.Wm_c.data(), layer.Wm_c.size() * sizeof(float), cudaMemcpyHostToDevice));
 	}
 }
 
@@ -109,38 +107,19 @@ void sdc_read(FILE *file)
 	ulog_info("sdc_read", "Neural Subdivision Complexes:\n");
 
 	// Read top level constants
-	// float constants[3];
-	fread((char *) g_dnn.constants.data(), sizeof(float), 3, file);
-
-	// TODO: make host device...
-	float s0 = g_dnn.constants[0];
-	float s1 = g_dnn.constants[1];
-	float s2 = g_dnn.constants[2];
-
 	g_dnn.activations = {
-		[s0](float x) {
-			float softplus = log(1 + exp(s0 * x));
-			float sin = sinf(s0 * x);
-			float gauss = exp(-x * x / s0);
-			return softplus * sin * gauss;
+		[](float x) {
+			return (x > 0) ? x : 0.01f * x;
 		},
 
-		[s1](float x) {
-			float softplus = log(1 + exp(s1 * x));
-			float sin = sinf(s1 * x);
-			float gauss = exp(-x * x / s1);
-			return softplus * sin * gauss;
+		[](float x) {
+			return (x > 0) ? x : 0.01f * x;
 		},
 
-		[s2](float x) {
-			float softplus = log(1 + exp(s2 * x));
-			float sin = sinf(s2 * x);
-			float gauss = exp(-x * x / s2);
-			return softplus * sin * gauss;
+		[](float x) {
+			return (x > 0) ? x : 0.01f * x;
 		}
 	};
-
-	ulog_info("sdc_read", "  > %f %f %f\n", s0, s1, s2);
 
 	// Read size data
 	uint32_t sizes[3];
@@ -179,6 +158,41 @@ void sdc_read(FILE *file)
 	cudaMemcpy(g_sdc.d_complexes, complexes.data(), g_sdc.complex_count * sizeof(glm::ivec4), cudaMemcpyHostToDevice);
 	cudaMemcpy(g_sdc.d_vertices, vertices.data(), g_sdc.vertex_count * sizeof(glm::vec3), cudaMemcpyHostToDevice);
 	cudaMemcpy(g_sdc.d_features, features.data(), g_sdc.vertex_count * g_sdc.feature_size * sizeof(float), cudaMemcpyHostToDevice);
+
+	// Lay out each complex's vertices and features into a flat array
+	std::vector <float4> flat(g_sdc.complex_count * (3 + g_sdc.feature_size));
+
+	uint32_t offset = 0;
+	for (uint32_t i = 0; i < g_sdc.complex_count; i++) {
+		const glm::ivec4 &complex = g_sdc.complexes[i];
+
+		// First all the vertices:
+		// v00.x, v01.x, v10.x, v11.x,
+		// v00.y, v01.y, v10.y, v11.y,
+		// v00.z, v01.z, v10.z, v11.z
+		for (uint32_t j = 0; j < 3; j++) {
+			flat[offset].x = g_sdc.vertices[complex.x][j];
+			flat[offset].y = g_sdc.vertices[complex.y][j];
+			flat[offset].z = g_sdc.vertices[complex.z][j];
+			flat[offset].w = g_sdc.vertices[complex.w][j];
+			offset++;
+		}
+
+		// Then all the features:
+		for (uint32_t j = 0; j < g_sdc.feature_size; j++) {
+			flat[offset].x = g_sdc.features[complex.x * g_sdc.feature_size + j];
+			flat[offset].y = g_sdc.features[complex.y * g_sdc.feature_size + j];
+			flat[offset].z = g_sdc.features[complex.z * g_sdc.feature_size + j];
+			flat[offset].w = g_sdc.features[complex.w * g_sdc.feature_size + j];
+			offset++;
+
+			// for (uint32_t k = 0; k < 4; k++)
+			// 	flat[offset++] = g_sdc.features[complex[k] * g_sdc.feature_size + j];
+		}
+	}
+
+	cudaMalloc(&g_sdc.d_flat, flat.size() * sizeof(float4));
+	cudaMemcpy(g_sdc.d_flat, flat.data(), flat.size() * sizeof(float4), cudaMemcpyHostToDevice);
 }
 
 void read(FILE *file)

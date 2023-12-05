@@ -23,9 +23,10 @@
 #include <assimp/postprocess.h>
 
 #include "microlog.h"
+#include "util.hpp"
 
 // Global constants
-constexpr size_t MAXIMUM_SAMPLE_RATE = 16;
+constexpr size_t MAXIMUM_SAMPLE_RATE = 32;
 constexpr size_t COMPLEX_BATCH_SIZE  = MAXIMUM_SAMPLE_RATE * MAXIMUM_SAMPLE_RATE;
 constexpr size_t DNN_INTERIM_SIZE    = 128;
 constexpr size_t FREQUENCIES         = 10;
@@ -146,9 +147,17 @@ struct Renderer : littlevk::Skeleton {
 	~Renderer();
 
 	// Render hooks for rendering
-	using RenderHook = std::function <void (const vk::CommandBuffer &)>;
+	using Cmd_Hook = std::function <void (const vk::CommandBuffer &)>;
+	using Cmd_Image_Hook = std::function <void (const vk::CommandBuffer &, const vk::Image &)>;
+	using Cmd_Active_Hook = std::variant <Cmd_Hook, Cmd_Image_Hook>;
 
-	std::vector <RenderHook> hooks = {};
+	using Void_Hook = std::function <void ()>;
+
+	std::vector <Cmd_Active_Hook> hooks = {};
+	std::vector <Cmd_Active_Hook> prerender_hooks = {};
+	std::vector <Cmd_Active_Hook> postrender_hooks = {};
+
+	std::vector <Void_Hook> postsubmit_hooks = {};
 
 	// Frame rendering
 	// TODO: immediate mode presentation
@@ -205,7 +214,6 @@ struct neural_network {
 
 	// Activation functions
 	std::array <std::function <float (float)>, 3> activations;
-	std::array <float, 3>                         constants;
 } extern g_dnn;
 
 struct subdivision_complexes {
@@ -218,6 +226,9 @@ struct subdivision_complexes {
 	glm::ivec4	         *d_complexes;
 	glm::vec3	         *d_vertices;
 	float		         *d_features;
+
+	// float                    *d_flat;
+	float4                   *d_flat;
 
 	uint32_t	         complex_count;
 	uint32_t	         vertex_count;
@@ -240,3 +251,19 @@ std::vector <glm::vec3> eval(uint32_t);
 // std::vector <glm::vec3> eval_normals(uint32_t);
 
 std::vector <glm::vec3> eval_cuda(uint32_t);
+
+// Timing utilities
+struct timeframes {
+	static timeframe *current;
+	static std::deque <timeframe> frames;
+
+	static void push() {
+		frames.emplace_back(timeframe {});
+		current = &frames.back();
+	}
+
+	static void pop() {
+		frames.pop_back();
+		current = &frames.back();
+	}
+};

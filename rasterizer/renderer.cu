@@ -510,7 +510,7 @@ void Renderer::configure_shaded()
 Renderer::Renderer(const vk::PhysicalDevice& phdev_) : phdev(phdev_)
 {
 	mem_props = phdev.getMemoryProperties();
-	skeletonize(phdev, { 1000, 1000 }, "Neural Subdivision Complexes");
+	skeletonize(phdev, { 1000, 1000 }, "Neural Subdivision Complexes", vk::PresentModeKHR::eImmediate);
 
 	dal = new littlevk::Deallocator(device);
 
@@ -609,6 +609,15 @@ void Renderer::render()
 		});
 
 	cmd.begin(vk::CommandBufferBeginInfo {});
+
+	// Hooks before render pass
+	for (auto &hook : prerender_hooks) {
+		if (std::holds_alternative <Cmd_Image_Hook> (hook))
+			std::get <Cmd_Image_Hook> (hook)(cmd, swapchain.images[op.index]);
+		else
+			std::get <Cmd_Hook> (hook)(cmd);
+	}
+
 	cmd.beginRenderPass(rpbi, vk::SubpassContents::eInline);
 
 	littlevk::viewport_and_scissor(cmd, littlevk::RenderArea(window));
@@ -617,13 +626,27 @@ void Renderer::render()
 	ImGui_ImplGlfw_NewFrame();
 	ImGui::NewFrame();
 
-	for (auto &hook : hooks)
-		hook(cmd);
+	// Hooks inside render pass
+	for (auto &hook : hooks) {
+		if (std::holds_alternative <Cmd_Image_Hook> (hook))
+			std::get <Cmd_Image_Hook> (hook)(cmd, swapchain.images[op.index]);
+		else
+			std::get <Cmd_Hook> (hook)(cmd);
+	}
 
 	ImGui::Render();
 	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
 
 	cmd.endRenderPass();
+
+	// Hooks after render pass
+	for (auto &hook : postrender_hooks) {
+		if (std::holds_alternative <Cmd_Image_Hook> (hook))
+			std::get <Cmd_Image_Hook> (hook)(cmd, swapchain.images[op.index]);
+		else
+			std::get <Cmd_Hook> (hook)(cmd);
+	}
+
 	cmd.end();
 
 	// Submit command buffer while signaling the semaphore
@@ -638,6 +661,10 @@ void Renderer::render()
 	};
 
 	graphics_queue.submit(submit_info, sync.in_flight[frame]);
+
+	// Post submit hooks
+	for (auto &hook : postsubmit_hooks)
+		hook();
 
 	// Send image to the screen
 	op = littlevk::present_image(present_queue, swapchain.swapchain, sync[frame], op.index);

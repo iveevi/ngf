@@ -1,5 +1,5 @@
 [submodule "glm"]
-	path = rasterizer/glm
+	path = thirdparty/glm
 	url = https://github.com/g-truc/glm
 [submodule "littlevk"]
 	path = rasterizer/littlevk
@@ -7,3 +7,6 @@
 [submodule "imgui"]
 	path = rasterizer/imgui
 	url = https://github.com/ocornut/imgui.git
+[submodule "rasterizer/stb"]
+	path = rasterizer/stb
+	url = https://github.com/nothings/stb

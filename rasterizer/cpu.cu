@@ -152,6 +152,11 @@ static auto embedding(const std::vector <glm::vec3> &lerped_P, const std::vector
 }
 
 // Evaluate the neural network
+inline float leaky_relu(float x)
+{
+	return x > 0 ? x : 0.01f * x;
+}
+
 std::vector <glm::vec3> eval(uint32_t sample_rate)
 {
 	// Interpolate to obtain the vertex positions and features
@@ -159,11 +164,9 @@ std::vector <glm::vec3> eval(uint32_t sample_rate)
 
 	// Construct the network input with embeddings
 	uint32_t vertex_count = sample_rate * sample_rate * g_sdc.complex_count;
-	uint32_t ffwd_size = g_sdc.ffwd_size();
 
 	// Evaluate the neural network layers
 	std::vector <float> hidden = embedding(lerped_P, lerped_F, sample_rate);
-
 	ulog_info("eval", "Constructed network input embeddings\n");
 
 	#pragma omp parallel for
@@ -172,9 +175,8 @@ std::vector <glm::vec3> eval(uint32_t sample_rate)
 
 		hidden = matmul_biased(g_dnn.Wm_c[i], hidden, g_dnn.Hs[i], g_dnn.Ws[i]);
 		if (i < g_dnn.Wm_c.size() - 1) {
-			// Apply activation
 			for (uint32_t j = 0; j < hidden.size(); j++)
-				hidden[j] = g_dnn.activations[i](hidden[j]);
+				hidden[j] = leaky_relu(hidden[j]);
 		}
 	}
 
