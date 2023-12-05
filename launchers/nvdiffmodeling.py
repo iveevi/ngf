@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import subprocess
+import shutil
 
 assert len(sys.argv) == 3, 'Usage: python __file__ <reference> <directory with simplified models>'
 
@@ -15,9 +16,14 @@ assert os.path.exists(ref),  'Reference mesh does not exist'
 
 # Find all qslim-* models in the directory
 models = []
-for f in os.listdir(sys.argv[2]):
-    if f.startswith('qslim-') and f.endswith('.obj'):
-        models.append(f)
+# for f in os.listdir(sys.argv[2]):
+#     if f.startswith('qslim-') and f.endswith('.obj'):
+#         models.append(f)
+
+for root, dirs, files in os.walk(sys.argv[2]):
+    for f in files:
+        if f.startswith('qslim-') and f.endswith('.obj'):
+            models.append(os.path.join(root, f))
 
 print('Found {} models'.format(len(models)))
 print(models)
@@ -29,9 +35,10 @@ tmp = 'results/comparisons/nvdiffmodeling/' + name
 os.makedirs(tmp, exist_ok=True)
 
 for m in models:
-    base = os.path.splitext(m)[0]
+    base = os.path.basename(m)
+    base = os.path.splitext(base)[0]
     data = {
-            'base_mesh': os.path.join(sys.argv[2], m),
+            'base_mesh': m,
             'ref_mesh': ref,
             'camera_eye': [ 2.5, 0.0, -2.5 ],
             'camera_up': [ 0.0, 1.0, 0.0 ],
@@ -42,7 +49,7 @@ for m in models:
             'batch': 8,
             'learning_rate': 0.001,
             'min_roughness' : 0.25,
-            'out_dir' : os.path.join(tmp, base),
+            'out_dir' : os.path.join(tmp, base)
     }
 
     print('Running', data)
@@ -58,13 +65,7 @@ for m in models:
     assert os.path.exists(nvdiff), 'nvdiffmodeling did not produce a mesh'
 
     # Get the resolution from the qslim object
-    import re
-    pattern = re.compile(r'qslim-r(\d+).obj')
-    match = pattern.match(m)
-    assert match is not None, 'Could not parse resolution from qslim object'
-
-    # out = os.path.join(tmp, 'nvdiffmodeling-r{}.obj'.format(match.group(1)))
-    out = os.path.join(sys.argv[2], 'nvdiffmodeling-r{}.obj'.format(match.group(1)))
+    out = m.replace('qslim', 'nvdiffmodeling')
+    # out = os.path.join(sys.argv[2], out)
     print('Copying {} to {}'.format(nvdiff, out))
-
-    subprocess.run(['cp', nvdiff, out])
+    shutil.copy(nvdiff, out)

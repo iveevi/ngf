@@ -202,7 +202,7 @@ if not headless:
     ps.register_surface_mesh('base-original', base.detach().cpu().numpy(), indices)
     ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
             .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
-    # ps.show()
+    ps.show()
 
 # TODO: tone mapping
 # From NVIDIA

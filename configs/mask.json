@@ -4,7 +4,7 @@
 	"directory": "results/mask",
 	"experiments": [
 		{
-			"name": "log-srgb",
+			"name": "render",
 			"source": "meshes/mask/source.obj",
 			"method": "lrelu/linear",
 			"clusters": 250,

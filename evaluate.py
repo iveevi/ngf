@@ -1,11 +1,15 @@
+import imageio
 import json
 import meshio
 import os
+import shutil
+import subprocess
 import sys
 import torch
-import imageio
 
-from torch.utils.cpp_extension import load
+import optext
+
+# from torch.utils.cpp_extension import load
 from scripts.geometry import compute_face_normals, compute_vertex_normals
 
 from util import *
@@ -26,16 +30,6 @@ assert db is not None
 # Expect specific naming conventions for reference and db
 assert os.path.basename(reference) == 'target.obj'
 assert os.path.splitext(db)[1] == '.json'
-
-# Load all necessary extensions
-optext = load(name='optext',
-        sources=[ 'optext.cu' ],
-        extra_include_paths=[ 'glm' ],
-        build_directory='build',
-        extra_cflags=[ '-O3' ],
-        extra_cuda_cflags=[ '-O3' ])
-
-print('Loaded optimization extension')
 
 # Converting meshio to torch
 convert = lambda M: (torch.from_numpy(M.points).float().cuda(), torch.from_numpy(M.cells_dict['triangle']).int().cuda())
@@ -83,6 +77,8 @@ seeds           = list(torch.randint(0, f_simplified.shape[0], (cameras,)).numpy
 target_geometry = optext.geometry(v_simplified.cpu(), n_simplified.cpu(), f_simplified.cpu())
 target_geometry = target_geometry.deduplicate()
 clusters        = optext.cluster_geometry(target_geometry, seeds, 10)
+# FIXME:
+# clusters        = optext.cluster_geometry(target_geometry, seeds, 2)
 
 # Compute the centroid and normal for each cluster
 cluster_centroids = []
@@ -119,7 +115,8 @@ scene = {}
 scene['view_mats'] = all_views
 
 # Also load an environment map
-environment = imageio.imread('images/environment.hdr', format='HDR-FI')
+# TODO: path/constants file
+environment = imageio.imread('media/images/environment.hdr', format='HDR-FI')
 environment = torch.tensor(environment, dtype=torch.float32, device='cuda')
 alpha       = torch.ones((*environment.shape[:2], 1), dtype=torch.float32, device='cuda')
 environment = torch.cat((environment, alpha), dim=-1)
@@ -222,6 +219,10 @@ def sampled_measurements(target, target_cas, source, source_cas):
 
     return dpm.item(), dnormal.item()
 
+def alpha_blend(img):
+    alpha = img[..., 3:]
+    return img[..., :3] * alpha + (1.0 - alpha)
+
 def render_loss(target, source, alt=None):
     batch = 10
     cameras = scene['view_mats']
@@ -234,14 +235,30 @@ def render_loss(target, source, alt=None):
     assert cameras_count % batch == 0
     for i in range(0, cameras_count, batch):
         camera_batch = cameras[i:i + batch]
+
         t_imgs = renderer.render(tV, tN, tF, camera_batch)
         s_imgs = renderer.render(sV, sN, sF if alt is None else alt, camera_batch)
 
-        # TODO: alpha difference here
+        t_imgs = alpha_blend(t_imgs)
+        s_imgs = alpha_blend(s_imgs)
+
         loss = torch.mean(torch.abs(t_imgs - s_imgs))
         losses.append(loss.item())
 
-    return sum(losses) / len(losses)
+    # Present view
+    eye = torch.tensor([ 0, 0, -2.5 ], device='cuda')
+    up = torch.tensor([0.0, -1.0, 0.0], device='cuda')
+    center = torch.tensor([0.0, 0.0, 0.0], device='cuda')
+
+    camera = lookat(eye, center, up).unsqueeze(0)
+
+    t_img = renderer.render(tV, tN, tF, camera)[0]
+    s_img = renderer.render(sV, sN, sF, camera)[0]
+
+    t_img = alpha_blend(t_img)
+    s_img = alpha_blend(s_img)
+
+    return sum(losses) / len(losses), s_img, t_img
 
 def normal_loss(target, source, alt=None):
     batch = 10
@@ -261,7 +278,17 @@ def normal_loss(target, source, alt=None):
         loss = torch.mean(torch.abs(t_nrms - s_nrms))
         losses.append(loss.item())
 
-    return sum(losses) / len(losses)
+    # Present view
+    eye = torch.tensor([ 0, 0, -2.5 ], device='cuda')
+    up = torch.tensor([0.0, -1.0, 0.0], device='cuda')
+    center = torch.tensor([0.0, 0.0, 0.0], device='cuda')
+
+    camera = lookat(eye, center, up).unsqueeze(0)
+
+    t_nrm = renderer.render_normals(tV, tN, tF, camera)[0]
+    s_nrm = renderer.render_normals(sV, sN, sF, camera)[0]
+
+    return sum(losses) / len(losses), s_nrm, t_nrm
     # TODO: PSNR here (and L1)
 
 def chamfer_loss(target, source):
@@ -286,7 +313,9 @@ def chamfer_loss(target, source):
     return (sum_S1 + sum_S2).item()
 
 # Writing to the database
-def write(catag, dpm, dnormal, render, normal, chamfer, size=0, cratio=1):
+import torchvision
+
+def write(catag, data):
     global db
 
     # Open or create the database (json)
@@ -297,40 +326,34 @@ def write(catag, dpm, dnormal, render, normal, chamfer, size=0, cratio=1):
     with open(db, 'r') as f:
         db_json = json.load(f)
 
+        # Save all images in disk and replace with paths
+        count = data['count']
+
+        image_paths = {}
+
+        os.makedirs(os.path.join(directory, 'images'), exist_ok=True)
+        for tag, img in data['images'].items():
+            path = os.path.join(directory, 'images', '%s-%d-%s.png' % (catag, count, tag))
+            img = img.permute(2, 0, 1)
+            torchvision.utils.save_image(img.detach().cpu(), path)
+            image_paths[tag] = path
+
+        data['images'] = image_paths
+
         # Get the directory of the reference
         ref_dir = os.path.dirname(reference)
         ref_tag = os.path.basename(ref_dir)
-
-        # Get information on the source
-        tags = catag.split('-')
-        print('Source tags: %s' % tags)
-
-        # Add the nested entry with all the source tags
-        ref_entry = {
-            'dpm': dpm,
-            'dnormal': dnormal,
-            'render': render,
-            'normal': normal,
-            'chamfer': chamfer,
-            'size': size,
-            'cratio': cratio,
-        }
-
-        for tag in reversed(tags):
-            ref_entry = { tag: ref_entry }
+        ref_entry = { catag: [ data ] }
 
         # Write the entry back
-        print('Writing entry: %s' % ref_entry)
         if ref_tag in db_json:
             db_tmp = db_json[ref_tag]
-            while True:
-                key = list(ref_entry.keys())[0]
-                if key in db_tmp:
-                    db_tmp = db_tmp[key]
-                    ref_entry = ref_entry[key]
-                else:
-                    db_tmp[key] = ref_entry[key]
-                    break
+            if catag in db_tmp:
+                db_tmp[catag].append(ref_entry[catag][0])
+                db_json[ref_tag] = db_tmp
+            else:
+                db_tmp[catag] = ref_entry[catag]
+                db_json[ref_tag] = db_tmp
         else:
             db_json[ref_tag] = ref_entry
 
@@ -345,18 +368,12 @@ if not os.path.exists(db):
 else:
     with open(db, 'r') as f:
         db_json = json.load(f)
-        print('Loaded database with %d entries' % len(db_json))
-
-        # Determine the entry to write to
 
         # get the directory of the reference
         ref_dir = os.path.dirname(reference)
         ref_tag = os.path.basename(ref_dir)
-        print('Reference directory: %s' % ref_dir)
-        print('Reference tag: %s' % ref_tag)
 
         if ref_tag in db_json:
-            print('Erasing existing entry: %s' % db_json[ref_tag])
             del db_json[ref_tag]
 
     # Write the database back
@@ -368,6 +385,55 @@ vertex_bytes = target[0].numel() * target[0].element_size()
 index_bytes = target[2].numel() * target[2].element_size()
 target_total = vertex_bytes + index_bytes
 
+# Evaluating a single mesh
+def evaluate(source):
+    vertex_bytes = source.points.size * source.points.dtype.itemsize
+    index_bytes = source.cells[0].data.size * source.cells[0].data.dtype.itemsize
+
+    source.points = normalize(source.points)
+    source = convert(source)
+
+    fn = compute_face_normals(source[0], source[1])
+    vn = compute_vertex_normals(source[0], source[1], fn)
+
+    source = optext.geometry(source[0].cpu(), vn.cpu(), source[1].cpu())
+    source_cas = optext.cached_grid(source, 32)
+    source = source.torched()
+
+    # Compute raw binary byte size
+    vertex_bytes = source[0].numel() * source[0].element_size()
+    index_bytes = source[2].numel() * source[2].element_size()
+    total = vertex_bytes + index_bytes
+
+    render, s_img, t_img = render_loss(target, source)
+    normal, s_nrm, t_nrm = normal_loss(target, source)
+    dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
+    chamfer      = chamfer_loss(target, source)
+    cratio       = target_total / total
+
+    return {
+        'count': source[2].shape[0],
+        'dpm': dpm,
+        'dnormal': dnormal,
+        'render': render,
+        'normal': normal,
+        'chamfer': chamfer,
+        'size': total,
+        'cratio': cratio,
+        'images': {
+            'render-source': s_img,
+            'render-target': t_img,
+            'normal-source': s_nrm,
+            'normal-target': t_nrm
+        }
+    }
+
+def evaluate_mesh(path):
+    source = meshio.read(path)
+    source.points = source.points.astype(np.float32)
+    source.cells[0].data = source.cells[0].data.astype(np.int32)
+    return evaluate(source)
+
 # Recursively find all simple meshes and model configurations
 for root, dirs, files in os.walk(directory):
     for file in files:
@@ -375,128 +441,117 @@ for root, dirs, files in os.walk(directory):
         if 'unpacked' in path:
             continue
 
-        if file.endswith('.obj'):
-            print('Loading source mesh: %s' % path)
+        if file.endswith('.obj') and file.startswith('nvdiffmodeling'):
+            print('Evaluating:', path)
+            data = evaluate_mesh(path)
+            write('nvdiffmodeling', data)
 
-            source = meshio.read(path)
-            source.points = normalize(source.points)
-            source = convert(source)
+        if not file.endswith('.pt'):
+            continue
 
-            fn = compute_face_normals(source[0], source[1])
-            vn = compute_vertex_normals(source[0], source[1], fn)
+        # TODO: generate qslims... (then later run here...)
+        print('Loading NGF representation:', file)
 
-            source = optext.geometry(source[0].cpu(), vn.cpu(), source[1].cpu())
-            source_cas = optext.cached_grid(source, 32)
-            source = source.torched()
+        data = torch.load(os.path.join(root, file))
+
+        m = data['model']
+        c = data['complexes']
+        p = data['points']
+        f = data['features']
+
+        nsc = file.split('.')[0]
+
+        m = data['model']
+        c = data['complexes']
+        p = data['points']
+        f = data['features']
+        l = data['kernel']
+        ker = lerps[l]
+
+        # Compute byte size of the representation
+        feature_bytes = f.numel() * f.element_size()
+        index_bytes = c.numel() * c.element_size()
+        model_bytes = sum([ p.numel() * p.element_size() for p in m.parameters() ])
+        vertex_bytes = p.numel() * p.element_size()
+        total = feature_bytes + index_bytes + model_bytes + vertex_bytes
+
+        rate = 16
+        lerped_points, lerped_features = sample(c, p, f, rate, kernel=ker)
+
+        vertices = m(points=lerped_points, features=lerped_features).detach()
+
+        I = shorted_indices(vertices.cpu().numpy(), c, rate)
+        I = torch.from_numpy(I).int()
+
+        cmap = make_cmap(c, p.detach(), lerped_points.detach(), rate)
+        remap = optext.generate_remapper(c.cpu(), cmap, lerped_points.shape[0], rate)
+        F = remap.remap(I).cuda()
+
+        fn = compute_face_normals(vertices, F)
+        vn = compute_vertex_normals(vertices, F, fn)
+
+        source = optext.geometry(vertices.cpu(), vn.cpu(), I)
+        source_cas = optext.cached_grid(source, 32)
+        source = source.torched()
+
+        render, s_img, t_img = render_loss(target, source, alt=F)
+        normal, s_nrm, t_nrm = normal_loss(target, source, alt=F)
+        dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
+        chamfer      = chamfer_loss(target, source)
+        cratio       = target_total / total
+
+        data = {
+            'count': c.shape[0],
+            'dpm': dpm,
+            'dnormal': dnormal,
+            'render': render,
+            'normal': normal,
+            'chamfer': chamfer,
+            'size': total,
+            'cratio': cratio,
+            'images': {
+                'render-source': s_img,
+                'render-target': t_img,
+                'normal-source': s_nrm,
+                'normal-target': t_nrm
+            }
+        }
+
+        write('ngf', data)
+
+        # Find qslim for this mesh at comparable compression ratio
+        binary = os.path.join(os.path.dirname(__file__), 'build', 'simplify')
+        base = os.path.basename(reference)
+        base = os.path.splitext(base)[0]
+        os.makedirs(os.path.join(directory, 'comparisons'), exist_ok=True)
+        smashed = os.path.join(directory, 'comparisons', base + '_smashed.obj')
+
+        def qslim(rate):
+            cmd = subprocess.list2cmdline([ binary, reference, smashed, str(rate) ])
+            subprocess.call(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
             # Compute raw binary byte size
-            vertex_bytes = source[0].numel() * source[0].element_size()
-            index_bytes = source[2].numel() * source[2].element_size()
+            qslimmed = meshio.read(smashed)
+            qslimmed.points = qslimmed.points.astype(np.float32)
+            qslimmed.cells[0].data = qslimmed.cells[0].data.astype(np.int32)
+
+            vertex_bytes = qslimmed.points.size * qslimmed.points.dtype.itemsize
+            index_bytes = qslimmed.cells[0].data.size * qslimmed.cells[0].data.dtype.itemsize
             total = vertex_bytes + index_bytes
 
-            dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
-            render       = render_loss(target, source)
-            normal       = normal_loss(target, source)
-            chamfer      = chamfer_loss(target, source)
-            cratio       = target_total / total
+            # print('  > QSlim: %s [%f] at %d vertices' % (smashed, target_total / total, qslimmed.points.shape[0]))
+            return target_total / total
 
-            print('  > DPM: %f' % dpm)
-            print('  > DNormal: %f' % dnormal)
-            print('  > Render: %f' % render)
-            print('  > Normal: %f' % normal)
-            print('  > Chamfer: %f' % chamfer)
-            print('  > Size: %d KB' % (total/1024))
-            print('  > Compression: %f' % cratio)
+        small, large = 0.001, 0.95
+        for i in range(15):
+            mid = (small + large) / 2
+            qslim_cratio = qslim(mid)
+            if qslim_cratio < cratio:
+                large = mid
+            else:
+                small = mid
 
-            catag = os.path.basename(file)
-            catag = os.path.splitext(catag)[0]
-            write(catag, dpm, dnormal, render, normal, chamfer, size=total, cratio=cratio)
-        elif file.endswith('.pt'):
-            print('Loading NSC representation:', file)
-
-            data = torch.load(os.path.join(root, file))
-
-            m = data['model']
-            c = data['complexes']
-            p = data['points']
-            f = data['features']
-
-            nsc = file.split('.')[0]
-            print('  > nsc:', nsc)
-
-            m = data['model']
-            c = data['complexes']
-            p = data['points']
-            f = data['features']
-            l = data['kernel']
-
-            print('  > c:', c.shape)
-            print('  > p:', p.shape)
-            print('  > f:', f.shape)
-            print('  > l:', l)
-
-            ker = lerps[l]
-            print('  > clerp:', ker)
-
-            # Compute byte size of the representation
-            feature_bytes = f.numel() * f.element_size()
-            index_bytes = c.numel() * c.element_size()
-            model_bytes = sum([ p.numel() * p.element_size() for p in m.parameters() ])
-            vertex_bytes = p.numel() * p.element_size()
-            total = feature_bytes + index_bytes + model_bytes + vertex_bytes
-
-            print('  > Size: %d KB' % (total/1024))
-
-            for rate in [ 2, 4, 8, 16 ]:
-                lerped_points, lerped_features = sample(c, p, f, rate, kernel=ker)
-                # print('    > lerped_points:', lerped_points.shape)
-                # print('    > lerped_features:', lerped_features.shape)
-
-                vertices = m(points=lerped_points, features=lerped_features).detach()
-
-                I = shorted_indices(vertices.cpu().numpy(), c, rate)
-                I = torch.from_numpy(I).int()
-
-                cmap = make_cmap(c, p.detach(), lerped_points.detach(), rate)
-                remap = optext.generate_remapper(c.cpu(), cmap, lerped_points.shape[0], rate)
-                F = remap.remap(I).cuda()
-
-                # import polyscope as ps
-                # ps.init()
-                # ps.register_surface_mesh('mesh', lerped_points.detach().cpu().numpy(), F.cpu().numpy())
-                # ps.show()
-
-                fn = compute_face_normals(vertices, F)
-                vn = compute_vertex_normals(vertices, F, fn)
-
-                if torch.isnan(vertices).any():
-                    print('  > vertices has nan')
-                    continue
-                if torch.isnan(fn).any():
-                    print('  > F has nan')
-                    continue
-                if torch.isnan(vn).any():
-                    print('  > vn has nan')
-                    continue
-
-                source = optext.geometry(vertices.cpu(), vn.cpu(), I)
-                source_cas = optext.cached_grid(source, 32)
-                source = source.torched()
-
-                dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
-                render       = render_loss(target, source, alt=F)
-                normal       = normal_loss(target, source, alt=F)
-                chamfer      = chamfer_loss(target, source)
-                cratio       = target_total / total
-
-                catag = nsc + '-r' + str(rate)
-                print('  > rate: %d, tag: %s' % (rate, catag))
-                print('    > DPM: %f' % dpm)
-                print('    > DNormal: %f' % dnormal)
-                print('    > Render: %f' % render)
-                print('    > Normal: %f' % normal)
-                print('    > Chamfer: %f' % chamfer)
-                print('    > Size: %d KB' % (total/1024))
-
-                # TODO: pass dict
-                write(catag, dpm, dnormal, render, normal, chamfer, size=total, cratio=cratio)
+        # Process this mesh as well
+        write('qslim', evaluate_mesh(smashed))
+        save = os.path.join(directory, 'comparisons', 'qslim-%s-%d.obj' % (nsc, c.shape[0]))
+        shutil.copy(smashed, save)

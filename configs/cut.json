@@ -1,0 +1,24 @@
+{
+	"name": "deer",
+	"target": "meshes/deer/target.obj",
+	"directory": "results/deer",
+	"experiments": [
+		{
+			"name": "cut",
+			"source": "meshes/deer/cut.obj",
+			"method": "lrelu/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		},
+
+		{
+			"name": "full",
+			"source": "meshes/deer/source.obj",
+			"method": "lrelu/linear",
+			"clusters": 250,
+			"batch": 10,
+			"resolution": 16
+		}
+	]
+}

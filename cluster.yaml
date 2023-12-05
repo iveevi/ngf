@@ -1,51 +1,48 @@
-apiVersion: v1
-kind: Pod
+apiVersion: batch/v1
+kind: Job
 metadata:
   name: nsc
 spec:
-  affinity:
-   nodeAffinity:
-     requiredDuringSchedulingIgnoredDuringExecution:
-       nodeSelectorTerms:
-       - matchExpressions:
-         - key: nvidia.com/gpu.product
-           operator: In
-           values:
-           - NVIDIA-GeForce-RTX-3090
-  containers:
-    - name: nsc
-      image: vedavamadathil/nsc:latest
-      command:
-        - sh
-        - -c
-        - "cd /opt/repo/nsc && sleep infinity"
-      resources:
-        requests:
-          memory: 16Gi
-          cpu: 8
-          nvidia.com/gpu: 1
-        limits:
-          memory: 16Gi
-          cpu: 8
-          nvidia.com/gpu: 1
-      volumeMounts:
-            - name: git-repo
-              mountPath: /opt/repo
-            # - name: results
-            #   mountPath: /opt/results
-  initContainers:
-    - name: init-clone-repo
-      image: alpine/git
-      args:
-        - clone
-        - https://github.com/vedavamadathil/nsc
-        - /opt/repo/nsc
-      volumeMounts:
+  template:
+    affinity:
+     nodeAffinity:
+       requiredDuringSchedulingIgnoredDuringExecution:
+         nodeSelectorTerms:
+         - matchExpressions:
+           - key: nvidia.com/gpu.product
+             operator: In
+             values:
+             - NVIDIA-GeForce-RTX-3090
+    containers:
+      - name: nsc
+        image: vedavamadathil/nsc:latest
+        command:
+          - sh
+          - -c
+          - "cd /opt/repo/nsc && pip install -r requirements.txt && sh setup.sh"
+        resources:
+          requests:
+            memory: 16Gi
+            cpu: 8
+            nvidia.com/gpu: 1
+          limits:
+            memory: 16Gi
+            cpu: 8
+            nvidia.com/gpu: 1
+        volumeMounts:
+              - name: git-repo
+                mountPath: /opt/repo
+    initContainers:
+      - name: init-clone-repo
+        image: alpine/git
+        args:
+          - clone
+          - https://github.com/vedavamadathil/nsc
+          - /opt/repo/nsc
+        volumeMounts:
+          - name: git-repo
+            mountPath: /opt/repo
+    volumes:
         - name: git-repo
-          mountPath: /opt/repo
-  volumes:
-      - name: git-repo
-        emptyDir: {}
-      # - name: results
-      #   emptyDir: {}
-  restartPolicy: Never
+          emptyDir: {}
+    restartPolicy: Never

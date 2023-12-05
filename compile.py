@@ -27,8 +27,8 @@ if __name__ == '__main__':
             mlp = model['model']
 
             make = mlp.__class__.__name__
-            if not 'Onion' in make:
-                print('Model is not onion based, skipping...')
+            if not 'LeakyReLU' in make:
+                print('Model is not leaky relu based, skipping...')
                 continue
 
             kernel = model['kernel']
@@ -42,9 +42,9 @@ if __name__ == '__main__':
 
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, 'wb') as f:
-                s0, s1, s2 = mlp.s0.item(), mlp.s1.item(), mlp.s2.item()
-                ss = np.array([ s0, s1, s2 ], dtype='float32')
-                print('Scales: {}, {}, {}'.format(s0, s1, s2))
+                # s0, s1, s2 = mlp.s0.item(), mlp.s1.item(), mlp.s2.item()
+                # ss = np.array([ s0, s1, s2 ], dtype='float32')
+                # print('Scales: {}, {}, {}'.format(s0, s1, s2))
 
                 weights = [ L.weight.data for L in mlp.encoding_linears.cpu() ]
                 biases  = [ L.bias.data   for L in mlp.encoding_linears.cpu() ]
@@ -73,7 +73,7 @@ if __name__ == '__main__':
                 biases_bytes  = b''.join([ b.numpy().astype('float32').tobytes() for b in biases ])
 
                 # Writing data to file
-                f.write(ss.tobytes())
+                # f.write(ss.tobytes())
                 f.write(sizes.tobytes())
 
                 f.write(complexes_bytes)

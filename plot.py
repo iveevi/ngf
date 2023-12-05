@@ -5,14 +5,17 @@ import os
 import re
 import seaborn as sns
 import sys
+import torch
+import torchmetrics
+import torchvision
 
-from prettytable import PrettyTable
+from PIL import Image
 
 # TODO: pass catags with argparse
 assert len(sys.argv) >= 3, 'Usage: python plot.py <database> <key>'
 
 db       = sys.argv[1]
-key      = sys.argv[2]
+name     = sys.argv[2]
 patterns = sys.argv[3:]
 
 regexes = []
@@ -24,176 +27,179 @@ sns.set_theme(style="whitegrid")
 palette = sns.color_palette("hls", 8)
 
 plt.rcParams['text.usetex'] = True
-def textsc(str):
-    return r'\textsc{' + str + '}'
+plt.rcParams['figure.dpi'] = 300
 
-def refmt(str):
-    splits = str.split('-')
-    for i in range(len(splits)):
-        splits[i] = splits[i].capitalize()
-        # if it ends with a number, add as subscript
-        if splits[i][-1].isdigit():
-            splits[i] = splits[i][:-1] + '$_{' + splits[i][-1] + '}$'
-
-    return ' '.join(splits)
-
-def get_secondary_atomic_parents(data, catag=''):
-    if not isinstance(data, dict):
-        assert False, 'Empty data'
+def itoa(x):
+    if x >= 1000:
+        return '{:.1f}K'.format(x / 1000)
     else:
-        direct_parent = True
-        for k, v in data.items():
-            if isinstance(v, dict):
-                direct_parent = False
-                break
-
-        if direct_parent:
-            return -1
-
-        second_level = True
-        for k, v in data.items():
-            if get_secondary_atomic_parents(v) != -1:
-                second_level = False
-                break
-
-        if second_level:
-            return (catag, data)
-        else:
-            l = []
-            for k, v in data.items():
-                ncatag = catag + ('' if catag == '' else '-') + k
-                lv = get_secondary_atomic_parents(v, ncatag)
-                if isinstance(lv, list):
-                    l.extend(lv)
-                else:
-                    l.append(lv)
-            return l
+        return str(x)
 
 with open(db) as f:
     data = json.load(f)
-    data = data[key]
+    data = data[name]
 
-    print('Plotting {}...'.format(key))
+    # Create a table
+    fig = plt.figure(figsize=(20, 6), constrained_layout=True)
+    subfigs = fig.subfigures(1, 2, wspace=0.05, hspace=0.05, width_ratios=[2.5, 1])
 
-    second_level_parents = get_secondary_atomic_parents(data)
-    print(second_level_parents)
-
-    # Dictionary for the table
-    table = {}
-
-    fig, ax = plt.subplots(3, 1, figsize=(10, 8), sharex=True, layout='constrained')
-
-    # fig.suptitle(refmt(key + '-metrics'))
+    img_ax = subfigs[0].subplots(2, 4)
+    ax     = subfigs[1].subplots(3, 1, sharex=True)
 
     # Plot dpm vs size
-    # TODO: sort by catag
     max_cratio = 0
-    for catag, resolutions in second_level_parents:
-        if not any(regex.match(catag) for regex in regexes):
-            continue
+    for k, key in enumerate(data):
+        complexes = data[key]
 
-        l = []
-        for k, v in resolutions.items():
-            normal = v['normal']
-            # size = v['size']/1024
-            cratio = v['cratio']
-            l.append((cratio, normal))
+        chamfer  = []
+        counts   = []
+        cratios  = []
+        dnormals = []
+        dpms     = []
+        normals  = []
+        renders  = []
+        src_imgs = []
+        src_nrms = []
+        tgt_imgs = []
+        tgt_nrms = []
 
-            max_cratio = max(max_cratio, cratio)
+        complexes.sort(key=lambda x: x['cratio'])
+        for entry in complexes:
+            chamfer.append(entry['chamfer'])
+            counts.append(entry['count'])
+            cratios.append(entry['cratio'])
+            dnormals.append(entry['dnormal'])
+            dpms.append(entry['dpm'])
+            normals.append(entry['normal'])
+            renders.append(entry['render'])
+            src_imgs.append(entry['images']['render-source'])
+            src_nrms.append(entry['images']['normal-source'])
+            tgt_imgs.append(entry['images']['render-target'])
+            tgt_nrms.append(entry['images']['normal-target'])
 
-        l.sort(key=lambda x: x[0])
-        x, y = zip(*l)
-        ax[0].plot(x, y, label=(refmt(catag)), marker='o')
-        table.setdefault('Normal Loss', {})[catag] = normal
+        ax[0].plot(cratios, normals, label=key, marker='o')
+        ax[1].plot(cratios, renders, label=key, marker='o')
+        ax[2].plot(cratios, chamfer, label=key, marker='o')
+        # ax[3].plot(cratios, dnormals, label=key, marker='o')
+        # ax[4].plot(cratios, dpms, label=key, marker='o')
 
-    # ax[0].set_title('Normal vs Size')
-    # ax[0].set_xlabel('Compression Ratio')
-    ax[0].set_ylabel('Normal Loss')
-    # ax[0].set_xlabel('size (KB)')
-    # ax[0].set_xscale('log')
-    ax[0].set_yscale('log')
-    # ax[0].legend()
+        color0 = ax[0].get_lines()[-1].get_color()
+        color1 = ax[1].get_lines()[-1].get_color()
+        color2 = ax[2].get_lines()[-1].get_color()
+        # color3 = ax[3].get_lines()[-1].get_color()
+        # color4 = ax[4].get_lines()[-1].get_color()
 
-    ax[0].yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
-    ax[0].ticklabel_format(style='plain', axis='x')
-    # ax[0].legend(loc='lower right', fancybox=True, framealpha=1, shadow=True, borderpad=1, markerscale=0)
+        # # Label each dot with the count
+        # for i, count in enumerate(counts):
+        #     ax[0].annotate(itoa(count), (cratios[i], normals[i]),
+        #         # xytext=(-30, 0), textcoords='offset points',
+        #         bbox=dict(boxstyle='round', fc=color0, alpha=0.5))
+        #
+        #     ax[1].annotate(itoa(count), (cratios[i], renders[i]),
+        #         # xytext=(-30, 0), textcoords='offset points',
+        #         bbox=dict(boxstyle='round', fc=color1, alpha=0.5))
+        #
+        #     ax[2].annotate(itoa(count), (cratios[i], chamfer[i]),
+        #         # xytext=(0, 0), textcoords='offset points',
+        #         bbox=dict(boxstyle='round', fc=color2, alpha=0.5))
+        #
+        #     # ax[3].annotate(itoa(count), (cratios[i], dnormals[i]),
+        #     #     xytext=(-30, 0), textcoords='offset points',
+        #     #     bbox=dict(boxstyle='round', fc=color3, alpha=0.5))
+        #
+        #     # ax[4].annotate(count, (cratios[i], dpms[i]),
+        #     #     xytext=(-30, 0), textcoords='offset points',
+        #     #     bbox=dict(boxstyle='round', fc=color4, alpha=0.5))
 
-    # Plot the atomic elements (render vs size)
-    for catag, resolutions in second_level_parents:
-        if not any(regex.match(catag) for regex in regexes):
-            continue
+        # Error images
+        t_img = Image.open(tgt_imgs[1])
+        s_img = Image.open(src_imgs[1])
 
-        l = []
-        for k, v in resolutions.items():
-            render = v['render']
-            # size = v['size']/1024
-            cratio = v['cratio']
-            l.append((cratio, render))
+        t_nrm = Image.open(tgt_nrms[1])
+        s_nrm = Image.open(src_nrms[1])
 
-        l.sort(key=lambda x: x[0])
-        x, y = zip(*l)
-        ax[1].plot(x, y, label=(refmt(catag)), marker='o')
-        table.setdefault('Render Loss', {})[catag] = render
+        t_img = torchvision.transforms.ToTensor()(t_img).permute(1, 2, 0)
+        s_img = torchvision.transforms.ToTensor()(s_img).permute(1, 2, 0)
 
-    # ax[1].set_title('Render vs Size')
-    # ax[1].set_xlabel('Compression Ratio')
-    ax[1].set_ylabel('Render Loss')
-    # ax[1].set_xlabel('size (KB)')
-    # ax[1].set_xscale('log')
-    ax[1].set_yscale('log')
-    # ax[1].legend()
+        t_nrm = torchvision.transforms.ToTensor()(t_nrm).permute(1, 2, 0)
+        s_nrm = torchvision.transforms.ToTensor()(s_nrm).permute(1, 2, 0)
 
-    ax[1].yaxis.set_minor_formatter(ticker.FormatStrFormatter('%.2f'))
-    ax[1].ticklabel_format(style='plain', axis='x')
-    # ax[1].legend(loc='lower right', fancybox=True, framealpha=1, shadow=True, borderpad=1, markerscale=0)
+        e_img = (t_img - s_img).abs().mean(dim=2)
+        e_nrm = (t_nrm - s_nrm).abs().mean(dim=2)
 
-    # Plot the atomic elements (chamfer vs size)
-    for catag, resolutions in second_level_parents:
-        if not any(regex.match(catag) for regex in regexes):
-            continue
+        psnr = torchmetrics.PeakSignalNoiseRatio()
+        psnr_img = psnr(t_img, s_img)
+        psnr_nrm = psnr(t_nrm, s_nrm)
 
-        l = []
-        for k, v in resolutions.items():
-            chamfer = v['chamfer']
-            # size = v['size']/1024
-            cratio = v['cratio']
-            l.append((cratio, chamfer))
+        l1_img = e_img.mean()
+        l1_nrm = e_nrm.mean()
 
-        l.sort(key=lambda x: x[0])
-        x, y = zip(*l)
-        ax[2].plot(x, y, label=(refmt(catag)), marker='o')
-        table.setdefault('Chamfer Distance', {})[catag] = chamfer
+        # print(key, psnr_img, psnr_nrm)
 
-    # ax[2].set_title('Chamfer vs Size')
+        # Preview images
+        capped_key = key.upper()
+        img_ax[0][k + 1].imshow(s_img)
+        img_ax[0][k + 1].grid(False)
+        img_ax[0][k + 1].set_xticks([])
+        img_ax[0][k + 1].set_yticks([])
+        img_ax[0][k + 1].set_xlabel(f'{{ {psnr_img:.2f}/{l1_img:.3f} }}')
+        img_ax[0][k + 1].set_title(f'{{ {capped_key} }}')
+
+        # Add the error image as an inset
+        axins = img_ax[0][k + 1].inset_axes([0, 0, 0.35, 0.35])
+        axins.imshow(e_img, cmap='coolwarm')
+        axins.set_xticks([])
+        axins.set_yticks([])
+
+        img_ax[1][k + 1].imshow(s_nrm)
+        img_ax[1][k + 1].grid(False)
+        img_ax[1][k + 1].set_xticks([])
+        img_ax[1][k + 1].set_yticks([])
+        img_ax[1][k + 1].set_xlabel(f'{{ {psnr_nrm:.2f}/{l1_nrm:.3f} }}')
+
+        # Add the error image as an inset
+        axins = img_ax[1][k + 1].inset_axes([0, 0, 0.35, 0.35])
+        axins.imshow(e_nrm, cmap='coolwarm')
+        axins.set_xticks([])
+        axins.set_yticks([])
+
+        if k == 0:
+            img_ax[0][0].imshow(t_img)
+            img_ax[0][0].set_ylabel('Render')
+            img_ax[0][0].grid(False)
+            img_ax[0][0].set_xticks([])
+            img_ax[0][0].set_yticks([])
+            img_ax[0][0].set_title('{{ Ground Truth }}')
+
+            img_ax[1][0].imshow(t_nrm)
+            img_ax[1][0].set_ylabel('Normal')
+            img_ax[1][0].grid(False)
+            img_ax[1][0].set_xticks([])
+            img_ax[1][0].set_yticks([])
+
+    ax[0].set_ylabel('Normals')
+    ax[1].set_ylabel('Renders')
+    ax[2].set_ylabel('Chamfer')
+    # ax[3].set_ylabel('DNormals')
+    # ax[4].set_ylabel('DPM')
+
     ax[2].set_xlabel('Compression Ratio')
-    ax[2].set_ylabel('Chamfer Distance')
-    # ax[2].set_xlabel('Size (KB)')
-    # ax[2].set_xscale('log')
-    ax[2].set_yscale('log')
-    # ax[2].legend()
 
-    ax[2].yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
-    ax[2].ticklabel_format(style='plain', axis='x')
-    # ax[2].legend(loc='lower right', fancybox=True, framealpha=1, shadow=True, borderpad=1, markerscale=0)
-
-    # plt.xlim(0, None)
-
-    # Collect all the labels to put in the figure legend
-    handles, labels = ax[0].get_legend_handles_labels()
+    for axis in ax:
+        axis.yaxis.set_major_formatter(ticker.ScalarFormatter())
+        axis.ticklabel_format(style='plain', axis='x')
 
     # Plot the legend
-    # TODO: also alter the color palette
-    fig.legend(handles, labels, loc='outside upper center', ncol=len(handles), fancybox=True, framealpha=1, shadow=True, borderpad=1, markerscale=0, fontsize='small')
+    handles, labels = ax[0].get_legend_handles_labels()
+    ax[0].legend(handles, labels,
+        loc='upper left',
+        ncol=len(handles),
+        fancybox=True,
+        framealpha=0.5,
+        shadow=False,
+        borderpad=1,
+        markerscale=0,
+        fontsize='small')
 
-    # fig.tight_layout()
-
-    plt.savefig(os.path.join('figures', key + '_metrics.pdf'), format='pdf')
+    plt.savefig(os.path.join('media/figures', name + '_metrics.pdf'), format='pdf')
     plt.show()
-
-    # Create and print the table
-    t = PrettyTable()
-    t.field_names = ['Catagory'] + labels
-    for k, v in table.items():
-        t.add_row([k] + list(v.values()))
-
-    print(t)
