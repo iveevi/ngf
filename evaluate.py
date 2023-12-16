@@ -40,6 +40,8 @@ print('Loading target mesh: %s' % reference)
 target_path = os.path.basename(reference)
 target = meshio.read(reference)
 
+print('  > %d vertices, %d faces' % (target.points.shape[0], target.cells[0].data.shape[0]))
+
 v_ref = target.points
 min = np.min(v_ref, axis=0)
 max = np.max(v_ref, axis=0)
@@ -126,8 +128,9 @@ scene['envmap_scale'] = 1.0
 
 print('Loaded scene with %d cameras' % len(scene['view_mats']))
 
-scene['res_x'] = 1024
-scene['res_y'] = 640
+# TODO: use higher resolution...
+scene['res_x'] = 1920
+scene['res_y'] = 1080
 scene['fov'] = 45.0
 scene['near_clip'] = 0.1
 scene['far_clip'] = 1000.0
@@ -223,7 +226,7 @@ def alpha_blend(img):
     alpha = img[..., 3:]
     return img[..., :3] * alpha + (1.0 - alpha)
 
-def render_loss(target, source, alt=None):
+def render_loss(target, source, alt=None, alt_n=None):
     batch = 10
     cameras = scene['view_mats']
     cameras_count = cameras.shape[0]
@@ -232,12 +235,18 @@ def render_loss(target, source, alt=None):
     tV, tN, tF = target[0], target[1].cuda(), target[2].cuda()
     sV, sN, sF = source[0], source[1].cuda(), source[2].cuda()
 
+    if alt is not None:
+        sF = alt
+
+    if alt_n is not None:
+        sN = alt_n
+
     assert cameras_count % batch == 0
     for i in range(0, cameras_count, batch):
         camera_batch = cameras[i:i + batch]
 
         t_imgs = renderer.render(tV, tN, tF, camera_batch)
-        s_imgs = renderer.render(sV, sN, sF if alt is None else alt, camera_batch)
+        s_imgs = renderer.render(sV, sN, sF, camera_batch)
 
         t_imgs = alpha_blend(t_imgs)
         s_imgs = alpha_blend(s_imgs)
@@ -260,7 +269,7 @@ def render_loss(target, source, alt=None):
 
     return sum(losses) / len(losses), s_img, t_img
 
-def normal_loss(target, source, alt=None):
+def normal_loss(target, source, alt=None, alt_n=None):
     batch = 10
     cameras = scene['view_mats']
     cameras_count = cameras.shape[0]
@@ -269,11 +278,17 @@ def normal_loss(target, source, alt=None):
     tV, tN, tF = target[0], target[1].cuda(), target[2].cuda()
     sV, sN, sF = source[0], source[1].cuda(), source[2].cuda()
 
+    if alt is not None:
+        sF = alt
+
+    if alt_n is not None:
+        sN = alt_n
+
     assert cameras_count % batch == 0
     for i in range(0, cameras_count, batch):
         camera_batch = cameras[i:i + batch]
         t_nrms = renderer.render_normals(tV, tN, tF, camera_batch)
-        s_nrms = renderer.render_normals(sV, sN, sF if alt is None else alt, camera_batch)
+        s_nrms = renderer.render_normals(sV, sN, sF, camera_batch)
 
         loss = torch.mean(torch.abs(t_nrms - s_nrms))
         losses.append(loss.item())
@@ -444,7 +459,7 @@ for root, dirs, files in os.walk(directory):
         if file.endswith('.obj') and file.startswith('nvdiffmodeling'):
             print('Evaluating:', path)
             data = evaluate_mesh(path)
-            write('nvdiffmodeling', data)
+            write('Nvdiffmodeling', data)
 
         if not file.endswith('.pt'):
             continue
@@ -494,8 +509,8 @@ for root, dirs, files in os.walk(directory):
         source_cas = optext.cached_grid(source, 32)
         source = source.torched()
 
-        render, s_img, t_img = render_loss(target, source, alt=F)
-        normal, s_nrm, t_nrm = normal_loss(target, source, alt=F)
+        render, s_img, t_img = render_loss(target, source, alt=F, alt_n=vn)
+        normal, s_nrm, t_nrm = normal_loss(target, source, alt=F, alt_n=vn)
         dpm, dnormal = sampled_measurements(target, target_cas, source, source_cas)
         chamfer      = chamfer_loss(target, source)
         cratio       = target_total / total
@@ -517,7 +532,7 @@ for root, dirs, files in os.walk(directory):
             }
         }
 
-        write('ngf', data)
+        write('NGF', data)
 
         # Find qslim for this mesh at comparable compression ratio
         binary = os.path.join(os.path.dirname(__file__), 'build', 'simplify')
@@ -552,6 +567,6 @@ for root, dirs, files in os.walk(directory):
                 small = mid
 
         # Process this mesh as well
-        write('qslim', evaluate_mesh(smashed))
+        write('QSlim', evaluate_mesh(smashed))
         save = os.path.join(directory, 'comparisons', 'qslim-%s-%d.obj' % (nsc, c.shape[0]))
         shutil.copy(smashed, save)

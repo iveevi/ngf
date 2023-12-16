@@ -1,3 +1,5 @@
+*.blend
+*.egg-info/
 *.obj
 *.tar.gz
 .cache/
@@ -16,9 +18,9 @@ experiments/results
 export/
 imgui.ini
 measurements/
+media/figures/generated
 meshes/
 output/
 results/
 runs/
 scenes/
-*.egg-info/

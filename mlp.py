@@ -1,9 +1,19 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 POINT_ENCODING_SIZE = 20
+
+class Configuration:
+    # Input is json
+    def __init__(self, db) -> None:
+        # self.activation = db['activation']
+        self.features = db['features']
+        self.encoding_levels = db['encoding_levels']
+
+        assert self.features > 0
+
+        # TODO: construct the activation function...
 
 class MLP_Positional_ReLU_Encoding(nn.Module):
     L = 10

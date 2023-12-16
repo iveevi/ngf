@@ -6,7 +6,7 @@ import scipy.sparse.linalg as sla
 import torch
 import optext
 
-V, F = pp3d.read_mesh('../../meshes/planck/target.obj')
+V, F = pp3d.read_mesh('../../meshes/nefertiti/target.obj')
 L, M = robust_laplacian.mesh_laplacian(V, F)
 
 mesh = optext.geometry(torch.tensor(V, dtype=torch.float32),

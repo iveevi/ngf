@@ -159,7 +159,7 @@ with open(db) as f:
 
         # Add the error image as an inset
         axins = img_ax[1][k + 1].inset_axes([0, 0, 0.35, 0.35])
-        axins.imshow(e_nrm, cmap='coolwarm')
+        axins.imshow(e_nrm, cmap='hot')
         axins.set_xticks([])
         axins.set_yticks([])
 

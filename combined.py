@@ -2,13 +2,11 @@
 import imageio
 import meshio
 import os
-import seaborn as sns
 import subprocess
 import sys
 import torch
 
 from scripts.geometry import compute_vertex_normals, compute_face_normals
-from scripts.load_xml import load_scene
 
 from torch.utils.cpp_extension import load
 from tqdm import trange
@@ -73,7 +71,7 @@ print('Loaded optimization extension')
 
 mesh = meshio.read(target)
 
-environment = imageio.imread('images/environment.hdr', format='HDR-FI')
+environment = imageio.imread('media/images/environment.hdr', format='HDR-FI')
 environment = torch.tensor(environment, dtype=torch.float32, device='cuda')
 alpha       = torch.ones((*environment.shape[:2], 1), dtype=torch.float32, device='cuda')
 environment = torch.cat((environment, alpha), dim=-1)
@@ -202,7 +200,7 @@ if not headless:
     ps.register_surface_mesh('base-original', base.detach().cpu().numpy(), indices)
     ps.register_point_cloud('clustered views', cluster_eyes.cpu().numpy()) \
             .add_vector_quantity('forwards', -cluster_normals.cpu().numpy(), enabled=True)
-    ps.show()
+    # ps.show()
 
 # TODO: tone mapping
 # From NVIDIA

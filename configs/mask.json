@@ -1,15 +1,33 @@
 {
-	"name": "mask",
 	"target": "meshes/mask/target.obj",
 	"directory": "results/mask",
+	"clusters": 250,
+	"batch": 10,
+	"resolution": 16,
+	"encoding_levels": 10,
 	"experiments": [
 		{
-			"name": "render",
+			"name": "feat-5",
 			"source": "meshes/mask/source.obj",
-			"method": "lrelu/linear",
-			"clusters": 250,
-			"batch": 10,
-			"resolution": 16
+			"features": 5
+		},
+
+		{
+			"name": "feat-10",
+			"source": "meshes/mask/source.obj",
+			"features": 10
+		},
+
+		{
+			"name": "feat-20",
+			"source": "meshes/mask/source.obj",
+			"features": 20
+		},
+
+		{
+			"name": "feat-30",
+			"source": "meshes/mask/source.obj",
+			"features": 50
 		}
 	]
 }
