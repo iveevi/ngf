@@ -1,8 +1,8 @@
 {
 	"target": "meshes/mask/target.obj",
 	"directory": "results/mask",
-	"clusters": 250,
-	"batch": 10,
+	"clusters": 20,
+	"batch_size": 10,
 	"resolution": 16,
 	"encoding_levels": 10,
 	"experiments": [
@@ -25,7 +25,7 @@
 		},
 
 		{
-			"name": "feat-30",
+			"name": "feat-50",
 			"source": "meshes/mask/source.obj",
 			"features": 50
 		}

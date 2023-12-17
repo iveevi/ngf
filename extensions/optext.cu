@@ -395,11 +395,8 @@ std::vector <std::vector <int32_t>> cluster_geometry(const geometry &g, const st
 	std::vector <std::vector <int32_t>> clusters;
 	std::vector <int32_t> next_seeds = seeds;
 
-	printf("Clustering with %zu seeds\n", seeds.size());
-
 	for (int32_t i = 0; i < iterations; i++) {
 		clusters = cluster_once(g, dgraph, next_seeds);
-		printf("Iteration %d: %zu clusters\n", i, clusters.size());
 		if (i == iterations - 1)
 			break;
 

@@ -76,6 +76,8 @@ environment = torch.tensor(environment, dtype=torch.float32, device='cuda')
 alpha       = torch.ones((*environment.shape[:2], 1), dtype=torch.float32, device='cuda')
 environment = torch.cat((environment, alpha), dim=-1)
 
+# TODO: modify...
+# TODO: use trimmed fovs in various views to cut down on wasted pixels
 scene_parameters = {}
 scene_parameters['res_x']        = 1024
 scene_parameters['res_y']        = 640
