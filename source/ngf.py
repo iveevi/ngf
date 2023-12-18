@@ -24,11 +24,8 @@ class NGF:
             ffin = features + 3 * (self.encoding_levels + 1)
             self.encoder = self.skewed
         elif self.encoder == 'extint':
-            ffin = features + 4 * (2 * self.encoding_levels + 1)
+            ffin = features + 4 * (self.encoding_levels + 1)
             self.encoder = self.extint
-        elif self.encoder == 'ringenc':
-            ffin = 2 * features + 3 * (2 * self.encoding_levels + 1)
-            self.encoder = self.ringenc
         else:
             raise ValueError('Unknown encoder: %s' % self.encoder)
 
@@ -42,6 +39,7 @@ class NGF:
         return self.sample_kernel_py(rate)
 
     def eval(self, rate):
+        # TODO: revert to old return type
         X = self.sample(rate)
         base = X['points']
         X = self.encoder(**X)
@@ -80,9 +78,8 @@ class NGF:
 
         X = [ features, bases, uvs ]
         for i in range(self.encoding_levels):
-            k = 2 ** i
-            X += [ torch.sin(k * bases), torch.sin(k * uvs) ]
-            X += [ torch.cos(k * bases), torch.cos(k * uvs) ]
+            k = 2 ** (i/2.0)
+            X += [ torch.sin(k * bases + 2/(i + 1)), torch.sin(k * uvs + 2/(i + 1)) ]
 
         X = torch.cat(X, dim=-1)
 
@@ -122,20 +119,7 @@ class NGF:
 
         UV = (16 * U_minus * V_minus * U_plus * V_plus).square().reshape(-1, 1)
 
-        if self.config['encoder'] == 'ringenc':
-            ringf = self.ring_features()
-            ringf = ringf[self.complexes, :]
-
-            ringf00 = ringf[:, 0, :].unsqueeze(1) * U_minus * V_minus
-            ringf01 = ringf[:, 1, :].unsqueeze(1) * U_plus * V_minus
-            ringf10 = ringf[:, 3, :].unsqueeze(1) * U_minus * V_plus
-            ringf11 = ringf[:, 2, :].unsqueeze(1) * U_plus * V_plus
-
-            ringf = (ringf00 + ringf01 + ringf10 + ringf11).reshape(-1, feature_size)
-
-            return { 'points' : lerped_points, 'features' : lerped_features, 'ringf' : ringf, 'uvs' : UV }
-        else:
-            return { 'points' : lerped_points, 'features' : lerped_features, 'uvs' : UV }
+        return { 'points' : lerped_points, 'features' : lerped_features, 'uvs' : UV }
 
     def save(self, filename):
         model = {

@@ -25,7 +25,7 @@
 			"name": "extint",
 			"source": "meshes/dragon-statue/source-lod2.obj",
 			"encoder": "extint",
-			"encoding_levels": 8,
+			"encoding_levels": 16,
 			"features": 20
 		}
 	]
