@@ -6,7 +6,7 @@ import torch
 
 from dataclasses import dataclass
 from typing import Tuple, Callable
-from scripts.geometry import compute_vertex_normals, compute_face_normals
+from geometry import compute_vertex_normals, compute_face_normals
 
 @dataclass
 class Mesh:
@@ -38,7 +38,7 @@ def load_mesh(path, normalizer=None) -> Tuple[Mesh, Callable[[torch.Tensor], tor
     return Mesh(v, f, vn, os.path.abspath(path), optg), normalizer
 
 def simplify_mesh(mesh, faces, normalizer) -> Mesh:
-    BINARY = os.path.join(os.path.dirname(__file__), 'build', 'simplify')
+    BINARY = os.path.join(os.path.dirname(__file__), '..', 'build', 'simplify')
 
     reduction = faces/mesh.faces.shape[0]
     result = os.path.join(os.path.dirname(mesh.path), 'simplified.obj')

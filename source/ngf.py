@@ -1,18 +1,21 @@
 import torch
 
-from dataclasses import dataclass
-
-from mlp import MLP
 from util import lerp
 
-@dataclass
 class NGF:
-    points:    torch.Tensor
-    complexes: torch.Tensor
-    features:  torch.Tensor
-    mlp:       MLP
+    def __init__(self, points, complexes, features, mlp):
+        self.points = points
+        self.complexes = complexes
+        self.features = features
+        self.mlp = mlp
+
+        # Compile the kernel
+        self.sample_kernel = torch.compile(self.sample_kernel_py, fullgraph=True)
 
     def sample(self, rate):
+        return self.sample_kernel(rate)
+
+    def sample_kernel_py(self, rate):
         # TODO: custom lerper for features?
         U = torch.linspace(0.0, 1.0, steps=rate).cuda()
         V = torch.linspace(0.0, 1.0, steps=rate).cuda()
@@ -42,7 +45,7 @@ class NGF:
         torch.save(model, filename)
 
 def load_ngf(data):
-    return NGF(
+    NGF(
         points    = data['points'],
         complexes = data['complexes'],
         features  = data['features'],

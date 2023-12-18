@@ -6,13 +6,11 @@ import sys
 import torch
 import json
 import optext
+import tqdm
 
-from dataclasses import dataclass
-from scripts.render import NVDRenderer
-from scripts.geometry import compute_vertex_normals, compute_face_normals
-from tqdm import trange
+from render import NVDRenderer
+from geometry import compute_vertex_normals, compute_face_normals
 
-from mlp import *
 from util import *
 from configurations import *
 
@@ -59,7 +57,8 @@ def arrange_views(simplified: Mesh, cameras: int):
     return all_views
 
 def construct_renderer():
-    environment = imageio.imread('media/images/environment.hdr', format='HDR-FI')
+    path = os.path.join(os.path.dirname(__file__), '../images/environment.hdr')
+    environment = imageio.imread(path, format='HDR-FI')
     environment = torch.tensor(environment, dtype=torch.float32, device='cuda')
     alpha       = torch.ones((*environment.shape[:2], 1), dtype=torch.float32, device='cuda')
     environment = torch.cat((environment, alpha), dim=-1)
@@ -105,24 +104,70 @@ def alpha_blend(img):
     alpha = img[..., 3:]
     return img[..., :3] * alpha + (1.0 - alpha)
 
+def train(target, generator, pre, opt, batch_views, iterations, laplacian_strength=1.0):
+    def postprocess(img):
+        img = alpha_blend(img)
+        img = tonemap_srgb(torch.log(torch.clamp(img, min=0, max=65535) + 1))
+        return img
+
+    def iterate(view_mats):
+        V, N, F, vgraph = generator()
+
+        opt_imgs = renderer.render(V, N, F, view_mats)
+        ref_imgs = renderer.render(target.vertices, target.normals, target.faces, view_mats)
+
+        opt_imgs = postprocess(opt_imgs)
+        ref_imgs = postprocess(ref_imgs)
+
+        V_smoothed = vgraph.smooth_device(V, 1.0)
+        V_smoothed = vgraph.smooth_device(V_smoothed, 1.0)
+
+        # Compute losses
+        render_loss    = (opt_imgs - ref_imgs).abs().mean()
+        laplacian_loss = (V - V_smoothed).abs().mean()
+
+        return render_loss + laplacian_strength * laplacian_loss
+
+    bar = tqdm.trange(iterations, desc='Training, loss: inf')
+
+    losses = []
+    for it in bar:
+        pre(it)
+
+        avg = 0.0
+        for view_mats in batch_views:
+            loss = iterate(view_mats)
+
+            # Optimization step
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+
+            avg += loss.item()
+
+        avg /= len(batch_views)
+        losses.append(avg)
+
+        bar.set_description('Training, loss: {:.4f}'.format(avg))
+
+    return losses
+
 def kickoff(target, ngf, views, batch_size):
     from largesteps.geometry import compute_matrix
     from largesteps.optimize import AdamUniform
     from largesteps.parameterize import from_differential, to_differential
 
     base, _ = ngf.sample(4)
-    base = base.detach()
+    base    = base.detach()
 
-    base_indices = shorted_indices(base.cpu().numpy(), ngf.complexes.cpu().numpy(), 4)
+    base_indices     = shorted_indices(base.cpu().numpy(), ngf.complexes.cpu().numpy(), 4)
     tch_base_indices = torch.from_numpy(base_indices).int()
 
     cmap  = make_cmap(ngf.complexes, ngf.points.detach(), base, 4)
     remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], 4)
-
     F     = remap.remap(tch_base_indices).cuda()
-    indices = quadify(ngf.complexes.cpu().numpy(), 4)
 
-    steps     = 1_000  # Number of optimization steps
+    steps     = 1_00   # Number of optimization steps
     step_size = 0.1    # Step size
     lambda_   = 10     # Hyperparameter lambda of our method, used to compute the matrix (I + lambda_ * L)
 
@@ -133,72 +178,28 @@ def kickoff(target, ngf, views, batch_size):
     U.requires_grad = True
     opt = AdamUniform([ U ], step_size)
 
-    indices = quadify(ngf.complexes.cpu().numpy(), 4)
     vgraph = optext.vertex_graph(F.cpu())
-    cgraph = optext.conformal_graph(torch.from_numpy(indices).int())
-    # print('vgraph:', vgraph, 'cgraph:', cgraph)
-
-    a, opp_a = cgraph[:, 0], cgraph[:, 1]
-    b, opp_b = cgraph[:, 2], cgraph[:, 3]
-    print('a:', a.shape, 'opp_a:', opp_a.shape)
-    print('b:', b.shape, 'opp_b:', opp_b.shape)
 
     # TODO: wrapper for inverse rendering (taking a functional and optimizer...)
+    def generator():
+        V = from_differential(M, U, 'Cholesky')
+        Fn = compute_face_normals(V, F)
+        N  = compute_vertex_normals(V, F, Fn)
+        return V, N, F, vgraph
 
-    # Optimization loop
-    # batch_size = batch(sample_rate)
-    for _ in trange(steps):
-        # Batch the views into disjoint sets
-        assert len(views) % batch_size == 0
-        batch_views = torch.split(views, batch_size, dim=0)
-        for view_mats in batch_views:
-            V = from_differential(M, U, 'Cholesky')
-
-            Fn = compute_face_normals(V, F)
-            N = compute_vertex_normals(V, F, Fn)
-
-            # TODO: custom override
-            opt_imgs = renderer.render(V, N, F, view_mats)
-            ref_imgs = renderer.render(target.vertices, target.normals, target.faces, view_mats)
-
-            opt_imgs = alpha_blend(opt_imgs)
-            ref_imgs = alpha_blend(ref_imgs)
-
-            opt_imgs = tonemap_srgb(torch.log(torch.clamp(opt_imgs, min=0, max=65535) + 1))
-            ref_imgs = tonemap_srgb(torch.log(torch.clamp(ref_imgs, min=0, max=65535) + 1))
-
-            V_smoothed = vgraph.smooth_device(V, 1.0)
-            V_smoothed = vgraph.smooth_device(V_smoothed, 1.0)
-
-            # Compute losses
-            # TODO: tone mapping from NVIDIA paper
-            render_loss = (opt_imgs - ref_imgs).abs().mean()
-            laplacian_loss = (V - V_smoothed).abs().mean()
-            loss = render_loss + laplacian_loss
-
-            # Optimization step
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
+    batch_views = torch.split(views, batch_size, dim=0)
+    train(target, generator, lambda _: None, opt, batch_views, steps)
 
     V = from_differential(M, U, 'Cholesky')
     V = V.detach()
 
-    # import polyscope as ps
-    # ps.init()
-    # ps.register_surface_mesh('target', target.vertices.cpu().numpy(), target.faces.cpu().numpy())
-    # ps.register_surface_mesh('base', base.detach().cpu().numpy(), indices)
-    # ps.register_surface_mesh('kickoff', V.cpu().numpy(), F.cpu().numpy())
-    # ps.show()
-
     # Overfit to this result
-    opt = AdamUniform(list(ngf.mlp.parameters()) + [ ngf.points, ngf.features ], 1e-3)
+    opt = torch.optim.Adam(list(ngf.mlp.parameters()) + [ ngf.points, ngf.features ], 1e-3)
 
     # TODO: custom label
-    for _ in trange(1000):
+    bar = tqdm.trange(1000, desc='Overfitting, loss: inf')
+    for _ in bar:
         lerped_points, lerped_features = ngf.sample(4)
-        # print('lerped_points:', lerped_points.shape, 'lerped_features:', lerped_features.shape)
-        # print('devices:', lerped_points.device, lerped_features.device)
         V = ngf.mlp(points=lerped_points, features=lerped_features)
         loss = (V - base).abs().mean()
 
@@ -206,9 +207,7 @@ def kickoff(target, ngf, views, batch_size):
         loss.backward()
         opt.step()
 
-    # V = V.detach()
-    # ps.register_surface_mesh('overfit', V.cpu().numpy(), F.cpu().numpy())
-    # ps.show()
+        bar.set_description('Overfitting, loss: {:.4f}'.format(loss.item()))
 
     return opt
 
@@ -216,69 +215,35 @@ def kickoff(target, ngf, views, batch_size):
 
 # TODO: kwargs
 def refine(target, ngf, rate, views, laplacian_strength, opt, iterations):
-    # opt      = torch.optim.Adam(list(m.parameters()) + [ features, points ], lr)
-    # base, _  = sample(complexes, points, features, sample_rate)
     base, _  = ngf.sample(rate)
     cmap     = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
     remap    = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
     vgraph   = None
 
-    for i in trange(iterations):
-        # Batch the views into disjoint sets
-        assert len(views) % batch_size == 0
-        batch_views = torch.split(views, batch_size, dim=0)
+    def generator():
+        nonlocal vgraph
+        lerped_points, lerped_features = ngf.sample(rate)
+        V = ngf.mlp(points=lerped_points, features=lerped_features)
+        indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
+        F = remap.remap_device(indices)
 
-        if i % 10 == 0:
-            # print('Rebuilding vgraph...')
-            lerped_points, lerped_features = ngf.sample(rate)
-            V = ngf.mlp(points=lerped_points, features=lerped_features)
-            indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
-            F = remap.remap_device(indices)
+        Fn = compute_face_normals(V, F)
+        N = compute_vertex_normals(V, F, Fn)
+
+        return V, N, F, vgraph
+
+    def pre(it):
+        lerped_points, lerped_features = ngf.sample(rate)
+        V = ngf.mlp(points=lerped_points, features=lerped_features)
+        indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
+        F = remap.remap_device(indices)
+
+        nonlocal vgraph
+        if it % 25 == 0:
             vgraph = optext.vertex_graph(F.cpu())
 
-        render_loss_sum = 0
-        for view_mats in batch_views:
-            lerped_points, lerped_features = ngf.sample(rate)
-            V = ngf.mlp(points=lerped_points, features=lerped_features)
-
-            indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
-            F = remap.remap_device(indices)
-
-            Fn = compute_face_normals(V, F)
-            N = compute_vertex_normals(V, F, Fn)
-
-            opt_imgs = renderer.render(V, N, F, view_mats)
-            ref_imgs = renderer.render(target.vertices, target.normals, target.faces, view_mats)
-
-            opt_imgs = alpha_blend(opt_imgs)
-            ref_imgs = alpha_blend(ref_imgs)
-
-            opt_imgs = tonemap_srgb(torch.log(torch.clamp(opt_imgs, min=0, max=65535) + 1))
-            ref_imgs = tonemap_srgb(torch.log(torch.clamp(ref_imgs, min=0, max=65535) + 1))
-
-            V_smoothed = vgraph.smooth_device(V, 1.0)
-            V_smoothed = vgraph.smooth_device(V_smoothed, 1.0)
-
-            # Compute losses
-            # TODO: tone mapping from NVIDIA paper
-            render_loss = (opt_imgs - ref_imgs).abs().mean()
-            laplacian_loss = (V - V_smoothed).abs().mean()
-            loss = render_loss + laplacian_strength * laplacian_loss
-
-            render_loss_sum += render_loss.item()
-
-            # Optimization step
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-
-    # import polyscope as ps
-    # ps.init()
-    # ps.remove_all_structures()
-    # ps.register_surface_mesh('refined', V.detach().cpu().numpy(), F.cpu().numpy())
-    # ps.register_surface_mesh('base', base.detach().cpu().numpy(), indices.cpu().numpy())
-    # ps.register_surface_mesh('target', target.vertices.cpu().numpy(), target.faces.cpu().numpy())
-    # ps.show()
+    batch_views = torch.split(views, batch_size, dim=0)
+    return train(target, generator, pre, opt, batch_views, iterations, laplacian_strength=laplacian_strength)
 
 if __name__ == '__main__':
     assert len(sys.argv) == 2, 'Usage: python train.py <config>'
@@ -333,13 +298,13 @@ if __name__ == '__main__':
         # TODO: return the optimizer
         opt = kickoff(target, ngf, views, batch_size)
 
-        # opt = torch.optim.Adam(list(ngf.mlp.parameters()) + [ ngf.points, ngf.features ], 1e-3)
+        losses = []
         laplacian_strength = 1.0
 
         rate = 4
         while rate <= resolution:
             print('Refining with rate {}'.format(rate))
-            refine(target, ngf, rate, views, laplacian_strength, opt, iterations=100 * rate)
+            losses += refine(target, ngf, rate, views, laplacian_strength, opt, iterations=100)
             laplacian_strength *= 0.75
             rate *= 2
 
@@ -347,3 +312,10 @@ if __name__ == '__main__':
         result = os.path.join(result_path, name + '.pt')
         print('Saving result to {}'.format(result))
         ngf.save(result)
+
+        # Save losses as CSV
+        csv_path = os.path.join(result_path, name + '-losses.csv')
+        print('Saving losses to {}'.format(csv_path))
+        with open(csv_path, 'w') as f:
+            string = ','.join(map(str, losses))
+            f.write(string)

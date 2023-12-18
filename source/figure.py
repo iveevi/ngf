@@ -23,6 +23,12 @@ document_template = r'''
 \usepackage{amssymb}
 \usepackage{bm}
 
+\definecolor{color0}{HTML}{ea7aa5}
+\definecolor{color1}{HTML}{65d59e}
+\definecolor{color2}{HTML}{ab92e6}
+\definecolor{color3}{HTML}{b2c65d}
+\definecolor{color4}{HTML}{e19354}
+
 \pgfplotsset{compat=1.16}
 \pgfplotsset{
     yticklabel style={
@@ -62,12 +68,12 @@ lineplot_template = r'''\begin{tikzpicture}
 \begin{axis}[
     name=%s,%s
     xshift=2cm,
-    width=8cm,
-    height=6cm,
-    xlabel={Compression Ratio},
-    ylabel={%s},
+    width=%.2f cm,
+    height=%.2f cm,
+    ylabel=\textsc{%s},
+    xlabel=\textsc{%s},
     legend style={at={(0.5, 1.02)}, anchor=south},
-    legend columns=3,
+    legend columns=%d,
     xmin=%.3f,
     xmax=%.3f,
     ymin=%.3f,
@@ -82,22 +88,53 @@ lineplot_template = r'''\begin{tikzpicture}
 \end{axis}
 \end{tikzpicture}'''
 
-def lineplot(data, name, at=None, legend=False):
+def fill_lineplot(**kwargs):
+    return lineplot_template % (kwargs['codename'], kwargs['loc'],
+                                kwargs['width'], kwargs['height'],
+                                kwargs['ylabel'], kwargs['xlabel'],
+                                kwargs['num_cols'], kwargs['x_min'],
+                                kwargs['x_max'], kwargs['y_min'],
+                                kwargs['y_max'], kwargs['tick_step'],
+                                kwargs['plots'])
+
+def plot_marked(key, d, color, legend):
+    line = '\\addplot [mark=*, color=%s] coordinates {' % color
+
+    for v in d:
+        line += '(%.4f, %.4f) ' % v
+    line += '};'
+
+    if legend:
+        line += '\\addlegendentry{\\textsc{' + key + '}}'
+
+    return line
+
+def plot_transparent_end(key, d, color, legend):
+    line = '\\addplot [line width=1pt, color=%s, opacity=0.65] coordinates {' % color
+
+    for v in d:
+        line += '(%.4f, %.4f) ' % v
+    line += '};'
+
+    if legend:
+        line += '\\addlegendentry{\\textsc{' + key + '}}\n'
+
+    # Add coordinate at the end
+    line += '\\addplot [mark=*, color=%s, forget plot] coordinates { (%.4f, %.4f) };' % (color, d[-1][0], d[-1][1])
+
+    return line
+
+def lineplot(data, name, xlabel='X', ylabel='Y', width=8, height=6, at=None, legend=False):
     codename = name.lower().replace(' ', '-')
     print('Codename', codename, 'at', at)
 
     # Generate LaTeX code
-    colors = [ 'red', 'blue', 'green', 'orange', 'purple' ]
+    colors = [ 'color0', 'color1', 'color2', 'color3', 'color4' ]
+
     lines = []
     for color, (key, d) in zip(colors, data.items()):
-        line = '\\addplot [mark=*, color=%s] coordinates {' % color
-        for v in d:
-            line += '(%.4f, %.4f) ' % v
-        line += '};'
-        # TODO: global legend...
-        if legend:
-            line += '\\addlegendentry{\\textsc{' + key + '}}'
-        lines.append(line)
+        # lines.append(plot_marked(key, d, color, legend))
+        lines.append(plot_transparent_end(key, d, color, legend))
 
     x_min = min([ min([ v[0] for v in d ]) for d in data.values() ])
     x_max = max([ max([ v[0] for v in d ]) for d in data.values() ])
@@ -124,16 +161,17 @@ def lineplot(data, name, at=None, legend=False):
 
     loc = '' if at is None else 'at={(%s)},' % at
     addplot = '\n'.join(lines)
-    tex = lineplot_template % (codename, loc, name, x_min, x_max, y_min, y_max, tick_step, addplot)
+
+    tex = fill_lineplot(codename=codename, loc=loc, width=width, height=height,
+                        xlabel=xlabel, ylabel=ylabel, num_cols=len(data),
+                        x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
+                        tick_step=tick_step, plots=addplot)
 
     return codename, tex
 
 def synthesize_tex(code, filename):
     import tempfile
     import subprocess
-
-    # code = document_template % code
-    # print('Code', code)
 
     # Write to temporary file
     with tempfile.NamedTemporaryFile('w+') as fp:
@@ -160,13 +198,6 @@ def cropbox(images):
 
         indices = np.where(mask == 1)
         rgb_box = (np.min(indices[1]), np.min(indices[0]), np.max(indices[1]), np.max(indices[0]))
-
-        corners = np.array([
-            [ rgb_box[0], rgb_box[1] ],
-            [ rgb_box[2], rgb_box[1] ],
-            [ rgb_box[2], rgb_box[3] ],
-            [ rgb_box[0], rgb_box[3] ],
-        ])
 
         boxes.append(rgb_box)
 
@@ -260,7 +291,7 @@ def results_plot(name, db):
     e.set_frame(linewidth=1, color=[0, 0, 0])
     # e.set_caption(r'$\mathcal{L}_ 1$')
 
-    cols = [ 'Render' ] + [ key if key != 'NGF' else 'Ours' for key in keys ]
+    cols = [ 'Reference' ] + [ key for key in keys ]
     inset_grid.set_col_titles(txt_list=[ textsc(key) for key in cols ], position='top')
 
     for i, key in enumerate(keys):
@@ -331,7 +362,7 @@ def results_plot(name, db):
     # Generate lineplots
     cn0, code0 = lineplot(render_data, 'Render Loss')
     cn1, code1 = lineplot(normal_data, 'Normal Loss', at=cn0 + '.south east', legend=True)
-    cn2, code2 = lineplot(chamfer_data, 'Chamfer Loss', at=cn1 + '.south east')
+    _,   code2 = lineplot(chamfer_data, 'Chamfer Loss', at=cn1 + '.south east')
 
     combined = code0 + '\n' + code1 + '\n' + code2
     combined = document_template % combined
@@ -350,60 +381,27 @@ def results_plot(name, db):
 
     synthesize_tex(combined, os.path.join('media/figures', name + '.pdf'))
 
-    # Load the PDFs and combine them
-    # inset = figuregen.PDF(os.path.join('media/figures', name + '-insets.pdf')).convert()
-    # losses = figuregen.PDF(os.path.join('media/figures', name + '-losses.pdf')).convert()
-    #
-    # print('Inset', inset)
-    # print('Losses', losses)
-    #
-    # # Combine the PDFs
-    # grid = figuregen.Grid(num_rows=2, num_cols=1)
-    #
-    # g0 = grid.get_element(0, 0)
-    # g0.set_image(inset)
-    #
-    # g1 = grid.get_element(1, 0)
-    # g1.set_image(losses)
-    #
-    # figuregen.figure([ [ grid ] ], width_cm=15, filename=os.path.join('media/figures', name + '.pdf'))
-
 # Loss plots (gather from directory)
 def loss_plot(dir):
     # Global parameters
     plt.rcParams['text.usetex'] = True
 
     # Gather all .losses files
-    files = [ f for f in os.listdir(dir) if f.endswith('.losses') ]
-    print(files)
+    files = [ f for f in os.listdir(dir) if f.endswith('.csv') ]
 
-    # Create figure
-    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    strip = lambda s: ''.join(s.split('.')[0].split('-')[:-1])
+    lines = lambda f: open(os.path.join(dir, f), 'r').readlines()
+    combine = lambda lines: ''.join(lines)
+    csv = lambda f: combine(lines(f)).split(',')
+    pointed = lambda f: [ (i, float(l)) for i, l in enumerate(csv(f)) ]
 
-    # Plot each file
-    for f in files:
-        # Get name
-        name = f.split('.')[0]
+    graphs = { strip(f) : pointed(f) for f in files }
 
-        # Get data
-        data = []
-        with open(os.path.join(dir, f), 'r') as fp:
-            lines = fp.readlines()
-            for line in lines:
-                data = line.split(',')
-                data = [ float(d) for d in data ]
+    _, tex = lineplot(graphs, 'Loss', ylabel='Loss', xlabel='Iterations',
+                      width=12, height=7, legend=True)
 
-        # Plot data
-        p = ax.plot(data, label=name, alpha=0.5)
-        ax.scatter(len(data) - 1, data[-1], color=p[0].get_color())
-        ax.set_yscale('log')
-
-    # Add legend
-    ax.legend()
-
-    # Save figure
-    # fig.savefig(os.path.join(dir, 'losses.pdf'), bbox_inches='tight')
-    fig.savefig('losses.pdf', bbox_inches='tight')
+    tex = document_template % tex
+    synthesize_tex(tex, 'losses.pdf')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
