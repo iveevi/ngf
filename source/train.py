@@ -64,6 +64,7 @@ def construct_renderer():
     environment = torch.cat((environment, alpha), dim=-1)
 
     # TODO: use trimmed fovs in various views to cut down on wasted pixels
+    # TODO: truncatre this dict...
     scene_parameters = {}
     scene_parameters['res_x']        = 1280
     scene_parameters['res_y']        = 720
@@ -85,17 +86,15 @@ def load_patches(path, normalizer):
 
     return v, f
 
-def construct_ngf(path, config, normalizer):
+def construct_ngf(path: str, config: dict, normalizer: Callable) -> NGF:
     # TODO: try random feature initialization
     points, complexes = load_patches(path, normalizer)
-    features = torch.zeros((points.shape[0], config.features), device='cuda')
+    features          = torch.zeros((points.shape[0], config['features']), device='cuda')
 
-    points.requires_grad = True
+    points.requires_grad   = True
     features.requires_grad = True
 
-    mlp = MLP(config).cuda()
-
-    return NGF(points, complexes, features, mlp)
+    return NGF(points, complexes, features, config)
 
 def tonemap_srgb(f):
     return torch.where(f > 0.0031308, torch.pow(torch.clamp(f, min=0.0031308), 1.0/2.4) * 1.055 - 0.055, 12.92 * f)
@@ -157,8 +156,7 @@ def kickoff(target, ngf, views, batch_size):
     from largesteps.optimize import AdamUniform
     from largesteps.parameterize import from_differential, to_differential
 
-    base, _ = ngf.sample(4)
-    base    = base.detach()
+    base = ngf.sample(4)['points'].detach()
 
     base_indices     = shorted_indices(base.cpu().numpy(), ngf.complexes.cpu().numpy(), 4)
     tch_base_indices = torch.from_numpy(base_indices).int()
@@ -167,7 +165,7 @@ def kickoff(target, ngf, views, batch_size):
     remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], 4)
     F     = remap.remap(tch_base_indices).cuda()
 
-    steps     = 1_00   # Number of optimization steps
+    steps     = 1_0   # Number of optimization steps
     step_size = 0.1    # Step size
     lambda_   = 10     # Hyperparameter lambda of our method, used to compute the matrix (I + lambda_ * L)
 
@@ -199,8 +197,7 @@ def kickoff(target, ngf, views, batch_size):
     # TODO: custom label
     bar = tqdm.trange(1000, desc='Overfitting, loss: inf')
     for _ in bar:
-        lerped_points, lerped_features = ngf.sample(4)
-        V = ngf.mlp(points=lerped_points, features=lerped_features)
+        V = ngf.eval(4)
         loss = (V - base).abs().mean()
 
         opt.zero_grad()
@@ -215,15 +212,14 @@ def kickoff(target, ngf, views, batch_size):
 
 # TODO: kwargs
 def refine(target, ngf, rate, views, laplacian_strength, opt, iterations):
-    base, _  = ngf.sample(rate)
-    cmap     = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
-    remap    = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
-    vgraph   = None
+    base   = ngf.sample(rate)['points']
+    cmap   = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
+    remap  = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
+    vgraph = None
 
     def generator():
         nonlocal vgraph
-        lerped_points, lerped_features = ngf.sample(rate)
-        V = ngf.mlp(points=lerped_points, features=lerped_features)
+        V = ngf.eval(rate)
         indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
         F = remap.remap_device(indices)
 
@@ -233,8 +229,7 @@ def refine(target, ngf, rate, views, laplacian_strength, opt, iterations):
         return V, N, F, vgraph
 
     def pre(it):
-        lerped_points, lerped_features = ngf.sample(rate)
-        V = ngf.mlp(points=lerped_points, features=lerped_features)
+        V = ngf.eval(rate)
         indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
         F = remap.remap_device(indices)
 
@@ -262,7 +257,7 @@ if __name__ == '__main__':
     # iterations    = config['iterations']
     batch_size      = config['batch_size']
     resolution      = config['resolution']
-    encoding_levels = config['encoding_levels']
+    # encoding_levels = config['encoding_levels']
     experiments     = config['experiments']
 
     print('Loading target mesh from {}'.format(target_path))
@@ -279,16 +274,28 @@ if __name__ == '__main__':
 
     # Iterate over experiments
     for experiment in experiments:
-        print('Starting experiment {}'.format(experiment))
+        # print('Starting experiment {}'.format(experiment))
 
         name = experiment['name']
         source_path = experiment['source']
-        features = experiment['features']
+        # features = experiment['features']
+        # encoder = experiment['encoder']
 
-        config = Configuration(features=features, encoding_levels=encoding_levels)
+        # Create a combined dict, overriding with experiment-specific values
+        local_config = dict(config)
+        local_config.update(experiment)
+
+        print('Starting experiment ', name)
+        print(local_config)
+
+        # config = {
+        #     'features': features,
+        #     'encoding_levels': encoding_levels,
+        #     'encoder': encoder
+        # }
 
         # TODO: pass rest of the options to the mlp
-        ngf = construct_ngf(source_path, config, normalizer)
+        ngf = construct_ngf(source_path, local_config, normalizer)
 
         print('ngf: {} points, {} features'.format(ngf.complexes.shape[0], ngf.features.shape[1]))
 
@@ -304,7 +311,7 @@ if __name__ == '__main__':
         rate = 4
         while rate <= resolution:
             print('Refining with rate {}'.format(rate))
-            losses += refine(target, ngf, rate, views, laplacian_strength, opt, iterations=100)
+            losses += refine(target, ngf, rate, views, laplacian_strength, opt, iterations=10 * rate)
             laplacian_strength *= 0.75
             rate *= 2
 

@@ -2,6 +2,7 @@
 *.egg-info/
 *.obj
 *.tar.gz
+*.pdf
 .cache/
 .nsc
 .polyscope.ini

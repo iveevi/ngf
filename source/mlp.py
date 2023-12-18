@@ -2,26 +2,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-POINT_ENCODING_SIZE = 20
-
-class Configuration:
-    # Input is json
-    def __init__(self, **kwargs) -> None:
-        # self.activation = db['activation']
-        self.activation = F.leaky_relu
-        self.features = kwargs['features']
-        self.encoding_levels = kwargs['encoding_levels']
-
-        assert self.features > 0
-
-        # TODO: construct the activation function...
+from typing import Callable
 
 class MLP(nn.Module):
-    def __init__(self, config: Configuration) -> None:
+    def __init__(self, ffin: int, activation: Callable) -> None:
         super(MLP, self).__init__()
 
+        print('MLP: ffin =', ffin)
+
         # Pass configuration as constructor arguments
-        ffin = config.features + 3 * (2 * config.encoding_levels + 1)
         self.encoding_linears = [
             nn.Linear(ffin, 64),
             nn.Linear(64, 64),
@@ -30,20 +19,9 @@ class MLP(nn.Module):
         ]
 
         self.encoding_linears = nn.ModuleList(self.encoding_linears)
-        self.activation = config.activation
-        self.features = config.features
-        self.encoding_levels = config.encoding_levels
+        self.activation = activation
 
-    def forward(self, **kwargs):
-        bases    = kwargs['points']
-        features = kwargs['features']
-
-        # TODO: what if we use only sines?
-        X = [ features, bases ]
-        for i in range(self.encoding_levels):
-            X += [ torch.sin(2 ** i * bases), torch.cos(2 ** i * bases) ]
-        X = torch.cat(X, dim=-1)
-
+    def forward(self, bases, X):
         X = self.encoding_linears[0](X)
         X = self.activation(X)
 
@@ -56,6 +34,8 @@ class MLP(nn.Module):
         X = self.encoding_linears[3](X)
 
         return bases + X
+
+POINT_ENCODING_SIZE = 20
 
 class MLP_Positional_ReLU_Encoding(nn.Module):
     L = 10

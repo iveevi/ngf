@@ -4,30 +4,29 @@
 	"clusters": 20,
 	"batch_size": 10,
 	"resolution": 16,
-	"encoding_levels": 10,
 	"experiments": [
 		{
-			"name": "feat-5",
+			"name": "sincos",
 			"source": "meshes/mask/source.obj",
-			"features": 5
-		},
-
-		{
-			"name": "feat-10",
-			"source": "meshes/mask/source.obj",
-			"features": 10
-		},
-
-		{
-			"name": "feat-20",
-			"source": "meshes/mask/source.obj",
+			"encoder": "sincos",
+			"encoding_levels": 10,
 			"features": 20
 		},
 
 		{
-			"name": "feat-50",
+			"name": "skewed",
 			"source": "meshes/mask/source.obj",
-			"features": 50
+			"encoder": "skewed",
+			"encoding_levels": 16,
+			"features": 20
+		},
+
+		{
+			"name": "extint",
+			"source": "meshes/mask/source.obj",
+			"encoder": "extint",
+			"encoding_levels": 8,
+			"features": 20
 		}
 	]
 }
