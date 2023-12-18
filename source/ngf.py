@@ -6,7 +6,7 @@ from mlp import MLP
 
 # TODO: show surface with encoding values... (like ENS)
 class NGF:
-    def __init__(self, points: torch.Tensor, complexes: torch.Tensor, features: torch.Tensor, config: dict):
+    def __init__(self, points: torch.Tensor, complexes: torch.Tensor, features: torch.Tensor, config: dict, mlp=None):
         self.points = points
         self.complexes = complexes
         self.features = features
@@ -30,6 +30,8 @@ class NGF:
             raise ValueError('Unknown encoder: %s' % self.encoder)
 
         self.mlp = MLP(ffin, F.leaky_relu).cuda()
+        if mlp is not None:
+            self.mlp.load_state_dict(mlp.state_dict())
 
         # Compile the kernel
         self.sample_kernel = torch.compile(self.sample_kernel_py, fullgraph=True)
@@ -64,7 +66,7 @@ class NGF:
         X = [ features, bases ]
 
         for i in range(self.encoding_levels):
-            k = 2 ** (i/2.0)
+            k = 2 ** (i/3.0)
             X += [ torch.sin(k * bases + 2/(i + 1)) ]
 
         X = torch.cat(X, dim=-1)
@@ -78,7 +80,7 @@ class NGF:
 
         X = [ features, bases, uvs ]
         for i in range(self.encoding_levels):
-            k = 2 ** (i/2.0)
+            k = 2 ** (i/3.0)
             X += [ torch.sin(k * bases + 2/(i + 1)), torch.sin(k * uvs + 2/(i + 1)) ]
 
         X = torch.cat(X, dim=-1)
@@ -133,4 +135,4 @@ class NGF:
         torch.save(model, filename)
 
 def load_ngf(data):
-    return NGF(data['points'], data['complexes'], data['features'], data['config'])
+    return NGF(data['points'], data['complexes'], data['features'], data['config'], mlp=data['model'])

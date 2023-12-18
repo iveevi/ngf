@@ -217,6 +217,7 @@ def refine(target, ngf, rate, views, laplacian_strength, opt, iterations):
     remap  = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
     vgraph = None
 
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, 0.999)
     def generator():
         nonlocal vgraph
         V = ngf.eval(rate)
@@ -225,6 +226,8 @@ def refine(target, ngf, rate, views, laplacian_strength, opt, iterations):
 
         Fn = compute_face_normals(V, F)
         N = compute_vertex_normals(V, F, Fn)
+
+        scheduler.step()
 
         return V, N, F, vgraph
 
@@ -308,12 +311,32 @@ if __name__ == '__main__':
         losses = []
         laplacian_strength = 1.0
 
+        import polyscope as ps
+
+        ps.init()
+        ps.register_surface_mesh('target mesh', target.vertices.cpu().numpy(), target.faces.cpu().numpy())
+
         rate = 4
         while rate <= resolution:
             print('Refining with rate {}'.format(rate))
             losses += refine(target, ngf, rate, views, laplacian_strength, opt, iterations=10 * rate)
+
+            # for group in opt.param_groups:
+            #     group['lr'] *= 0.5
+
             laplacian_strength *= 0.75
             rate *= 2
+
+            base = ngf.sample(rate)['points'].detach()
+            cmap = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
+            remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
+
+            V = ngf.eval(rate).detach()
+            indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
+            F = remap.remap_device(indices)
+
+            ps.register_surface_mesh('mesh', V.cpu().numpy(), F.cpu().numpy())
+            ps.show()
 
         os.makedirs(result_path, exist_ok=True)
         result = os.path.join(result_path, name + '.pt')

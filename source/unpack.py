@@ -55,18 +55,25 @@ if __name__ == '__main__':
 
             ngf = load_ngf(data)
 
-            lerped_points, lerped_features = ngf.sample(16)
-            V = ngf.mlp(points=lerped_points, features=lerped_features).detach()
+            base = ngf.sample(16)['points'].detach()
+            V = ngf.eval(16).detach()
 
             I = shorted_quads(ngf.complexes, 16)
             I = torch.from_numpy(I).int()
 
-            cmap = make_cmap(ngf.complexes, ngf.points.detach(), lerped_points.detach(), 16)
-            remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, lerped_points.shape[0], 16)
+            cmap = make_cmap(ngf.complexes, ngf.points.detach(), base.detach(), 16)
+            remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], 16)
             F = remap.remap(I).cuda()
+
+            import polyscope as ps
+            ps.init()
+            ps.register_surface_mesh('base', base.cpu().numpy(), F.cpu().numpy())
+            ps.register_surface_mesh('target', target.vertices.cpu().numpy(), target.faces.cpu().numpy())
+            ps.register_surface_mesh('unpacked', V.cpu().numpy(), F.cpu().numpy())
+            ps.show()
 
             m = meshio.Mesh(V.cpu().numpy(), [ ('quad', F.cpu().numpy()) ])
             meshio.write(os.path.join(unpack_dir, file + '.obj'), m)
-            
+
             print('    > vertices:', V.shape)
             print('    > faces:', F.shape)
