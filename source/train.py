@@ -8,7 +8,7 @@ import json
 import optext
 import tqdm
 
-from render import NVDRenderer
+from render import Renderer
 from geometry import compute_vertex_normals, compute_face_normals
 
 from util import *
@@ -65,17 +65,19 @@ def construct_renderer():
 
     # TODO: use trimmed fovs in various views to cut down on wasted pixels
     # TODO: truncatre this dict...
-    scene_parameters = {}
-    scene_parameters['res_x']        = 1280
-    scene_parameters['res_y']        = 720
-    scene_parameters['fov']          = 45.0
-    scene_parameters['near_clip']    = 0.1
-    scene_parameters['far_clip']     = 1000.0
-    scene_parameters['envmap']       = environment
-    scene_parameters['envmap_scale'] = 1.0
+    # scene_parameters = {}
+    # scene_parameters['res_x']        = 1280
+    # scene_parameters['res_y']        = 720
+    # scene_parameters['fov']          = 45.0
+    # scene_parameters['near_clip']    = 0.1
+    # scene_parameters['far_clip']     = 1000.0
+    # scene_parameters['envmap']       = environment
+    # scene_parameters['envmap_scale'] = 1.0
 
     # TODO: refactoring...
-    return NVDRenderer(scene_parameters, shading=True, boost=3)
+    return Renderer(width=1280, height=720, fov=45.0, near=0.1, far=1000.0, envmap=environment)
+    # return Renderer(res_x=1280, res_y=720, fov=45.0, near_clip=0.1, far_clip=1000.0, envmap=environment)
+    # return Renderer(resolution=(1280, 720), view_clip=(0.1, 1000.0), fov=45.0, envmap=environment)
 
 def load_patches(path, normalizer):
     mesh = meshio.read(path)
@@ -103,23 +105,18 @@ def alpha_blend(img):
     alpha = img[..., 3:]
     return img[..., :3] * alpha + (1.0 - alpha)
 
-def train(target, generator, pre, opt, batch_views, iterations, laplacian_strength=1.0):
+def train(target, generator, opt, batch_views, iterations, laplacian_strength=1.0):
     def postprocess(img):
-        img = alpha_blend(img)
         img = tonemap_srgb(torch.log(torch.clamp(img, min=0, max=65535) + 1))
         return img
 
-    def iterate(view_mats):
+    def iterate(view_mats, ref_imgs):
         V, N, F, vgraph = generator()
 
         opt_imgs = renderer.render(V, N, F, view_mats)
-        ref_imgs = renderer.render(target.vertices, target.normals, target.faces, view_mats)
-
         opt_imgs = postprocess(opt_imgs)
-        ref_imgs = postprocess(ref_imgs)
 
         V_smoothed = vgraph.smooth_device(V, 1.0)
-        V_smoothed = vgraph.smooth_device(V_smoothed, 1.0)
 
         # Compute losses
         render_loss    = (opt_imgs - ref_imgs).abs().mean()
@@ -129,13 +126,18 @@ def train(target, generator, pre, opt, batch_views, iterations, laplacian_streng
 
     bar = tqdm.trange(iterations, desc='Training, loss: inf')
 
-    losses = []
-    for it in bar:
-        pre(it)
+    # NOTE: Migth be better to keep the reference images in CPU memory until needed
+    ref_imgs_list = []
+    for view_mats in batch_views:
+        ref_imgs = renderer.render(target.vertices, target.normals, target.faces, view_mats)
+        ref_imgs = postprocess(ref_imgs)
+        ref_imgs_list.append(ref_imgs)
 
+    losses = []
+    for _ in bar:
         avg = 0.0
-        for view_mats in batch_views:
-            loss = iterate(view_mats)
+        for view_mats, ref_imgs in zip(batch_views, ref_imgs_list):
+            loss = iterate(view_mats, ref_imgs)
 
             # Optimization step
             opt.zero_grad()
@@ -151,6 +153,11 @@ def train(target, generator, pre, opt, batch_views, iterations, laplacian_streng
 
     return losses
 
+def vertex_normals(V, F):
+    Fn = compute_face_normals(V, F)
+    N  = compute_vertex_normals(V, F, Fn)
+    return N
+
 def kickoff(target, ngf, views, batch_size):
     from largesteps.geometry import compute_matrix
     from largesteps.optimize import AdamUniform
@@ -165,28 +172,26 @@ def kickoff(target, ngf, views, batch_size):
     remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], 4)
     F     = remap.remap(tch_base_indices).cuda()
 
-    steps     = 1_0   # Number of optimization steps
-    step_size = 0.1    # Step size
-    lambda_   = 10     # Hyperparameter lambda of our method, used to compute the matrix (I + lambda_ * L)
+    steps     = 1_00
+    step_size = 1e-2
 
     # Optimization setup
-    M = compute_matrix(base, F, lambda_)
+    M = compute_matrix(base, F, lambda_ = 100)
     U = to_differential(M, base)
 
     U.requires_grad = True
     opt = AdamUniform([ U ], step_size)
 
-    vgraph = optext.vertex_graph(F.cpu())
+    quads = torch.from_numpy(quadify(ngf.complexes, 4)).int()
+    vgraph = optext.vertex_graph(remap.remap(quads))
 
-    # TODO: wrapper for inverse rendering (taking a functional and optimizer...)
     def generator():
         V = from_differential(M, U, 'Cholesky')
-        Fn = compute_face_normals(V, F)
-        N  = compute_vertex_normals(V, F, Fn)
+        N = vertex_normals(V, F)
         return V, N, F, vgraph
 
     batch_views = torch.split(views, batch_size, dim=0)
-    train(target, generator, lambda _: None, opt, batch_views, steps)
+    train(target, generator, opt, batch_views, steps)
 
     V = from_differential(M, U, 'Cholesky')
     V = V.detach()
@@ -195,7 +200,7 @@ def kickoff(target, ngf, views, batch_size):
     opt = torch.optim.Adam(list(ngf.mlp.parameters()) + [ ngf.points, ngf.features ], 1e-3)
 
     # TODO: custom label
-    bar = tqdm.trange(1000, desc='Overfitting, loss: inf')
+    bar = tqdm.trange(1_000, desc='Overfitting, loss: inf')
     for _ in bar:
         V = ngf.eval(4)
         loss = (V - base).abs().mean()
@@ -208,40 +213,23 @@ def kickoff(target, ngf, views, batch_size):
 
     return opt
 
-    # TODO: gather training data...
-
-# TODO: kwargs
 def refine(target, ngf, rate, views, laplacian_strength, opt, iterations):
     base   = ngf.sample(rate)['points']
     cmap   = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
     remap  = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
-    vgraph = None
+    quads  = torch.from_numpy(quadify(ngf.complexes, rate)).int()
+    vgraph = optext.vertex_graph(remap.remap(quads))
 
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, 0.999)
     def generator():
         nonlocal vgraph
         V = ngf.eval(rate)
         indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
         F = remap.remap_device(indices)
-
-        Fn = compute_face_normals(V, F)
-        N = compute_vertex_normals(V, F, Fn)
-
-        scheduler.step()
-
+        N = vertex_normals(V, F)
         return V, N, F, vgraph
 
-    def pre(it):
-        V = ngf.eval(rate)
-        indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
-        F = remap.remap_device(indices)
-
-        nonlocal vgraph
-        if it % 25 == 0:
-            vgraph = optext.vertex_graph(F.cpu())
-
     batch_views = torch.split(views, batch_size, dim=0)
-    return train(target, generator, pre, opt, batch_views, iterations, laplacian_strength=laplacian_strength)
+    return train(target, generator, opt, batch_views, iterations, laplacian_strength=laplacian_strength)
 
 if __name__ == '__main__':
     assert len(sys.argv) == 2, 'Usage: python train.py <config>'
@@ -311,21 +299,11 @@ if __name__ == '__main__':
         losses = []
         laplacian_strength = 1.0
 
-        import polyscope as ps
+        def display(rate):
+            import polyscope as ps
 
-        ps.init()
-        ps.register_surface_mesh('target mesh', target.vertices.cpu().numpy(), target.faces.cpu().numpy())
-
-        rate = 4
-        while rate <= resolution:
-            print('Refining with rate {}'.format(rate))
-            losses += refine(target, ngf, rate, views, laplacian_strength, opt, iterations=10 * rate)
-
-            # for group in opt.param_groups:
-            #     group['lr'] *= 0.5
-
-            laplacian_strength *= 0.75
-            rate *= 2
+            ps.init()
+            ps.register_surface_mesh('target mesh', target.vertices.cpu().numpy(), target.faces.cpu().numpy())
 
             base = ngf.sample(rate)['points'].detach()
             cmap = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
@@ -337,6 +315,17 @@ if __name__ == '__main__':
 
             ps.register_surface_mesh('mesh', V.cpu().numpy(), F.cpu().numpy())
             ps.show()
+
+        display(4)
+
+        rate = 4
+        while rate <= resolution:
+            print('Refining with rate {}'.format(rate))
+            losses += refine(target, ngf, rate, views, laplacian_strength, opt, iterations=25 * rate)
+
+            display(rate)
+            laplacian_strength *= 0.75
+            rate *= 2
 
         os.makedirs(result_path, exist_ok=True)
         result = os.path.join(result_path, name + '.pt')

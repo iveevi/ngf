@@ -532,7 +532,7 @@ for root, dirs, files in os.walk(directory):
             }
         }
 
-        write('NGF', data)
+        write('NGF (Ours)', data)
 
         # Find qslim for this mesh at comparable compression ratio
         binary = os.path.join(os.path.dirname(__file__), 'build', 'simplify')

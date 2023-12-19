@@ -778,16 +778,16 @@ void barycentric_closest_points(const torch::Tensor &vertices, const torch::Tens
 }
 
 __global__
-void laplacian_smooth_kernel(glm::vec3 *result, glm::vec3 *vertices, uint32_t *graph, uint32_t count, uint32_t max_adj, float factor)
+void laplacian_smooth_kernel(glm::vec3 *result, glm::vec3 *vertices, int32_t *graph, uint32_t count, uint32_t max_adj, float factor)
 {
-	uint32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+	int32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
 	if (tid >= count)
 		return;
 
 	glm::vec3 sum = glm::vec3(0.0f);
-	uint32_t adj_count = graph[tid * max_adj];
-	uint32_t *adj = graph + tid * max_adj + 1;
-	for (uint32_t i = 0; i < adj_count; i++)
+	int32_t adj_count = graph[tid * max_adj];
+	int32_t *adj = graph + tid * max_adj + 1;
+	for (int32_t i = 0; i < adj_count; i++)
 		sum += vertices[adj[i]];
 	sum /= (float) adj_count;
 	if (adj_count == 0)
@@ -797,21 +797,52 @@ void laplacian_smooth_kernel(glm::vec3 *result, glm::vec3 *vertices, uint32_t *g
 }
 
 struct vertex_graph {
-	std::unordered_map <uint32_t, std::unordered_set <uint32_t>> graph;
-	uint32_t *dev_graph = nullptr;
+	std::unordered_map <int32_t, std::unordered_set <int32_t>> graph;
 
-	int32_t max;
-	int32_t max_adj;
+	int32_t *dev_graph = nullptr;
+		
+	int32_t max = 0;
+	int32_t max_adj = 0;
+
+	void allocate_device_graph() {
+		max = 0;
+		max_adj = 0;
+
+		for (auto &kv : graph) {
+			max_adj = std::max(max_adj, (int32_t) kv.second.size());
+			max = std::max(max, kv.first);
+		}
+
+		// Allocate a device graph
+		int32_t graph_size = max * (max_adj + 1);
+		cudaMalloc(&dev_graph, graph_size * sizeof(int32_t));
+
+		std::vector <uint32_t> host_graph(graph_size, 0);
+		for (auto &kv : graph) {
+			int32_t i = kv.first;
+			int32_t j = 0;
+			assert(i * max_adj + j < graph_size);
+			host_graph[i * max_adj + j++] = kv.second.size();
+			for (auto &adj : kv.second) {
+				assert(i * max_adj + j < graph_size);
+				host_graph[i * max_adj + j++] = adj;
+			}
+		}
+
+		cudaMemcpy(dev_graph, host_graph.data(), graph_size * sizeof(int32_t), cudaMemcpyHostToDevice);
+	}
 
 	vertex_graph(const torch::Tensor &primitives) {
 		assert(primitives.dim() == 2);
 		assert(primitives.dtype() == torch::kInt32);
 		assert(primitives.device().is_cpu());
 
-		if (primitives.size(1) == 3)
-			initialize_from_triangles(primitives);
+		// if (primitives.size(1) == 3)
+		// 	initialize_from_triangles(primitives);
 		// else if (primitives.size(1) == 4)
-		// 	initialize_from_quads(primitives);
+		// 	initialize_from_quadrilaterals(primitives);
+		if (primitives.size(1) == 4)
+			initialize_from_quadrilaterals(primitives);
 		else
 			assert(false);
 	}
@@ -821,9 +852,8 @@ struct vertex_graph {
 		assert(triangles.dtype() == torch::kInt32);
 		assert(triangles.device().is_cpu());
 
-		uint32_t triangle_count = triangles.size(0);
+		int32_t triangle_count = triangles.size(0);
 
-		max = 0;
 		for (uint32_t i = 0; i < triangle_count; i++) {
 			int32_t v0 = triangles[i][0].item().to <int32_t> ();
 			int32_t v1 = triangles[i][1].item().to <int32_t> ();
@@ -837,31 +867,38 @@ struct vertex_graph {
 
 			graph[v2].insert(v0);
 			graph[v2].insert(v1);
-
-			max = std::max(max, std::max(v0, std::max(v1, v2)));
 		}
 
-		max_adj = 0;
-		for (auto &kv : graph)
-			max_adj = std::max(max_adj, (int32_t) kv.second.size());
+		allocate_device_graph();
+	}
 
-		// Allocate a device graph
-		uint32_t graph_size = max * (max_adj + 1);
-		cudaMalloc(&dev_graph, graph_size * sizeof(uint32_t));
+	void initialize_from_quadrilaterals(const torch::Tensor &quads) {
+		assert(quads.dim() == 2 && quads.size(1) == 4);
+		assert(quads.dtype() == torch::kInt32);
+		assert(quads.device().is_cpu());
 
-		std::vector <uint32_t> host_graph(graph_size, 0);
-		for (auto &kv : graph) {
-			uint32_t i = kv.first;
-			uint32_t j = 0;
-			assert(i * max_adj + j < graph_size);
-			host_graph[i * max_adj + j++] = kv.second.size();
-			for (auto &adj : kv.second) {
-				assert(i * max_adj + j < graph_size);
-				host_graph[i * max_adj + j++] = adj;
-			}
+		int32_t quad_count = quads.size(0);
+
+		for (uint32_t i = 0; i < quad_count; i++) {
+			int32_t v0 = quads[i][0].item().to <int32_t> ();
+			int32_t v1 = quads[i][1].item().to <int32_t> ();
+			int32_t v2 = quads[i][2].item().to <int32_t> ();
+			int32_t v3 = quads[i][3].item().to <int32_t> ();
+
+			graph[v0].insert(v1);
+			graph[v0].insert(v3);
+
+			graph[v1].insert(v0);
+			graph[v1].insert(v2);
+
+			graph[v2].insert(v1);
+			graph[v2].insert(v3);
+
+			graph[v3].insert(v0);
+			graph[v3].insert(v2);
 		}
 
-		cudaMemcpy(dev_graph, host_graph.data(), graph_size * sizeof(uint32_t), cudaMemcpyHostToDevice);
+		allocate_device_graph();
 	}
 
 	~vertex_graph() {

@@ -124,7 +124,7 @@ def plot_transparent_end(key, d, color, legend):
 
     return line
 
-def lineplot(data, name, xlabel='X', ylabel='Y', width=8, height=6, at=None, legend=False):
+def lineplot(data, name, xlabel='X', ylabel='Y', width=8, height=6, mode='marked', at=None, legend=False):
     codename = name.lower().replace(' ', '-')
     print('Codename', codename, 'at', at)
 
@@ -133,8 +133,13 @@ def lineplot(data, name, xlabel='X', ylabel='Y', width=8, height=6, at=None, leg
 
     lines = []
     for color, (key, d) in zip(colors, data.items()):
-        # lines.append(plot_marked(key, d, color, legend))
-        lines.append(plot_transparent_end(key, d, color, legend))
+        if mode == 'marked':
+            lines.append(plot_marked(key, d, color, legend))
+        elif mode == 'transparent':
+            lines.append(plot_transparent_end(key, d, color, legend))
+        else:
+            raise NotImplementedError
+
 
     x_min = min([ min([ v[0] for v in d ]) for d in data.values() ])
     x_max = max([ max([ v[0] for v in d ]) for d in data.values() ])
@@ -154,10 +159,6 @@ def lineplot(data, name, xlabel='X', ylabel='Y', width=8, height=6, at=None, leg
     tick_step_5 = tick_step_10 / 2
     tick_step = tick_step_10 if tick_step / tick_step_10 > 25 else tick_step_5
     tick_step = int(tick_step)
-    print('Tick step', tick_step)
-
-    print('X min/max', x_min, x_max)
-    print('Y min/max', y_min, y_max)
 
     loc = '' if at is None else 'at={(%s)},' % at
     addplot = '\n'.join(lines)
@@ -275,7 +276,7 @@ def results_plot(name, db):
     e.set_marker(cbox.get_marker_pos(), cbox.get_marker_size(), color=[255, 0, 0])
 
     ref_grid.set_row_titles(txt_list=[ 'Render', 'Normal' ], position='left')
-    ref_grid.set_col_titles(txt_list=[ textsc('Reference'), textsc('Ours') ], position='top')
+    ref_grid.set_col_titles(txt_list=[ textsc('Reference'), textsc('NGF (Ours)') ], position='top')
 
     # Set reference inset
     target_inset_render = cbox.crop(target_render)
@@ -298,7 +299,7 @@ def results_plot(name, db):
         img = db[key][0]['images']['render-source']
         img = images[img]
 
-        if key == 'NGF':
+        if key == 'NGF (Ours)':
             grid_render = ref_grid.get_element(0, 1)
             grid_render.set_image(figuregen.PNG(img))
             grid_render.set_marker(cbox.get_marker_pos(), cbox.get_marker_size(), color=[255, 0, 0])
@@ -315,7 +316,7 @@ def results_plot(name, db):
         img = db[key][0]['images']['normal-source']
         img = images[img]
 
-        if key == 'NGF':
+        if key == 'NGF (Ours)':
             grid_render = ref_grid.get_element(1, 1)
             grid_render.set_image(figuregen.PNG(img))
             grid_render.set_marker(cbox.get_marker_pos(), cbox.get_marker_size(), color=[255, 0, 0])
@@ -360,9 +361,9 @@ def results_plot(name, db):
     print('Chamfer data', chamfer_data)
 
     # Generate lineplots
-    cn0, code0 = lineplot(render_data, 'Render Loss')
-    cn1, code1 = lineplot(normal_data, 'Normal Loss', at=cn0 + '.south east', legend=True)
-    _,   code2 = lineplot(chamfer_data, 'Chamfer Loss', at=cn1 + '.south east')
+    cn0, code0 = lineplot(render_data, 'Render Loss', ylabel='Loss', xlabel='Compression Ratio')
+    cn1, code1 = lineplot(normal_data, 'Normal Loss', at=cn0 + '.south east', ylabel='Loss', xlabel='Compression Ratio', legend=True)
+    _,   code2 = lineplot(chamfer_data, 'Chamfer Loss', at=cn1 + '.south east', ylabel='Loss', xlabel='Compression Ratio')
 
     combined = code0 + '\n' + code1 + '\n' + code2
     combined = document_template % combined
@@ -377,7 +378,6 @@ def results_plot(name, db):
     path1 = os.path.abspath(path1)
 
     combined = combined_template % (path0, path1)
-    print('Combined', combined)
 
     synthesize_tex(combined, os.path.join('media/figures', name + '.pdf'))
 
@@ -398,7 +398,7 @@ def loss_plot(dir):
     graphs = { strip(f) : pointed(f) for f in files }
 
     _, tex = lineplot(graphs, 'Loss', ylabel='Loss', xlabel='Iterations',
-                      width=12, height=7, legend=True)
+                      width=12, height=7, mode='transparent', legend=True)
 
     tex = document_template % tex
     synthesize_tex(tex, 'losses.pdf')
