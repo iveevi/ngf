@@ -74,9 +74,9 @@ def shorted_indices(V, C, sample_rate=16):
 
     return np.array(triangles)
 
-def quadify(C, sample_rate=16):
+def quadify(count, sample_rate=16):
     quads = []
-    for c in range(C.shape[0]):
+    for c in range(count):
         offset = c * sample_rate * sample_rate
         for i in range(sample_rate - 1):
             for j in range(sample_rate - 1):

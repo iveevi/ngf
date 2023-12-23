@@ -8,12 +8,11 @@ set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR})
 # MAx CUDA optimization
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --use_fast_math -lineinfo -Xptxas -O3")
 
-# Set architecture to 7.0+
+# Set architecture to 8.0+
 set(CMAKE_CUDA_ARCHITECTURES 80)
 
 find_package(OpenMP REQUIRED)
 find_package(Vulkan REQUIRED)
-find_package(glfw3 REQUIRED)
 find_package(glslang REQUIRED)
 
 # ImGui object library
@@ -24,26 +23,19 @@ add_library(imgui OBJECT
 	imgui/imgui_widgets.cpp
 	imgui/imgui_tables.cpp
 	imgui/backends/imgui_impl_glfw.cpp
-	imgui/backends/imgui_impl_vulkan.cpp
-)
+	imgui/backends/imgui_impl_vulkan.cpp)
 
-add_executable(rasterizer
-	cpu.cu
-	cuda.cu
-	geometry.cu
-	io.cu
-	rasterizer.cu
-	renderer.cu
-	$<TARGET_OBJECTS:imgui>
-)
+add_executable(testbed
+	main.cpp
+	$<TARGET_OBJECTS:imgui>)
 
-target_link_libraries(rasterizer
+target_link_libraries(testbed
 	assimp
 	glfw
 	SPIRV
+	glslang::glslang
 	glslang::glslang-default-resource-limits
 	OpenMP::OpenMP_CXX
-	Vulkan::Vulkan
-)
+	Vulkan::Vulkan)
 
 include_directories(. ../thirdparty/glm imgui)

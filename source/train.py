@@ -63,21 +63,8 @@ def construct_renderer():
     alpha       = torch.ones((*environment.shape[:2], 1), dtype=torch.float32, device='cuda')
     environment = torch.cat((environment, alpha), dim=-1)
 
-    # TODO: use trimmed fovs in various views to cut down on wasted pixels
-    # TODO: truncatre this dict...
-    # scene_parameters = {}
-    # scene_parameters['res_x']        = 1280
-    # scene_parameters['res_y']        = 720
-    # scene_parameters['fov']          = 45.0
-    # scene_parameters['near_clip']    = 0.1
-    # scene_parameters['far_clip']     = 1000.0
-    # scene_parameters['envmap']       = environment
-    # scene_parameters['envmap_scale'] = 1.0
-
-    # TODO: refactoring...
+    # TODO: increase resolution for higher tessellations
     return Renderer(width=1280, height=720, fov=45.0, near=0.1, far=1000.0, envmap=environment)
-    # return Renderer(res_x=1280, res_y=720, fov=45.0, near_clip=0.1, far_clip=1000.0, envmap=environment)
-    # return Renderer(resolution=(1280, 720), view_clip=(0.1, 1000.0), fov=45.0, envmap=environment)
 
 def load_patches(path, normalizer):
     mesh = meshio.read(path)
@@ -111,22 +98,21 @@ def train(target, generator, opt, batch_views, iterations, laplacian_strength=1.
         return img
 
     def iterate(view_mats, ref_imgs):
-        V, N, F, vgraph = generator()
+        V, N, F, aV, vgraph = generator()
 
         opt_imgs = renderer.render(V, N, F, view_mats)
         opt_imgs = postprocess(opt_imgs)
 
-        V_smoothed = vgraph.smooth_device(V, 1.0)
-
         # Compute losses
         render_loss    = (opt_imgs - ref_imgs).abs().mean()
-        laplacian_loss = (V - V_smoothed).abs().mean()
+
+        V_smoothed = vgraph.smooth_device(aV, 1.0)
+        laplacian_loss = (aV - V_smoothed).abs().mean()
 
         return render_loss + laplacian_strength * laplacian_loss
 
     bar = tqdm.trange(iterations, desc='Training, loss: inf')
 
-    # NOTE: Migth be better to keep the reference images in CPU memory until needed
     ref_imgs_list = []
     for view_mats in batch_views:
         ref_imgs = renderer.render(target.vertices, target.normals, target.faces, view_mats)
@@ -141,7 +127,7 @@ def train(target, generator, opt, batch_views, iterations, laplacian_strength=1.
 
             # Optimization step
             opt.zero_grad()
-            loss.backward()
+            loss.backward(retain_graph=True)
             opt.step()
 
             avg += loss.item()
@@ -163,7 +149,7 @@ def kickoff(target, ngf, views, batch_size):
     from largesteps.optimize import AdamUniform
     from largesteps.parameterize import from_differential, to_differential
 
-    base = ngf.sample(4)['points'].detach()
+    base = ngf.sample(4).points.detach()
 
     base_indices     = shorted_indices(base.cpu().numpy(), ngf.complexes.cpu().numpy(), 4)
     tch_base_indices = torch.from_numpy(base_indices).int()
@@ -182,13 +168,13 @@ def kickoff(target, ngf, views, batch_size):
     U.requires_grad = True
     opt = AdamUniform([ U ], step_size)
 
-    quads = torch.from_numpy(quadify(ngf.complexes, 4)).int()
+    quads = torch.from_numpy(quadify(ngf.complexes.shape[0], 4)).int()
     vgraph = optext.vertex_graph(remap.remap(quads))
 
     def generator():
         V = from_differential(M, U, 'Cholesky')
         N = vertex_normals(V, F)
-        return V, N, F, vgraph
+        return V, N, F, V, vgraph
 
     batch_views = torch.split(views, batch_size, dim=0)
     train(target, generator, opt, batch_views, steps)
@@ -199,10 +185,9 @@ def kickoff(target, ngf, views, batch_size):
     # Overfit to this result
     opt = torch.optim.Adam(list(ngf.mlp.parameters()) + [ ngf.points, ngf.features ], 1e-3)
 
-    # TODO: custom label
     bar = tqdm.trange(1_000, desc='Overfitting, loss: inf')
     for _ in bar:
-        V = ngf.eval(4)
+        V = ngf.eval_uniform(4)
         loss = (V - base).abs().mean()
 
         opt.zero_grad()
@@ -211,22 +196,31 @@ def kickoff(target, ngf, views, batch_size):
 
         bar.set_description('Overfitting, loss: {:.4f}'.format(loss.item()))
 
-    return opt
-
-def refine(target, ngf, rate, views, laplacian_strength, opt, iterations):
-    base   = ngf.sample(rate)['points']
+def refine(target, ngf, rate, views, laplacian_strength, opt, sch, iterations):
+    base   = ngf.sample(rate).points
     cmap   = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
     remap  = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
-    quads  = torch.from_numpy(quadify(ngf.complexes, rate)).int()
+    quads  = torch.from_numpy(quadify(ngf.complexes.shape[0], rate)).int()
     vgraph = optext.vertex_graph(remap.remap(quads))
 
     def generator():
         nonlocal vgraph
+        sch.step()
+        # base = ngf.sample(rate).points
         V = ngf.eval(rate)
         indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
         F = remap.remap_device(indices)
-        N = vertex_normals(V, F)
-        return V, N, F, vgraph
+        N = None
+
+        # TODO: turn into a functional...
+        if ngf.normals == 'numerical':
+            N = ngf.eval_normals(rate)
+        elif ngf.normals == 'geometric':
+            N = vertex_normals(V, F)
+        else:
+            raise NotImplementedError
+
+        return V, N, F, base, vgraph
 
     batch_views = torch.split(views, batch_size, dim=0)
     return train(target, generator, opt, batch_views, iterations, laplacian_strength=laplacian_strength)
@@ -244,11 +238,9 @@ if __name__ == '__main__':
     # Load mesh
     target_path    = config['target']
     result_path     = config['directory']
-    clusters        = config['clusters']    # TODO: or defined per experiment
-    # iterations    = config['iterations']
+    clusters        = config['clusters']
     batch_size      = config['batch_size']
     resolution      = config['resolution']
-    # encoding_levels = config['encoding_levels']
     experiments     = config['experiments']
 
     print('Loading target mesh from {}'.format(target_path))
@@ -265,12 +257,8 @@ if __name__ == '__main__':
 
     # Iterate over experiments
     for experiment in experiments:
-        # print('Starting experiment {}'.format(experiment))
-
         name = experiment['name']
         source_path = experiment['source']
-        # features = experiment['features']
-        # encoder = experiment['encoder']
 
         # Create a combined dict, overriding with experiment-specific values
         local_config = dict(config)
@@ -279,22 +267,9 @@ if __name__ == '__main__':
         print('Starting experiment ', name)
         print(local_config)
 
-        # config = {
-        #     'features': features,
-        #     'encoding_levels': encoding_levels,
-        #     'encoder': encoder
-        # }
-
-        # TODO: pass rest of the options to the mlp
-        ngf = construct_ngf(source_path, local_config, normalizer)
-
-        print('ngf: {} points, {} features'.format(ngf.complexes.shape[0], ngf.features.shape[1]))
-
+        ngf      = construct_ngf(source_path, local_config, normalizer)
         renderer = construct_renderer()
-        print('renderer:', renderer)
-
-        # TODO: return the optimizer
-        opt = kickoff(target, ngf, views, batch_size)
+        kickoff(target, ngf, views, batch_size)
 
         losses = []
         laplacian_strength = 1.0
@@ -305,7 +280,7 @@ if __name__ == '__main__':
             ps.init()
             ps.register_surface_mesh('target mesh', target.vertices.cpu().numpy(), target.faces.cpu().numpy())
 
-            base = ngf.sample(rate)['points'].detach()
+            base = ngf.sample(rate).points.detach()
             cmap = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
             remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
 
@@ -314,14 +289,19 @@ if __name__ == '__main__':
             F = remap.remap_device(indices)
 
             ps.register_surface_mesh('mesh', V.cpu().numpy(), F.cpu().numpy())
+            ps.register_surface_mesh('base', base.cpu().numpy(), F.cpu().numpy())
             ps.show()
 
-        display(4)
+        opt = torch.optim.Adam(list(ngf.mlp.parameters()) + [ ngf.points, ngf.features ], 1e-3)
+        sch = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.999)
 
         rate = 4
         while rate <= resolution:
+            for group in opt.param_groups:
+                group['lr'] = 1e-3
+
             print('Refining with rate {}'.format(rate))
-            losses += refine(target, ngf, rate, views, laplacian_strength, opt, iterations=25 * rate)
+            losses += refine(target, ngf, rate, views, laplacian_strength, opt, sch, iterations=1000)
 
             display(rate)
             laplacian_strength *= 0.75

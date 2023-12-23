@@ -1,51 +1,64 @@
 {
-	"name": "lucy",
 	"target": "meshes/lucy/target.obj",
 	"directory": "results/lucy",
+	"clusters": 200,
+	"batch_size": 40,
+	"resolution": 16,
 	"experiments": [
+		{
+			"name": "sincos",
+			"source": "meshes/lucy/source-lod2.obj",
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20
+		},
+
+		{
+			"name": "skewed",
+			"source": "meshes/lucy/source-lod2.obj",
+			"encoder": "skewed",
+			"encoding_levels": 20,
+			"features": 20
+		},
+
+		{
+			"name": "extint",
+			"source": "meshes/lucy/source-lod2.obj",
+			"encoder": "extint",
+			"encoding_levels": 16,
+			"features": 20
+		},
+
 		{
 			"name": "lod4",
 			"source": "meshes/lucy/source-lod4.obj",
-			"method": "lrelu/linear",
-			"clusters": 250,
-			"batch": 10,
-			"resolution": 16
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20
 		},
 
 		{
 			"name": "lod3",
 			"source": "meshes/lucy/source-lod3.obj",
-			"method": "lrelu/linear",
-			"clusters": 250,
-			"batch": 10,
-			"resolution": 16
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20
 		},
 
 		{
 			"name": "lod2",
 			"source": "meshes/lucy/source-lod2.obj",
-			"method": "lrelu/linear",
-			"clusters": 250,
-			"batch": 10,
-			"resolution": 16
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20
 		},
 
 		{
 			"name": "lod1",
 			"source": "meshes/lucy/source-lod1.obj",
-			"method": "lrelu/linear",
-			"clusters": 250,
-			"batch": 10,
-			"resolution": 16
-		},
-
-		{
-			"name": "lod0",
-			"source": "meshes/lucy/source-lod0.obj",
-			"method": "lrelu/linear",
-			"clusters": 250,
-			"batch": "lambda r: 10 if r < 16 else 2",
-			"resolution": 16
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20
 		}
 	]
 }

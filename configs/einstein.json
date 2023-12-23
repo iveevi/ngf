@@ -1,51 +1,64 @@
 {
-	"name": "einstein",
 	"target": "meshes/einstein/target.obj",
 	"directory": "results/einstein",
+	"clusters": 200,
+	"batch_size": 50,
+	"resolution": 16,
 	"experiments": [
 		{
-			"name": "onion-linear",
-			"source": "meshes/einstein/source-lod4.obj",
-			"method": "onion/linear",
-			"clusters": 250,
-			"batch": 10,
-			"resolution": 16
-		},
-
-		{
-			"name": "onion-linear",
-			"source": "meshes/einstein/source-lod3.obj",
-			"method": "onion/linear",
-			"clusters": 250,
-			"batch": 10,
-			"resolution": 16
-		},
-
-		{
-			"name": "onion-linear",
+			"name": "sincos",
 			"source": "meshes/einstein/source-lod2.obj",
-			"method": "onion/linear",
-			"clusters": 250,
-			"batch": 10,
-			"resolution": 16
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20
 		},
 
 		{
-			"name": "onion-linear",
+			"name": "skewed",
+			"source": "meshes/einstein/source-lod2.obj",
+			"encoder": "skewed",
+			"encoding_levels": 20,
+			"features": 20
+		},
+
+		{
+			"name": "extint",
+			"source": "meshes/einstein/source-lod2.obj",
+			"encoder": "extint",
+			"encoding_levels": 16,
+			"features": 20
+		},
+
+		{
+			"name": "lod4",
+			"source": "meshes/einstein/source-lod4.obj",
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20
+		},
+
+		{
+			"name": "lod3",
+			"source": "meshes/einstein/source-lod3.obj",
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20
+		},
+
+		{
+			"name": "lod2",
+			"source": "meshes/einstein/source-lod2.obj",
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20
+		},
+
+		{
+			"name": "lod1",
 			"source": "meshes/einstein/source-lod1.obj",
-			"method": "onion/linear",
-			"clusters": 250,
-			"batch": 10,
-			"resolution": 16
-		},
-
-		{
-			"name": "onion-linear",
-			"source": "meshes/einstein/source-lod0.obj",
-			"method": "onion/linear",
-			"clusters": 250,
-			"batch": 10,
-			"resolution": 16
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20
 		}
 	]
 }

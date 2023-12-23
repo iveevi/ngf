@@ -1,8 +1,8 @@
 {
 	"target": "meshes/nefertiti/target.obj",
 	"directory": "results/nefertiti",
-	"clusters": 20,
-	"batch_size": 10,
+	"clusters": 200,
+	"batch_size": 40,
 	"resolution": 16,
 	"experiments": [
 		{

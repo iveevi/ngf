@@ -9,7 +9,7 @@ file = sys.argv[1]
 directory = os.path.dirname(file)
 prefix = os.path.join(directory, 'source-lod')
 
-resolutions = [ 5000, 2000, 800, 200 ]
+resolutions = [ 5000, 2000, 500, 200 ]
 
 print(f'Generating lod quadrangulations for {file}')
 for i, res in enumerate(resolutions):
@@ -17,11 +17,11 @@ for i, res in enumerate(resolutions):
     ms.load_new_mesh(file)
     ms.meshing_decimation_quadric_edge_collapse(
         targetfacenum=res,
-        qualitythr=1.0,
-        preservenormal=True,
-        preservetopology=True,
-        preserveboundary=True,
-        optimalplacement=True,
+        # qualitythr=1.0,
+        # preservenormal=True,
+        # preservetopology=True,
+        # preserveboundary=True,
+        # optimalplacement=True,
     )
 
     ms.meshing_repair_non_manifold_edges()

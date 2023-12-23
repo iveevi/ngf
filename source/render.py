@@ -100,19 +100,12 @@ class Renderer:
         v_hom = torch.nn.functional.pad(v, (0, 1), 'constant', 1.0)
         v_ndc = torch.matmul(v_hom, mvps.transpose(1, 2))
         rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
-
-        # normals = dr.interpolate(n, rast, f)[0]
-        # normals_light = self.sh.eval(normals).contiguous()
-        # normals_light = torch.where(rast[..., -1:] != 0, normals_light, torch.zeros_like(normals_light))
-        # normals_imgs = dr.antialias(normals_light, rast, v_ndc, f)
-        # return normals_imgs
-
         light = self.sh.eval(n).contiguous()
         light = dr.interpolate(light, rast, f)[0]
         return dr.antialias(light, rast, v_ndc, f)
 
     def render_normals(self, v, n, f, view_mats):
-        mvps = self.proj_mat @ view_mats
+        mvps = self.proj @ view_mats
         v_hom = torch.nn.functional.pad(v, (0,1), 'constant', 1.0)
         v_ndc = torch.matmul(v_hom, mvps.transpose(1,2))
         rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]

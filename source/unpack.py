@@ -55,8 +55,8 @@ if __name__ == '__main__':
 
             ngf = load_ngf(data)
 
-            base = ngf.sample(16)['points'].detach()
-            V = ngf.eval(16).detach()
+            base = ngf.sample(16).points.detach()
+            V = ngf.eval_uniform(16).detach()
 
             I = shorted_quads(ngf.complexes, 16)
             I = torch.from_numpy(I).int()

@@ -63,8 +63,8 @@ std::vector <std::vector <int32_t>> cluster_once(const geometry &g, const geomet
 			glm::vec3 nn = g.face_normal(neighbor);
 			float dc     = glm::length(g.centroid(face) - g.centroid(neighbor));
 			float dn     = std::max(1 - glm::dot(cn, nn), 0.0f);
-			float new_cost = costs[face] + dn * dc;
-			// float new_cost = costs[face] + dc;
+			// float new_cost = costs[face] + dn * dc;
+			float new_cost = costs[face] + dc;
 
 			if (queue.count(neighbor) && new_cost < costs[neighbor]) {
 				queue.erase(neighbor);
