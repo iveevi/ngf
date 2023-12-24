@@ -63,8 +63,7 @@ def construct_renderer():
     alpha       = torch.ones((*environment.shape[:2], 1), dtype=torch.float32, device='cuda')
     environment = torch.cat((environment, alpha), dim=-1)
 
-    # TODO: increase resolution for higher tessellations
-    return Renderer(width=1280, height=720, fov=45.0, near=0.1, far=1000.0, envmap=environment)
+    return Renderer(width=1024, height=1024, fov=45.0, near=0.1, far=1000.0, envmap=environment)
 
 def load_patches(path, normalizer):
     mesh = meshio.read(path)
@@ -92,7 +91,7 @@ def alpha_blend(img):
     alpha = img[..., 3:]
     return img[..., :3] * alpha + (1.0 - alpha)
 
-def train(target, generator, opt, batch_views, iterations, laplacian_strength=1.0):
+def train(target, generator, opt, sch, batch_views, iterations, laplacian_strength=1.0):
     def postprocess(img):
         img = tonemap_srgb(torch.log(torch.clamp(img, min=0, max=65535) + 1))
         return img
@@ -130,8 +129,12 @@ def train(target, generator, opt, batch_views, iterations, laplacian_strength=1.
             loss.backward(retain_graph=True)
             opt.step()
 
+            if sch is not None:
+                sch.step()
+
             avg += loss.item()
 
+        # TODO: measure the chamfer... (with no grad...)
         avg /= len(batch_views)
         losses.append(avg)
 
@@ -149,7 +152,7 @@ def kickoff(target, ngf, views, batch_size):
     from largesteps.optimize import AdamUniform
     from largesteps.parameterize import from_differential, to_differential
 
-    base = ngf.sample(4).points.detach()
+    base = ngf.base(4).detach()
 
     base_indices     = shorted_indices(base.cpu().numpy(), ngf.complexes.cpu().numpy(), 4)
     tch_base_indices = torch.from_numpy(base_indices).int()
@@ -177,7 +180,7 @@ def kickoff(target, ngf, views, batch_size):
         return V, N, F, V, vgraph
 
     batch_views = torch.split(views, batch_size, dim=0)
-    train(target, generator, opt, batch_views, steps)
+    train(target, generator, opt, None, batch_views, steps)
 
     V = from_differential(M, U, 'Cholesky')
     V = V.detach()
@@ -187,7 +190,9 @@ def kickoff(target, ngf, views, batch_size):
 
     bar = tqdm.trange(1_000, desc='Overfitting, loss: inf')
     for _ in bar:
-        V = ngf.eval_uniform(4)
+        uvs = ngf.sample_uniform(4)
+        V = ngf.eval(*uvs)
+
         loss = (V - base).abs().mean()
 
         opt.zero_grad()
@@ -197,33 +202,40 @@ def kickoff(target, ngf, views, batch_size):
         bar.set_description('Overfitting, loss: {:.4f}'.format(loss.item()))
 
 def refine(target, ngf, rate, views, laplacian_strength, opt, sch, iterations):
-    base   = ngf.sample(rate).points
+    base = ngf.base(rate).detach()
+
     cmap   = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
     remap  = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
     quads  = torch.from_numpy(quadify(ngf.complexes.shape[0], rate)).int()
     vgraph = optext.vertex_graph(remap.remap(quads))
+    factor = 0.5 ** 1e-3
+    delta  = 1/rate
 
     def generator():
-        nonlocal vgraph
-        sch.step()
-        # base = ngf.sample(rate).points
-        V = ngf.eval(rate)
+        nonlocal vgraph, delta
+
+        base = ngf.base(rate)
+        uvs = ngf.sampler(rate)
+        V = ngf.eval(*uvs)
+
         indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
         F = remap.remap_device(indices)
         N = None
 
         # TODO: turn into a functional...
         if ngf.normals == 'numerical':
-            N = ngf.eval_normals(rate)
+            N = ngf.eval_normals(*uvs, delta)
         elif ngf.normals == 'geometric':
             N = vertex_normals(V, F)
         else:
             raise NotImplementedError
 
+        # delta *= factor
+
         return V, N, F, base, vgraph
 
     batch_views = torch.split(views, batch_size, dim=0)
-    return train(target, generator, opt, batch_views, iterations, laplacian_strength=laplacian_strength)
+    return train(target, generator, opt, sch, batch_views, iterations, laplacian_strength=laplacian_strength)
 
 if __name__ == '__main__':
     assert len(sys.argv) == 2, 'Usage: python train.py <config>'
@@ -280,11 +292,12 @@ if __name__ == '__main__':
             ps.init()
             ps.register_surface_mesh('target mesh', target.vertices.cpu().numpy(), target.faces.cpu().numpy())
 
-            base = ngf.sample(rate).points.detach()
+            base = ngf.base(rate).detach()
             cmap = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
             remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
 
-            V = ngf.eval(rate).detach()
+            uvs = ngf.sampler(rate)
+            V = ngf.eval(*uvs).detach()
             indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
             F = remap.remap_device(indices)
 
@@ -293,10 +306,11 @@ if __name__ == '__main__':
             ps.show()
 
         opt = torch.optim.Adam(list(ngf.mlp.parameters()) + [ ngf.points, ngf.features ], 1e-3)
-        sch = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.999)
+        sch = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.9999)
 
         rate = 4
         while rate <= resolution:
+            torch.cuda.empty_cache()
             for group in opt.param_groups:
                 group['lr'] = 1e-3
 
@@ -306,6 +320,9 @@ if __name__ == '__main__':
             display(rate)
             laplacian_strength *= 0.75
             rate *= 2
+
+            # renderer.res = (2 * renderer.res[0], 2 * renderer.res[1])
+            # batch_size //= 4
 
         os.makedirs(result_path, exist_ok=True)
         result = os.path.join(result_path, name + '.pt')

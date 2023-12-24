@@ -149,4 +149,3 @@ def compute_vertex_normals(verts, faces, face_normals):
     lengths = torch.linalg.norm(normals, dim=0)
     lengths = torch.where(lengths == 0, torch.ones_like(lengths), lengths)
     return (normals / lengths).transpose(0, 1)
-    #return (normals / torch.norm(normals, dim=0)).transpose(0, 1)

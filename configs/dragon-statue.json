@@ -1,26 +1,18 @@
 {
 	"target": "meshes/dragon-statue/target.obj",
 	"directory": "results/dragon-statue",
-	"clusters": 100,
-	"batch_size": 50,
+	"clusters": 160,
+	"batch_size": 20,
 	"resolution": 16,
 	"experiments": [
 		{
-			"name": "jittering",
+			"name": "combined",
 			"source": "meshes/dragon-statue/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
 			"features": 20,
-			"jittering": true
-		},
-
-		{
-			"name": "default",
-			"source": "meshes/dragon-statue/source-lod2.obj",
-			"encoder": "sincos",
-			"encoding_levels": 10,
-			"features": 20,
-			"jittering": false
+			"jittering": true,
+			"normals": "numerical"
 		}
 	]
 }

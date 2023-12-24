@@ -33,6 +33,16 @@
 			"features": 20,
 			"jittering": true,
 			"normals": "geometric"
+		},
+
+		{
+			"name": "combined",
+			"source": "meshes/chinese/source-lod2.obj",
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20,
+			"jittering": true,
+			"normals": "numerical"
 		}
 	]
 }

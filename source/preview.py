@@ -28,14 +28,15 @@ COLOR_WHEEL = [
         np.array([0.880, 0.320, 0.740]),
         np.array([0.880, 0.320, 0.530])
 ]
-    
+
 def preview_single(ngf, ref):
     mode = 'ref'
     def draw(rate, patches):
         ps.remove_all_structures()
 
         if ngf is not None and mode == 'ngf':
-            V = ngf.eval(rate).detach().cpu()
+            uvs = ngf.sample_uniform(rate)
+            V = ngf.eval(*uvs).detach().cpu()
 
             complex_count = ngf.complexes.shape[0]
             V = V.reshape(complex_count, -1, 3)
@@ -95,9 +96,9 @@ def preview_single(ngf, ref):
     def callback():
         import polyscope.imgui as imgui
 
-        nonlocal rate, patches
+        nonlocal rate, patches, mode
         if imgui.Button('Increase'):
-            rate = min(16, 2 * rate)
+            rate = min(32, 2 * rate)
             draw(rate, patches)
         imgui.SameLine()
         if imgui.Button('Decrease'):
@@ -112,7 +113,6 @@ def preview_single(ngf, ref):
 
         imgui.Separator()
 
-        global mode
         if imgui.RadioButton('Reference', mode == 'ref'):
             mode = 'ref'
             draw(rate, patches)
@@ -176,7 +176,7 @@ def preview_lods(lods):
                     c.set_radius(0.0025)
                 else:
                     p.set_color([0.6, 0.5, 0.9])
-    
+
     ps.init()
 
     ps.set_ground_plane_mode('none')
@@ -236,10 +236,10 @@ if __name__ == '__main__':
 
         max_v = np.max(V, axis=0)
         min_v = np.min(V, axis=0)
-        
+
         center = (min_v + max_v) / 2
         extent = np.sqrt(np.sum((max_v - min_v) ** 2)) / 2.0
-        
+
         V = (V - center) / extent
         ref = (V, F)
 
