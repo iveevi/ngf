@@ -27,6 +27,8 @@ add_library(imgui OBJECT
 
 add_executable(testbed
 	main.cpp
+	mesh.cpp
+	util.cpp
 	$<TARGET_OBJECTS:imgui>)
 
 target_link_libraries(testbed

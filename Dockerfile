@@ -8,4 +8,3 @@ RUN apt update && apt install -y \
     build-essential \
     vim git wget ninja-build
 RUN pip3 install --upgrade pip setuptools wheel
-RUN pip3 install torch torchvision

@@ -1,13 +1,43 @@
 {
 	"target": "meshes/dragon-statue/target.obj",
 	"directory": "results/dragon-statue",
-	"clusters": 160,
+	"clusters": 100,
 	"batch_size": 20,
 	"resolution": 16,
 	"experiments": [
 		{
-			"name": "combined",
+			"name": "lod4",
+			"source": "meshes/dragon-statue/source-lod4.obj",
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20,
+			"jittering": true,
+			"normals": "numerical"
+		},
+		
+		{
+			"name": "lod3",
+			"source": "meshes/dragon-statue/source-lod3.obj",
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20,
+			"jittering": true,
+			"normals": "numerical"
+		},
+		
+		{
+			"name": "lod2",
 			"source": "meshes/dragon-statue/source-lod2.obj",
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20,
+			"jittering": true,
+			"normals": "numerical"
+		},
+		
+		{
+			"name": "lod1",
+			"source": "meshes/dragon-statue/source-lod1.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
 			"features": 20,

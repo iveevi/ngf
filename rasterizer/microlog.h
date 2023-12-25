@@ -111,3 +111,13 @@ inline void ulog_assert(bool condition, const char *header, const char *format, 
 		exit(EXIT_FAILURE);
 	}
 }
+
+inline void ulog_progress(const char *header, float progress)
+{
+	static const char *color = "\033[36;1m";
+	static const char *reset = "\033[0m";
+	static const char *bar   = "####################";
+
+	printf("\r%s[%%]%s (%s) [%-20.*s] %d%%", color, reset, header, (int) ceil(progress * 20), bar, (int) ceil(100.0f * progress));
+	fflush(stdout);
+}

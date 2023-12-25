@@ -92,6 +92,8 @@ def alpha_blend(img):
     return img[..., :3] * alpha + (1.0 - alpha)
 
 def train(target, generator, opt, sch, batch_views, iterations, laplacian_strength=1.0):
+    from kaolin.metrics.pointcloud import chamfer_distance
+
     def postprocess(img):
         img = tonemap_srgb(torch.log(torch.clamp(img, min=0, max=65535) + 1))
         return img
@@ -120,7 +122,6 @@ def train(target, generator, opt, sch, batch_views, iterations, laplacian_streng
 
     losses = []
     for _ in bar:
-        avg = 0.0
         for view_mats, ref_imgs in zip(batch_views, ref_imgs_list):
             loss = iterate(view_mats, ref_imgs)
 
@@ -132,13 +133,12 @@ def train(target, generator, opt, sch, batch_views, iterations, laplacian_streng
             if sch is not None:
                 sch.step()
 
-            avg += loss.item()
+        with torch.no_grad():
+            V = generator()[0]
+            chamfer = chamfer_distance(target.vertices.unsqueeze(0), V.unsqueeze(0)).item()
+            losses.append(chamfer)
 
-        # TODO: measure the chamfer... (with no grad...)
-        avg /= len(batch_views)
-        losses.append(avg)
-
-        bar.set_description('Training, loss: {:.4f}'.format(avg))
+        bar.set_description('Training, loss: {}'.format(chamfer))
 
     return losses
 
@@ -255,6 +255,8 @@ if __name__ == '__main__':
     resolution      = config['resolution']
     experiments     = config['experiments']
 
+    global_batch_size = batch_size
+
     print('Loading target mesh from {}'.format(target_path))
     target, normalizer = load_mesh(target_path)
     print('target: {} vertices, {} faces'.format(target.vertices.shape[0], target.faces.shape[0]))
@@ -271,6 +273,11 @@ if __name__ == '__main__':
     for experiment in experiments:
         name = experiment['name']
         source_path = experiment['source']
+
+        if 'batch_size' in experiment:
+            batch_size = experiment['batch_size']
+        else:
+            batch_size = global_batch_size
 
         # Create a combined dict, overriding with experiment-specific values
         local_config = dict(config)
@@ -306,7 +313,7 @@ if __name__ == '__main__':
             ps.show()
 
         opt = torch.optim.Adam(list(ngf.mlp.parameters()) + [ ngf.points, ngf.features ], 1e-3)
-        sch = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.9999)
+        sch = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.9995)
 
         rate = 4
         while rate <= resolution:

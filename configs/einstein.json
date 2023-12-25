@@ -2,63 +2,47 @@
 	"target": "meshes/einstein/target.obj",
 	"directory": "results/einstein",
 	"clusters": 200,
-	"batch_size": 50,
+	"batch_size": 20,
 	"resolution": 16,
 	"experiments": [
 		{
-			"name": "sincos",
+			"name": "feat5",
 			"source": "meshes/einstein/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
-			"features": 20
+			"features": 5,
+			"jittering": true,
+			"normals": "numerical"
 		},
-
+		
 		{
-			"name": "skewed",
-			"source": "meshes/einstein/source-lod2.obj",
-			"encoder": "skewed",
-			"encoding_levels": 20,
-			"features": 20
-		},
-
-		{
-			"name": "extint",
-			"source": "meshes/einstein/source-lod2.obj",
-			"encoder": "extint",
-			"encoding_levels": 16,
-			"features": 20
-		},
-
-		{
-			"name": "lod4",
-			"source": "meshes/einstein/source-lod4.obj",
-			"encoder": "sincos",
-			"encoding_levels": 10,
-			"features": 20
-		},
-
-		{
-			"name": "lod3",
-			"source": "meshes/einstein/source-lod3.obj",
-			"encoder": "sincos",
-			"encoding_levels": 10,
-			"features": 20
-		},
-
-		{
-			"name": "lod2",
+			"name": "feat10",
 			"source": "meshes/einstein/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
-			"features": 20
+			"features": 10,
+			"jittering": true,
+			"normals": "numerical"
 		},
-
+		
 		{
-			"name": "lod1",
-			"source": "meshes/einstein/source-lod1.obj",
+			"name": "feat20",
+			"source": "meshes/einstein/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
-			"features": 20
+			"features": 20,
+			"jittering": true,
+			"normals": "numerical"
+		},
+		
+		{
+			"name": "feat50",
+			"source": "meshes/einstein/source-lod2.obj",
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 50,
+			"jittering": true,
+			"normals": "numerical"
 		}
 	]
 }

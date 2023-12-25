@@ -1,46 +1,46 @@
 {
 	"target": "meshes/chinese/target.obj",
 	"directory": "results/chinese",
-	"clusters": 50,
-	"batch_size": 50,
+	"clusters": 200,
+	"batch_size": 20,
 	"resolution": 16,
 	"experiments": [
 		{
-			"name": "numerical",
+			"name": "feat5",
 			"source": "meshes/chinese/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
-			"features": 20,
-			"jittering": false,
+			"features": 5,
+			"jittering": true,
 			"normals": "numerical"
 		},
-
+		
 		{
-			"name": "default",
+			"name": "feat10",
 			"source": "meshes/chinese/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
-			"features": 20,
-			"jittering": false,
-			"normals": "geometric"
+			"features": 10,
+			"jittering": true,
+			"normals": "numerical"
 		},
-
+		
 		{
-			"name": "jittering",
+			"name": "feat20",
 			"source": "meshes/chinese/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
 			"features": 20,
 			"jittering": true,
-			"normals": "geometric"
+			"normals": "numerical"
 		},
-
+		
 		{
-			"name": "combined",
+			"name": "feat50",
 			"source": "meshes/chinese/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
-			"features": 20,
+			"features": 50,
 			"jittering": true,
 			"normals": "numerical"
 		}

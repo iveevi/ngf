@@ -8,25 +8,23 @@
 #include "common.hpp"
 
 // Chartifying geometry into N clusters
-std::vector <std::vector <int32_t>> cluster_once(const geometry &g, const geometry::dual_graph &dgraph, const std::vector <int32_t> &seeds)
+static std::vector <std::unordered_set <int32_t>> cluster_once(const geometry &g, const geometry::dual_graph &dgraph, const std::vector <int32_t> &seeds, const std::string &metric)
 {
-	using cluster = std::vector <int32_t>;
-
 	std::unordered_map <int32_t, int32_t> face_to_cluster;
-	std::vector <cluster>                 clusters;
-	std::vector <glm::vec3>               cluster_normals;
+	std::vector <std::unordered_set <int32_t>> clusters;
+	std::vector <glm::vec3> cluster_normals;
 
 	// Initialize the clusters
 	for (int32_t s : seeds) {
 		assert(s < g.triangles.size());
 
 		face_to_cluster[s] = clusters.size();
-		clusters.push_back(cluster { s });
+		clusters.push_back(std::unordered_set <int32_t>{ s });
 		cluster_normals.push_back(g.face_normal(s));
 	}
 
 	// Costs
-	std::vector <float>                   costs;
+	std::vector <float> costs;
 	costs.resize(g.triangles.size(), FLT_MAX);
 
 	// Comparator for the map
@@ -62,9 +60,8 @@ std::vector <std::vector <int32_t>> cluster_once(const geometry &g, const geomet
 		for (int32_t neighbor : dgraph.at(face)) {
 			glm::vec3 nn = g.face_normal(neighbor);
 			float dc     = glm::length(g.centroid(face) - g.centroid(neighbor));
-			float dn     = std::max(1 - glm::dot(cn, nn), 0.0f);
-			// float new_cost = costs[face] + dn * dc;
-			float new_cost = costs[face] + dc;
+			float dn     = 1 - glm::dot(cn, nn);
+			float new_cost = costs[face] + ((metric == "flat") ? dn * dc : dc);
 
 			if (queue.count(neighbor) && new_cost < costs[neighbor]) {
 				queue.erase(neighbor);
@@ -72,10 +69,16 @@ std::vector <std::vector <int32_t>> cluster_once(const geometry &g, const geomet
 				float size = clusters[ci].size();
 				glm::vec3 new_normal = (cn * size + nn)/(size + 1.0f);
 
-				face_to_cluster[neighbor] = ci;
 				cluster_normals[ci] = new_normal;
 				costs[neighbor] = new_cost;
-				clusters[ci].push_back(neighbor);
+
+				if (face_to_cluster.count(neighbor)) {
+					int32_t old = face_to_cluster[neighbor];
+					clusters[old].erase(neighbor);
+				}
+
+				face_to_cluster[neighbor] = ci;
+				clusters[ci].insert(neighbor);
 
 				queue.insert(neighbor);
 			}
@@ -87,17 +90,19 @@ std::vector <std::vector <int32_t>> cluster_once(const geometry &g, const geomet
 	return clusters;
 }
 
-std::vector <std::vector <int32_t>> cluster_geometry(const geometry &g, const std::vector <int32_t> &seeds, int32_t iterations)
+std::vector <std::vector <int32_t>> cluster_geometry(const geometry &g, const std::vector <int32_t> &seeds, int32_t iterations, const std::string &metric)
 {
+	assert(metric == "uniform" || metric == "flat");
+
 	// Make the dual graph
 	auto egraph = g.make_edge_graph();
 	auto dgraph = g.make_dual_graph(egraph);
 
-	std::vector <std::vector <int32_t>> clusters;
+	std::vector <std::unordered_set <int32_t>> clusters;
 	std::vector <int32_t> next_seeds = seeds;
 
 	for (int32_t i = 0; i < iterations; i++) {
-		clusters = cluster_once(g, dgraph, next_seeds);
+		clusters = cluster_once(g, dgraph, next_seeds, metric);
 		if (i == iterations - 1)
 			break;
 
@@ -138,5 +143,9 @@ std::vector <std::vector <int32_t>> cluster_geometry(const geometry &g, const st
 		}
 	}
 
-	return clusters;
+	std::vector <std::vector <int32_t>> clusters_linear;
+	for (const auto &c : clusters)
+		clusters_linear.emplace_back(c.begin(), c.end());
+
+	return clusters_linear;
 }

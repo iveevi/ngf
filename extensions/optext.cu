@@ -778,355 +778,6 @@ void barycentric_closest_points(const torch::Tensor &vertices, const torch::Tens
 }
 
 __global__
-void laplacian_smooth_kernel(glm::vec3 *result, glm::vec3 *vertices, int32_t *graph, uint32_t count, uint32_t max_adj, float factor)
-{
-	int32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-	if (tid >= count)
-		return;
-
-	glm::vec3 sum = glm::vec3(0.0f);
-	int32_t adj_count = graph[tid * max_adj];
-	int32_t *adj = graph + tid * max_adj + 1;
-	for (int32_t i = 0; i < adj_count; i++)
-		sum += vertices[adj[i]];
-	sum /= (float) adj_count;
-	if (adj_count == 0)
-		sum = vertices[tid];
-
-	result[tid] = vertices[tid] + (sum - vertices[tid]) * factor;
-}
-
-struct vertex_graph {
-	std::unordered_map <int32_t, std::unordered_set <int32_t>> graph;
-
-	int32_t *dev_graph = nullptr;
-		
-	int32_t max = 0;
-	int32_t max_adj = 0;
-
-	void allocate_device_graph() {
-		max = 0;
-		max_adj = 0;
-
-		for (auto &kv : graph) {
-			max_adj = std::max(max_adj, (int32_t) kv.second.size());
-			max = std::max(max, kv.first);
-		}
-
-		// Allocate a device graph
-		int32_t graph_size = max * (max_adj + 1);
-		cudaMalloc(&dev_graph, graph_size * sizeof(int32_t));
-
-		std::vector <uint32_t> host_graph(graph_size, 0);
-		for (auto &kv : graph) {
-			int32_t i = kv.first;
-			int32_t j = 0;
-			assert(i * max_adj + j < graph_size);
-			host_graph[i * max_adj + j++] = kv.second.size();
-			for (auto &adj : kv.second) {
-				assert(i * max_adj + j < graph_size);
-				host_graph[i * max_adj + j++] = adj;
-			}
-		}
-
-		cudaMemcpy(dev_graph, host_graph.data(), graph_size * sizeof(int32_t), cudaMemcpyHostToDevice);
-	}
-
-	vertex_graph(const torch::Tensor &primitives) {
-		assert(primitives.dim() == 2);
-		assert(primitives.dtype() == torch::kInt32);
-		assert(primitives.device().is_cpu());
-
-		// if (primitives.size(1) == 3)
-		// 	initialize_from_triangles(primitives);
-		// else if (primitives.size(1) == 4)
-		// 	initialize_from_quadrilaterals(primitives);
-		if (primitives.size(1) == 4)
-			initialize_from_quadrilaterals(primitives);
-		else
-			assert(false);
-	}
-
-	void initialize_from_triangles(const torch::Tensor &triangles) {
-		assert(triangles.dim() == 2 && triangles.size(1) == 3);
-		assert(triangles.dtype() == torch::kInt32);
-		assert(triangles.device().is_cpu());
-
-		int32_t triangle_count = triangles.size(0);
-
-		for (uint32_t i = 0; i < triangle_count; i++) {
-			int32_t v0 = triangles[i][0].item().to <int32_t> ();
-			int32_t v1 = triangles[i][1].item().to <int32_t> ();
-			int32_t v2 = triangles[i][2].item().to <int32_t> ();
-
-			graph[v0].insert(v1);
-			graph[v0].insert(v2);
-
-			graph[v1].insert(v0);
-			graph[v1].insert(v2);
-
-			graph[v2].insert(v0);
-			graph[v2].insert(v1);
-		}
-
-		allocate_device_graph();
-	}
-
-	void initialize_from_quadrilaterals(const torch::Tensor &quads) {
-		assert(quads.dim() == 2 && quads.size(1) == 4);
-		assert(quads.dtype() == torch::kInt32);
-		assert(quads.device().is_cpu());
-
-		int32_t quad_count = quads.size(0);
-
-		for (uint32_t i = 0; i < quad_count; i++) {
-			int32_t v0 = quads[i][0].item().to <int32_t> ();
-			int32_t v1 = quads[i][1].item().to <int32_t> ();
-			int32_t v2 = quads[i][2].item().to <int32_t> ();
-			int32_t v3 = quads[i][3].item().to <int32_t> ();
-
-			graph[v0].insert(v1);
-			graph[v0].insert(v3);
-
-			graph[v1].insert(v0);
-			graph[v1].insert(v2);
-
-			graph[v2].insert(v1);
-			graph[v2].insert(v3);
-
-			graph[v3].insert(v0);
-			graph[v3].insert(v2);
-		}
-
-		allocate_device_graph();
-	}
-
-	~vertex_graph() {
-		if (dev_graph)
-			cudaFree(dev_graph);
-	}
-
-	torch::Tensor smooth(const torch::Tensor &vertices, float factor) const {
-		assert(vertices.dim() == 2 && vertices.size(1) == 3);
-		assert(vertices.dtype() == torch::kFloat32);
-		assert(vertices.device().is_cpu());
-		assert(max < vertices.size(0));
-
-		torch::Tensor result = torch::zeros_like(vertices);
-
-		glm::vec3 *v = (glm::vec3 *) vertices.data_ptr <float> ();
-		glm::vec3 *r = (glm::vec3 *) result.data_ptr <float> ();
-
-		for (uint32_t i = 0; i <= max; i++) {
-			if (graph.find(i) == graph.end())
-				continue;
-
-			glm::vec3 sum = glm::vec3(0.0f);
-			for (auto j : graph.at(i))
-				sum += v[j];
-			sum /= (float) graph.at(i).size();
-
-			r[i] = (1.0f - factor) * v[i] + factor * sum;
-		}
-
-		return result;
-	}
-
-	torch::Tensor smooth_device(const torch::Tensor &vertices, float factor) const {
-		assert(vertices.dim() == 2 && vertices.size(1) == 3);
-		assert(vertices.dtype() == torch::kFloat32);
-		assert(vertices.device().is_cuda());
-		assert(max < vertices.size(0));
-
-		torch::Tensor result = torch::zeros_like(vertices);
-
-		glm::vec3 *v = (glm::vec3 *) vertices.data_ptr <float> ();
-		glm::vec3 *r = (glm::vec3 *) result.data_ptr <float> ();
-
-		dim3 block(256);
-		dim3 grid((vertices.size(0) + block.x - 1) / block.x);
-
-		laplacian_smooth_kernel <<<grid, block>>> (r, v, dev_graph, vertices.size(0), max_adj, factor);
-
-		return result;
-	}
-};
-
-// torch::Tensor conformal_graph(const torch::Tensor &quads)
-// {
-// 	// Requries quads
-// 	assert(quads.dim() == 2 && quads.size(1) == 4);
-// 	assert(quads.dtype() == torch::kInt32);
-// 	assert(quads.device().is_cpu());
-//
-// 	// First build the adjacency graph and record quad sharing
-// 	std::unordered_map <int32_t, std::unordered_set <int32_t>> graph;
-// 	std::unordered_map <int32_t, std::vector <glm::ivec4>> shared;
-//
-// 	uint32_t quad_count = quads.size(0);
-//
-// 	// Fill the graphs
-// 	for (uint32_t i = 0; i < quad_count; i++) {
-// 		int32_t v0 = quads[i][0].item().to <int32_t> ();
-// 		int32_t v1 = quads[i][1].item().to <int32_t> ();
-// 		int32_t v2 = quads[i][2].item().to <int32_t> ();
-// 		int32_t v3 = quads[i][3].item().to <int32_t> ();
-//
-// 		graph[v0].insert(v1);
-// 		graph[v0].insert(v3);
-//
-// 		graph[v1].insert(v0);
-// 		graph[v1].insert(v2);
-//
-// 		graph[v2].insert(v1);
-// 		graph[v2].insert(v3);
-//
-// 		graph[v3].insert(v0);
-// 		graph[v3].insert(v2);
-//
-// 		glm::ivec4 quad = glm::ivec4(v0, v1, v2, v3);
-// 		shared[v0].push_back(quad);
-// 		shared[v1].push_back(quad);
-// 		shared[v2].push_back(quad);
-// 		shared[v3].push_back(quad);
-// 	}
-//
-// 	// Collect all crossings; only vertices with valence 4, with opposite vertices not sharing quads
-// 	std::vector <glm::ivec4> crossings;
-//
-// 	for (auto &kv : graph) {
-// 		std::unordered_set <int32_t> &adj = kv.second;
-// 		if (adj.size() != 4)
-// 			continue;
-//
-// 		// Find the opposite vertices
-// 		auto it = adj.begin();
-// 		int32_t a = *it++;
-// 		int32_t b = *it++;
-// 		int32_t c = *it++;
-// 		int32_t d = *it++;
-//
-// 		// printf("a: %d, b: %d, c: %d, d: %d\n", a, b, c, d);
-// 		// printf("shared quads:\n");
-// 		// for (auto &quad : shared[kv.first])
-// 		// 	printf("  > %d %d %d %d\n", quad[0], quad[1], quad[2], quad[3]);
-//
-// 		// Expect that a-b and c-d are opposite (non-sharing), swap if otherwise
-// 		int32_t opp_a = b;
-//
-// 		auto in_shared = [&shared](int32_t a, int32_t b) {
-// 			for (auto &quad : shared[a])
-// 				if (quad[0] == b || quad[1] == b || quad[2] == b || quad[3] == b)
-// 					return true;
-// 			return false;
-// 		};
-//
-// 		if (in_shared(a, opp_a))
-// 			opp_a = c;
-// 		if (in_shared(a, opp_a))
-// 			opp_a = d;
-//
-// 		assert(!in_shared(a, opp_a));
-//
-// 		// Then find the other two opposite vertices
-// 		int32_t other_a = b;
-// 		if (other_a == a || other_a == opp_a)
-// 			other_a = c;
-// 		if (other_a == a || other_a == opp_a)
-// 			other_a = d;
-//
-// 		int32_t other_opp_a = b;
-// 		if (other_opp_a == opp_a || other_opp_a == a || other_opp_a == other_a)
-// 			other_opp_a = c;
-// 		if (other_opp_a == opp_a || other_opp_a == a || other_opp_a == other_a)
-// 			other_opp_a = d;
-//
-// 		assert(!in_shared(other_a, other_opp_a));
-// 		assert(other_a != a && other_a != opp_a);
-//
-// 		// Finally, add the crossing
-// 		crossings.push_back(glm::ivec4(a, opp_a, other_a, other_opp_a));
-// 	}
-//
-// 	// Construct tensor of crossings
-// 	torch::Tensor result = torch::zeros({ (long) crossings.size(), 4 }, torch::kInt32);
-//
-// 	for (uint32_t i = 0; i < crossings.size(); i++) {
-// 		result[i][0] = crossings[i][0];
-// 		result[i][1] = crossings[i][1];
-// 		result[i][2] = crossings[i][2];
-// 		result[i][3] = crossings[i][3];
-// 	}
-//
-// 	return result;
-// }
-
-__global__
-void triangulate_shorted_kernel(const glm::vec3 *__restrict__ vertices, glm::ivec3 *__restrict__ triangles, size_t sample_rate)
-{
-	size_t i = blockIdx.x;
-	size_t j = threadIdx.x;
-	size_t k = threadIdx.y;
-
-	size_t offset = i * sample_rate * sample_rate;
-
-	size_t a = offset + j * sample_rate + k;
-	size_t b = a + 1;
-	size_t c = offset + (j + 1) * sample_rate + k;
-	size_t d = c + 1;
-
-	const glm::vec3 &va = vertices[a];
-	const glm::vec3 &vb = vertices[b];
-	const glm::vec3 &vc = vertices[c];
-	const glm::vec3 &vd = vertices[d];
-
-	float d0 = glm::distance(va, vd);
-	float d1 = glm::distance(vb, vc);
-
-	size_t toffset = 2 * i * (sample_rate - 1) * (sample_rate - 1);
-	size_t tindex = toffset + 2 * (j * (sample_rate - 1) + k);
-	if (d0 < d1) {
-		triangles[tindex] = glm::ivec3(a, d, b);
-		triangles[tindex + 1] = glm::ivec3(a, c, d);
-	} else {
-		triangles[tindex] = glm::ivec3(a, c, b);
-		triangles[tindex + 1] = glm::ivec3(b, c, d);
-	}
-}
-
-torch::Tensor triangulate_shorted(const torch::Tensor &vertices, size_t complex_count, size_t sample_rate)
-{
-	assert(vertices.dtype() == torch::kFloat32);
-	assert(vertices.dim() == 2 && vertices.size(1) == 3);
-	assert(vertices.is_cuda());
-
-	long triangle_count = 2 * complex_count * (sample_rate - 1) * (sample_rate - 1);
-
-	auto options = torch::TensorOptions()
-		.dtype(torch::kInt32)
-		.device(torch::kCUDA, 0);
-
-	torch::Tensor out = torch::zeros({ triangle_count, 3 }, options);
-
-	glm::vec3 *vertices_ptr = (glm::vec3 *) vertices.data_ptr <float> ();
-	glm::ivec3 *out_ptr = (glm::ivec3 *) out.data_ptr <int32_t> ();
-
-	dim3 block(sample_rate - 1, sample_rate - 1);
-	dim3 grid(complex_count);
-
-	triangulate_shorted_kernel <<< grid, block >>> (vertices_ptr, out_ptr, sample_rate);
-
-	cudaDeviceSynchronize();
-	cudaError_t err = cudaGetLastError();
-	if (err != cudaSuccess) {
-		std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
-		exit(1);
-	}
-
-	return out;
-}
-
-__global__
 void remapper_kernel(const int32_t *__restrict__ map, glm::ivec3 *__restrict__ triangles, size_t size)
 {
 	size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
@@ -1368,6 +1019,59 @@ remapper generate_remapper(const torch::Tensor &complexes,
 	return remapper(remap);
 }
 
+std::tuple <torch::Tensor, torch::Tensor> deduplicate(const torch::Tensor &vertices, const torch::Tensor &triangles)
+{
+	assert(vertices.is_cpu());
+	assert(vertices.dtype() == torch::kFloat32);
+	assert(vertices.dim() == 2 && vertices.size(1) == 3);
+
+	assert(triangles.is_cpu());
+	assert(triangles.dtype() == torch::kInt32);
+	assert(triangles.dim() == 2 && triangles.size(1) == 3);
+
+	const float *vertices_raw = vertices.data_ptr <float> ();
+	const int32_t *indices_raw = triangles.data_ptr <int32_t> ();
+
+	size_t vertex_count = vertices.size(0);
+	size_t index_count = triangles.numel();
+
+	glm::vec3 *vertices_ptr = (glm::vec3 *) vertices_raw;
+
+	std::unordered_map <glm::vec3, int32_t> hashed;
+
+	std::vector <glm::vec3> new_vertices;
+	std::vector <int32_t> new_indices;
+
+	for (size_t i = 0; i < index_count; i++) {
+		int32_t vi = indices_raw[i];
+
+		glm::vec3 vertex = vertices_ptr[vi];
+		if (!hashed.count(vertex)) {
+			int32_t ni = new_vertices.size();
+			new_vertices.push_back(vertex);
+			hashed[vertex] = ni;
+
+		}
+
+		new_indices.push_back(hashed[vertex]);
+	}
+
+	auto options = torch::TensorOptions()
+		.dtype(torch::kFloat32)
+		.device(torch::kCPU, 0);
+
+	torch::Tensor tch_new_vertices = torch::zeros({ (long) new_vertices.size(), 3 }, options);
+	torch::Tensor tch_new_triangles = torch::zeros_like(triangles);
+
+	float *new_vertices_raw = tch_new_vertices.data_ptr <float> ();
+	int32_t *new_indices_raw = tch_new_triangles.data_ptr <int32_t> ();
+
+	std::memcpy(new_vertices_raw, new_vertices.data(), sizeof(glm::vec3) * new_vertices.size());
+	std::memcpy(new_indices_raw, new_indices.data(), sizeof(int32_t) * new_indices.size());
+
+	return { tch_new_vertices, tch_new_triangles };
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
         py::class_ <geometry> (m, "geometry")
@@ -1402,9 +1106,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 		.def("scatter", &remapper::scatter, "Scatter vertex data")
 		.def("scatter_device", &remapper::scatter_device, "Scatter vertex data");
 
-	// m.def("conformal_graph", &conformal_graph);
 	m.def("cluster_geometry", &cluster_geometry);
 	m.def("barycentric_closest_points", &barycentric_closest_points);
 	m.def("triangulate_shorted", &triangulate_shorted);
 	m.def("generate_remapper", &generate_remapper, "Generate remapper");
+	m.def("mesh_deduplicate", &deduplicate, "Deduplicate mesh vertices and reindex the mesh");
+	m.def("parametrize_chart", &parametrize, "Parametrize a chart with disk topology");
 }

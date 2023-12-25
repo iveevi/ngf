@@ -7,6 +7,32 @@
 
 #include "geometry.hpp"
 
-std::vector <std::vector <int32_t>> cluster_once(const geometry &g, const geometry::dual_graph &dgraph, const std::vector <int32_t> &seeds);
+// Surface smoothing utilities
+struct vertex_graph {
+	std::unordered_map <int32_t, std::unordered_set <int32_t>> graph;
 
-std::vector <std::vector <int32_t>> cluster_geometry(const geometry &g, const std::vector <int32_t> &seeds, int32_t iterations);
+	int32_t *dev_graph = nullptr;
+
+	int32_t max = 0;
+	int32_t max_adj = 0;
+
+	vertex_graph(const torch::Tensor &primitives);
+	~vertex_graph();
+
+	void allocate_device_graph();
+	void initialize_from_triangles(const torch::Tensor &);
+	void initialize_from_quadrilaterals(const torch::Tensor &);
+
+	torch::Tensor smooth(const torch::Tensor &, float) const;
+	torch::Tensor smooth_device(const torch::Tensor &, float) const;
+};
+
+std::vector <std::vector <int32_t>> cluster_geometry
+(const geometry &, const std::vector <int32_t> &, int32_t, const std::string &);
+
+std::tuple <torch::Tensor, torch::Tensor> parametrize
+(const torch::Tensor &, const torch::Tensor &, const std::vector <int32_t> &);
+
+// Triangulation utilities
+// TODO: refactor
+torch::Tensor triangulate_shorted(const torch::Tensor &, size_t, size_t);

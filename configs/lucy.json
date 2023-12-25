@@ -1,64 +1,48 @@
 {
 	"target": "meshes/lucy/target.obj",
 	"directory": "results/lucy",
-	"clusters": 200,
-	"batch_size": 40,
+	"clusters": 100,
+	"batch_size": 20,
 	"resolution": 16,
 	"experiments": [
 		{
-			"name": "sincos",
+			"name": "feat5",
 			"source": "meshes/lucy/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
-			"features": 20
+			"features": 5,
+			"jittering": true,
+			"normals": "numerical"
 		},
-
+		
 		{
-			"name": "skewed",
-			"source": "meshes/lucy/source-lod2.obj",
-			"encoder": "skewed",
-			"encoding_levels": 20,
-			"features": 20
-		},
-
-		{
-			"name": "extint",
-			"source": "meshes/lucy/source-lod2.obj",
-			"encoder": "extint",
-			"encoding_levels": 16,
-			"features": 20
-		},
-
-		{
-			"name": "lod4",
-			"source": "meshes/lucy/source-lod4.obj",
-			"encoder": "sincos",
-			"encoding_levels": 10,
-			"features": 20
-		},
-
-		{
-			"name": "lod3",
-			"source": "meshes/lucy/source-lod3.obj",
-			"encoder": "sincos",
-			"encoding_levels": 10,
-			"features": 20
-		},
-
-		{
-			"name": "lod2",
+			"name": "feat10",
 			"source": "meshes/lucy/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
-			"features": 20
+			"features": 10,
+			"jittering": true,
+			"normals": "numerical"
 		},
-
+		
 		{
-			"name": "lod1",
-			"source": "meshes/lucy/source-lod1.obj",
+			"name": "feat20",
+			"source": "meshes/lucy/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
-			"features": 20
+			"features": 20,
+			"jittering": true,
+			"normals": "numerical"
+		},
+		
+		{
+			"name": "feat50",
+			"source": "meshes/lucy/source-lod2.obj",
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 50,
+			"jittering": true,
+			"normals": "numerical"
 		}
 	]
 }
