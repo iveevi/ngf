@@ -1,11 +1,12 @@
 *.blend
 *.egg-info/
 *.obj
-*.tar.gz
 *.pdf
+*.tar.gz
 .cache/
 .nsc
 .polyscope.ini
+.venv/
 .vscode/
 __pycache__/
 build/
@@ -13,6 +14,7 @@ compile_commands.json
 compiled/
 data/
 db.json
+evals/
 experiments/*.png
 experiments/meshes
 experiments/results
@@ -25,4 +27,4 @@ output/
 results/
 runs/
 scenes/
-evals/
+tex/
