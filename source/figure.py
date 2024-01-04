@@ -418,14 +418,23 @@ def loss_plot(dir):
 def table(dbs):
     from prettytable import PrettyTable
 
+    exclude = [ 'Metatron', 'Armadillo', 'Nefertiti' ]
+    # exclude = [ ]
+
     def round_nines(x, k):
         if k == 'Ours':
-            return int(np.ceil(x/10) * 10)
+            a = np.array([ 100, 250, 1000, 2500 ])
+            i = np.argmin(np.abs(a - x))
+            return a[i]
+            # return int(np.ceil(x/10) * 10)
         else:
             return int(np.ceil(x/1000) * 1000)
 
     converted = {}
     for scene, db in dbs.items():
+        if scene in exclude:
+            continue
+
         print('Scene', scene)
         for k, ddb in db.items():
             print('  >', k)
@@ -436,50 +445,99 @@ def table(dbs):
                 # converted.setdefault(k, {})
                 for kk in ddb:
                     count = round_nines(kk['count'], k)
-                    print('     >', kk, count)
+                    # print('     >', kk, count)
                     t = (k, count)
                     # converted[k].setdefault(count, {})
                     converted.setdefault(t, {})
                     converted[t][scene] = kk
 
+    # print('converted', converted)
+    # converted_list = [ (k, v) for k, v in converted.items() ]
+    # print(converted_list)
+
     # print(converted)
+    ours_converted = []
+    qslim_converted = []
+    nvdiffmodeling_converted = []
+
     for k, db in converted.items():
-        print(k, '->', db)
+        # print(k, '->', db)
+        if type(k) is tuple:
+            if k[0] == 'Ours':
+                ours_converted.append((k, db))
+            if k[0] == 'QSlim':
+                qslim_converted.append((k, db))
+            if k[0] == 'nvdiffmodeling':
+                nvdiffmodeling_converted.append((k, db))
+
+    ours_converted.sort(key=lambda t: t[0][1])
+    ours_converted = { t[0]: t[1] for t in ours_converted }
+
+    qslim_converted.sort(key=lambda t: t[0][1])
+    qslim_converted = { t[0]: t[1] for t in qslim_converted }
+
+    nvdiffmodeling_converted.sort(key=lambda t: t[0][1])
+    nvdiffmodeling_converted = { t[0]: t[1] for t in nvdiffmodeling_converted }
 
     tbl = PrettyTable()
 
     # tbl.field_names = [] # [ 'Primitives', 'Size' ]
 
-    field_names = [ '', 'Primitives', 'Size (KB)' ]
+    field_names = [ '', 'Primitives', 'Size' ]
     for scene in dbs:
+        if scene in exclude:
+            continue
+
         field_names.append(scene)
 
     tbl.field_names = field_names
 
-    # Sizes
+    # Raw sizes
     sizes = []
     for f in field_names:
         if f == '':
-            sizes.append('Mesh size (MB/Triangles)')
+            sizes.append('Raw mesh size')
             continue
 
-        if f in [ 'Primitives', 'Size (KB)' ]:
+        if f in [ 'Primitives', 'Size' ]:
             sizes.append('')
             continue
 
         sizem = converted['size'][f]
         sizemb = sizem['size'] / 1024 ** 2
+        # sizetris = sizem['count']
+
+        # sizes.append('%.2f MB / %dK' % (sizemb, sizetris / 1000))
+        sizes.append('%.2f MB' % sizemb)
+
+    tbl.add_row(sizes, divider=True)
+
+    # Number of triangles
+    sizes = []
+    for f in field_names:
+        if f == '':
+            sizes.append('Triangle count')
+            continue
+
+        if f in [ 'Primitives', 'Size' ]:
+            sizes.append('')
+            continue
+
+        sizem = converted['size'][f]
         sizetris = sizem['count']
 
-        sizes.append('%.2f MB / %dK' % (sizemb, sizetris / 1000))
+        if sizetris > 1_000_000:
+            sizes.append('%.1f M' % (sizetris / 1_000_000))
+        else:
+            sizes.append('%.1f K' % (sizetris / 1_000))
 
     tbl.add_row(sizes, divider=True)
 
     # Each method
     to_add = []
-    for t in converted:
-        if not t[0] == 'Ours':
-            continue
+    for t in ours_converted:
+        # if not t[0] == 'Ours':
+        #     continue
 
         data = converted[t]
 
@@ -494,8 +552,8 @@ def table(dbs):
             if f == 'Primitives':
                 row.append(t[1])
                 continue
-            if f == 'Size (KB)':
-                row.append(sizem // 1024)
+            if f == 'Size':
+                row.append('%d KB' % (sizem // 1024))
                 continue
 
             if not f in data:
@@ -503,7 +561,8 @@ def table(dbs):
                 continue
 
             d = data[f]
-            row.append('%.2f / %.2f / %.2f' % (1e2 * d['render'], 1e2 * d['normal'], 1e5 * d['chamfer']))
+            # row.append('%.2f / %.2f / %.2f' % (1e2 * d['render'], 1e2 * d['normal'], 1e5 * d['chamfer']))
+            row.append('%.2f / %.2f' % (1e2 * d['render'], 1e5 * d['chamfer']))
 
         to_add.append(row)
 
@@ -514,10 +573,7 @@ def table(dbs):
             tbl.add_row(to_add[i])
 
     to_add = []
-    for t in converted:
-        if not t[0] == 'QSlim':
-            continue
-
+    for t in qslim_converted:
         data = converted[t]
 
         sizem = [ d['size'] for d in list(data.values()) ]
@@ -531,8 +587,8 @@ def table(dbs):
             if f == 'Primitives':
                 row.append(t[1])
                 continue
-            if f == 'Size (KB)':
-                row.append(sizem // 1024)
+            if f == 'Size':
+                row.append('%d KB' % (sizem // 1024))
                 continue
 
             if not f in data:
@@ -540,7 +596,8 @@ def table(dbs):
                 continue
 
             d = data[f]
-            row.append('%.2f / %.2f / %.2f' % (1e2 * d['render'], 1e2 * d['normal'], 1e5 * d['chamfer']))
+            # row.append('%.2f / %.2f / %.2f' % (1e2 * d['render'], 1e2 * d['normal'], 1e5 * d['chamfer']))
+            row.append('%.2f / %.2f' % (1e2 * d['render'], 1e5 * d['chamfer']))
 
         to_add.append(row)
 
@@ -550,10 +607,7 @@ def table(dbs):
         else:
             tbl.add_row(to_add[i])
 
-    for t in converted:
-        if not t[0] == 'nvdiffmodeling':
-            continue
-
+    for t in nvdiffmodeling_converted:
         data = converted[t]
 
         sizem = [ d['size'] for d in list(data.values()) ]
@@ -567,8 +621,8 @@ def table(dbs):
             if f == 'Primitives':
                 row.append(t[1])
                 continue
-            if f == 'Size (KB)':
-                row.append(sizem // 1024)
+            if f == 'Size':
+                row.append('%d KB' % (sizem // 1024))
                 continue
 
             if not f in data:
@@ -576,7 +630,8 @@ def table(dbs):
                 continue
 
             d = data[f]
-            row.append('%.2f / %.2f / %.2f' % (1e2 * d['render'], 1e2 * d['normal'], 1e5 * d['chamfer']))
+            # row.append('%.2f / %.2f / %.2f' % (1e2 * d['render'], 1e2 * d['normal'], 1e5 * d['chamfer']))
+            row.append('%.2f / %.2f' % (1e2 * d['render'], 1e5 * d['chamfer']))
 
         # print(row)
         tbl.add_row(row)

@@ -5,9 +5,13 @@ from mlp import MLP
 
 class NGF:
     def __init__(self, points: torch.Tensor, complexes: torch.Tensor, features: torch.Tensor, config: dict, mlp=None):
-        self.points = points
+        self.points    = points
+        self.features  = features
         self.complexes = complexes
-        self.features = features
+
+        # assert self.points.dtype == torch.bfloat16
+        # assert self.features.dtype == torch.bfloat16
+        # assert self.complexes.dtype == torch.int32
 
         self.encoding_levels = config['encoding_levels']
         self.jittering = config['jittering']
@@ -15,18 +19,18 @@ class NGF:
         self.normals = config['normals']
 
         features = config['features']
-        ffin = features
 
+        self.ffin = features
         if self.encoder == 'sincos':
-            ffin = features + 3 * (2 * self.encoding_levels + 1)
+            self.ffin = features + 3 * (2 * self.encoding_levels + 1)
             self.encoder = self.sincos
-        elif self.encoder == 'skewed':
-            ffin = features + 3 * (self.encoding_levels + 1)
-            self.encoder = self.skewed
+        elif self.encoder == 'extint':
+            self.ffin = features + 3 + 4 * (2 * self.encoding_levels)
+            self.encoder = self.extint
         else:
             raise ValueError('Unknown encoder: %s' % self.encoder)
 
-        self.mlp = MLP(ffin, functional.leaky_relu).cuda()
+        self.mlp = MLP(self.ffin, functional.leaky_relu).cuda()
         if mlp is not None:
             self.mlp.load_state_dict(mlp.state_dict())
 
@@ -35,6 +39,18 @@ class NGF:
             self.sampler = self.sample_jittered
 
         self.config = config
+
+        torch.set_float32_matmul_precision('high')
+        # self.fast_eval = torch.compile(self.eval, fullgraph=True)
+        # self.fast_eval = torch.compile(self.eval, mode='reduce-overhead')
+
+        # Caches
+        self.uv_cache = {}
+        self.uv_mask = {}
+
+    # List of parameters
+    def parameters(self):
+        return list(self.mlp.parameters()) + [ self.points, self.features ]
 
     # Extraction methods
     def eval(self, U, V):
@@ -59,10 +75,20 @@ class NGF:
 
         lerped_features = (lf00 + lf01 + lf10 + lf11).reshape(-1, feature_size)
 
-        X = self.encoder(points=lerped_points, features=lerped_features)
+        # U_plus, U_minus = U.unsqueeze(-1), (1.0 - U).unsqueeze(-1)
+        # V_plus, V_minus = V.unsqueeze(-1), (1.0 - V).unsqueeze(-1)
+        #
+        # UV = (16 * U_minus * V_minus * U_plus * V_plus).square().reshape(-1, 1)
 
-        return self.mlp(lerped_points, X)
-    
+        Umid = (U - 0.5).abs().reshape(-1, 1)
+        Vmid = (V - 0.5).abs().reshape(-1, 1)
+
+        # UV = (Umid ** 2 + Vmid ** 2).sqrt().reshape(-1, 1)
+
+        X = self.encoder(points=lerped_points, features=lerped_features, u=Umid, v=Vmid)
+
+        return self.mlp(lerped_points.float(), X.float())
+
     def base(self, rate):
         U, V = self.sample_uniform(rate)
 
@@ -87,21 +113,38 @@ class NGF:
 
         X = [ features, bases ]
         for i in range(self.encoding_levels):
-            X += [ torch.sin(2 ** i * bases), torch.cos(2 ** i * bases) ]
+            # k = 2 ** (0.618 * i)
+            k = 2 ** i
+            X += [ torch.sin(k * bases), torch.cos(k * bases) ]
 
         return torch.cat(X, dim=-1)
 
-    def skewed(self, **kwargs):
+    def extint(self, **kwargs):
         bases    = kwargs['points']
         features = kwargs['features']
+        u        = kwargs['u']
+        v        = kwargs['v']
 
         X = [ features, bases ]
 
-        for i in range(self.encoding_levels):
-            k = 2 ** (i/3.0)
-            X += [ torch.sin(k * bases + 2/(i + 1)) ]
+        x = bases[:, 0].unsqueeze(-1)
+        y = bases[:, 1].unsqueeze(-1)
+        z = bases[:, 2].unsqueeze(-1)
+        uv = u + v
 
-        return torch.cat(X, dim=-1)
+        # for i in range(self.encoding_levels):
+        #     k = 2 ** i
+        #     X += [ torch.sin(k * bases), torch.sin(k * uvs) ]
+        #     X += [ torch.cos(k * bases), torch.cos(k * uvs) ]
+
+        for i in range(self.encoding_levels):
+            k = 2 ** (0.618 * i)
+            X += [ torch.sin(k * uv), torch.sin(k * (x + y)), torch.sin(k * (x + z)), torch.sin(k * (y + z)) ]
+            X += [ torch.cos(k * uv), torch.cos(k * (x + y)), torch.cos(k * (x + z)), torch.cos(k * (y + z)) ]
+
+        X = torch.cat(X, dim=-1)
+
+        return X
 
     # Functionals
     def eval_normals(self, U, V, delta):
@@ -114,7 +157,8 @@ class NGF:
         v_dU = (v_Up - v_Um)/(2 * delta)
         v_dV = (v_Vp - v_Vm)/(2 * delta)
 
-        N = torch.cross(v_dU, v_dV)
+        N = torch.cross(v_dU.float(), v_dV.float())
+
         length = torch.linalg.vector_norm(N, axis=1)
         length = torch.where(length == 0, torch.ones_like(length), length)
 
@@ -122,39 +166,40 @@ class NGF:
 
     # Sampling functions
     def sample_uniform(self, rate: int):
-        U = torch.linspace(0.0, 1.0, steps=rate).cuda()
-        V = torch.linspace(0.0, 1.0, steps=rate).cuda()
+        if rate in self.uv_cache:
+            return self.uv_cache[rate]
+
+        U = torch.linspace(0.0, 1.0, steps=rate, dtype=torch.float16).cuda()
+        V = torch.linspace(0.0, 1.0, steps=rate, dtype=torch.float16).cuda()
+        # U = torch.linspace(0.0, 1.0, steps=rate).cuda()
+        # V = torch.linspace(0.0, 1.0, steps=rate).cuda()
         U, V = torch.meshgrid(U, V, indexing='ij')
 
         U, V = U.reshape(-1), V.reshape(-1)
         U = U.repeat((self.complexes.shape[0], 1))
         V = V.repeat((self.complexes.shape[0], 1))
+
+        self.uv_cache[rate] = (U, V)
 
         return U, V
 
     def sample_jittered(self, rate: int):
+        U, V = self.sample_uniform(rate)
+
+        if rate in self.uv_mask:
+            UV_interior = self.uv_mask[rate]
+        else:
+            U_plus, U_minus = U, (1.0 - U)
+            V_plus, V_minus = V, (1.0 - V)
+            UV_interior = (U_minus * U_plus * V_minus * V_plus) > 0
+            self.uv_mask[rate] = UV_interior
+
         delta = 0.45/(rate - 1)
+        rand_UV = (2 * torch.rand((2, U.shape[0], U.shape[1]), device='cuda', dtype=torch.float16) - 1)
+        # rand_UV = (2 * torch.rand((2, U.shape[0], U.shape[1]), device='cuda') - 1)
+        rand_UV *= delta * UV_interior
 
-        U = torch.linspace(0.0, 1.0, steps=rate).cuda()
-        V = torch.linspace(0.0, 1.0, steps=rate).cuda()
-        U, V = torch.meshgrid(U, V, indexing='ij')
-
-        U, V = U.reshape(-1), V.reshape(-1)
-        U = U.repeat((self.complexes.shape[0], 1))
-        V = V.repeat((self.complexes.shape[0], 1))
-
-        U_plus, U_minus = U, (1.0 - U)
-        V_plus, V_minus = V, (1.0 - V)
-
-        UV_interior = (U_minus * U_plus * V_minus * V_plus) > 0
-
-        rand_U = (2 * torch.rand(U.shape, device='cuda') - 1) * delta
-        rand_V = (2 * torch.rand(V.shape, device='cuda') - 1) * delta
-
-        rand_U *= UV_interior
-        rand_V *= UV_interior
-
-        return U + rand_U, V + rand_V
+        return U + rand_UV[0], V + rand_UV[1]
 
     def save(self, filename):
         model = {

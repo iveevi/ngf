@@ -636,10 +636,10 @@ std::tuple <torch::Tensor, torch::Tensor> parametrize
 
 	// Parametrize
 	std::vector <glm::vec2> huvs = harmonic_disk_parametrization(vertices, conn, boundary, bset);
-	std::vector <glm::vec2> uvs = geometric_stretch_optimization(conn, vertices, faces, huvs, boundary, bset);
+	// std::vector <glm::vec2> uvs = geometric_stretch_optimization(conn, vertices, faces, huvs, boundary, bset);
 
 	return {
 		vector_to_tensor <glm::vec2, torch::kFloat32, 2> (huvs),
-		vector_to_tensor <glm::vec2, torch::kFloat32, 2> (uvs)
+		vector_to_tensor <glm::vec2, torch::kFloat32, 2> (huvs)
 	};
 }

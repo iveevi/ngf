@@ -8,10 +8,15 @@ class MLP(nn.Module):
     def __init__(self, ffin: int, activation: Callable) -> None:
         super(MLP, self).__init__()
 
-        print('MLP: ffin =', ffin)
+        # print('MLP: ffin =', ffin)
 
         # Pass configuration as constructor arguments
         self.encoding_linears = [
+            # nn.Linear(ffin, 64, dtype=torch.float16),
+            # nn.Linear(64, 64,   dtype=torch.float16),
+            # nn.Linear(64, 64,   dtype=torch.float16),
+            # nn.Linear(64, 3,    dtype=torch.float16)
+            
             nn.Linear(ffin, 64),
             nn.Linear(64, 64),
             nn.Linear(64, 64),
@@ -22,6 +27,8 @@ class MLP(nn.Module):
         self.activation = activation
 
     def forward(self, bases, X):
+        # X = X.to(torch.float16)
+
         X = self.encoding_linears[0](X)
         X = self.activation(X)
 

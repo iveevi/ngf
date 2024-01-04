@@ -25,11 +25,9 @@ vertex_graph::vertex_graph(const torch::Tensor &primitives)
 	assert(primitives.dtype() == torch::kInt32);
 	assert(primitives.device().is_cpu());
 
-	// if (primitives.size(1) == 3)
-	// 	initialize_from_triangles(primitives);
-	// else if (primitives.size(1) == 4)
-	// 	initialize_from_quadrilaterals(primitives);
-	if (primitives.size(1) == 4)
+	if (primitives.size(1) == 3)
+		initialize_from_triangles(primitives);
+	else if (primitives.size(1) == 4)
 		initialize_from_quadrilaterals(primitives);
 	else
 		assert(false);

@@ -1,13 +1,13 @@
 {
-	"target": "meshes/chinese/target.obj",
-	"directory": "results/chinese",
+	"target": "meshes/dragon-statue/target.obj",
+	"directory": "results/dragon-statue",
 	"clusters": 200,
 	"batch_size": 10,
 	"resolution": 16,
 	"experiments": [
 		{
 			"name": "sh-random",
-			"source": "meshes/chinese/source-lod2.obj",
+			"source": "meshes/dragon-statue/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
 			"features": 20,

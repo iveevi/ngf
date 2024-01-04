@@ -2,6 +2,7 @@ import torch
 import numpy as np
 
 from mlp import *
+from mesh import Mesh
 
 def lerp(X, U, V):
     lp00 = X[:, 0, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * (1.0 - V.unsqueeze(-1))
@@ -138,7 +139,6 @@ def triangle_areas(v, f):
 
 def sampler(kernel=lerp):
     def ftn(complexes, points, features, sample_rate):
-        # TDDO: return a compiled version of this function
         U = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
         V = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
         U, V = torch.meshgrid(U, V, indexing='ij')
@@ -174,4 +174,49 @@ def lookat(eye, center, up):
         [s[1], u[1], -f[1], -dot_u],
         [s[2], u[2], -f[2], dot_f],
         [0, 0, 0, 1]
-    ], device='cuda', dtype=torch.float32)
+    ], dtype=torch.float32, device='cuda')
+
+def arrange_views(simplified: Mesh, cameras: int):
+    import optext
+
+    seeds = list(torch.randint(0, simplified.faces.shape[0], (cameras,)).numpy())
+    clusters = optext.cluster_geometry(simplified.optg, seeds, 3, 'uniform')
+
+    views = []
+    for cluster in clusters:
+        faces = simplified.faces[cluster]
+
+        v0 = simplified.vertices[faces[:, 0]]
+        v1 = simplified.vertices[faces[:, 1]]
+        v2 = simplified.vertices[faces[:, 2]]
+        centroid = (v0 + v1 + v2) / 3.0
+        centroid = centroid.mean(dim=0)
+
+
+        normal = torch.cross(v1 - v0, v2 - v0)
+        normal = normal.mean(dim=0)
+        normal = normal / torch.norm(normal)
+
+        eye = centroid + 0.5 * normal
+        up = torch.tensor([0, 1, 0], dtype=torch.float32, device='cuda')
+        look = -normal
+
+        if torch.dot(look, up).abs().item() > 1.0 - 1e-6:
+            up = torch.tensor([1, 0, 0], dtype=torch.float32, device='cuda')
+        if torch.dot(look, up).abs().item() > 1.0 - 1e-6:
+            up = torch.tensor([0, 0, 1], dtype=torch.float32, device='cuda')
+
+        right = torch.cross(look, up)
+        right /= right.norm()
+        up = torch.cross(look, right)
+
+        view = torch.tensor([
+            [ right[0], up[0], look[0], eye[0] ],
+            [ right[1], up[1], look[1], eye[1] ],
+            [ right[2], up[2], look[2], eye[2] ],
+            [ 0, 0, 0, 1 ]
+        ], dtype=torch.float32, device='cuda').inverse()
+
+        views.append(view)
+
+    return torch.stack(views)

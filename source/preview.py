@@ -5,10 +5,11 @@ import os
 import polyscope as ps
 import re
 import torch
+import optext
 
 from ngf import load_ngf
-from util import quadify
-
+from util import quadify, shorted_indices
+from mesh import load_mesh
 
 COLOR_WHEEL = [
         np.array([0.880, 0.320, 0.320]),
@@ -29,25 +30,24 @@ COLOR_WHEEL = [
         np.array([0.880, 0.320, 0.530])
 ]
 
-def preview_single(ngf, ref):
-    mode = 'ref'
+def preview_single(ngf, refs):
+    mode = list(refs.keys())[0] if (len(refs) > 0) else 'ngf'
     def draw(rate, patches):
         ps.remove_all_structures()
 
         if ngf is not None and mode == 'ngf':
             uvs = ngf.sample_uniform(rate)
-            V = ngf.eval(*uvs).detach().cpu()
+            V = ngf.eval(*uvs).detach()
 
-            complex_count = ngf.complexes.shape[0]
-            V = V.reshape(complex_count, -1, 3)
+            if patches:
+                complex_count = ngf.complexes.shape[0]
+                V = V.reshape(complex_count, -1, 3).cpu()
+                Q = quadify(1, rate)
+                for i, patch in enumerate(V):
+                    p = ps.register_surface_mesh('patch-%d' % i, patch, Q)
+                    p.set_material('wax')
+                    # p.set_smooth_shade(True)
 
-            Q = quadify(1, rate)
-            for i, patch in enumerate(V):
-                p = ps.register_surface_mesh('patch-%d' % i, patch, Q)
-                p.set_material('wax')
-                p.set_smooth_shade(True)
-
-                if patches:
                     color = COLOR_WHEEL[i % len(COLOR_WHEEL)]
                     p.set_color(color)
 
@@ -77,15 +77,22 @@ def preview_single(ngf, ref):
                     c = ps.register_curve_network('boundary-%d' % i, boundary, indices)
                     c.set_color([0, 0, 0])
                     c.set_radius(0.0025)
-                else:
-                    p.set_color([0.6, 0.5, 0.9])
+            else:
+                F = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
+                m = ps.register_surface_mesh('ngf', V.cpu().numpy(), F.cpu().numpy())
+                m.set_color([0.5, 0.5, 1.0])
+                m.set_material('wax')
 
-        if ref is not None and mode == 'ref':
-            V, F = ref
-            m = ps.register_surface_mesh('reference', V, F)
-            m.set_color([0.6, 0.5, 0.9])
-            m.set_material('wax')
-            m.set_smooth_shade(True)
+            return
+
+        for r, ref in refs.items():
+            if mode == r:
+                V, F = ref.vertices, ref.faces
+                m = ps.register_surface_mesh(r, V.cpu().numpy(), F.cpu().numpy())
+                m.set_color([0.5, 0.5, 1.0])
+                m.set_material('wax')
+                # m.set_smooth_shade(True)
+                return
 
     ps.init()
 
@@ -97,12 +104,14 @@ def preview_single(ngf, ref):
         import polyscope.imgui as imgui
 
         nonlocal rate, patches, mode
+        imgui.Text('Rate = %d' % rate)
+        imgui.SameLine()
         if imgui.Button('Increase'):
-            rate = min(32, 2 * rate)
+            rate = min(32, 2 + rate)
             draw(rate, patches)
         imgui.SameLine()
         if imgui.Button('Decrease'):
-            rate = max(2, rate // 2)
+            rate = max(2, rate - 2)
             draw(rate, patches)
 
         imgui.Separator()
@@ -113,14 +122,84 @@ def preview_single(ngf, ref):
 
         imgui.Separator()
 
-        if imgui.RadioButton('Reference', mode == 'ref'):
-            mode = 'ref'
-            draw(rate, patches)
-        elif imgui.RadioButton('NGF Model', mode == 'ngf'):
+        for ref in refs:
+            if imgui.RadioButton(ref, mode == ref):
+                mode = ref
+                draw(rate, patches)
+                return
+
+        if imgui.RadioButton('NGF Model', mode == 'ngf'):
             mode = 'ngf'
             draw(rate, patches)
 
     draw(rate, patches)
+    ps.set_user_callback(callback)
+    ps.show()
+
+def preview_many(many, refs):
+    current = list(refs.keys())[0] if (len(refs) > 0) else None
+    if current is None:
+        list(many.keys())[0]
+    def draw(rate):
+        ps.remove_all_structures()
+
+        if current in refs:
+            V, F = refs[current]
+            m = ps.register_surface_mesh('reference', V, F)
+            m.set_color([0.5, 0.5, 1.0])
+            m.set_material('wax')
+            return
+
+        for f, ngf in many.items():
+            if current != f:
+                continue
+
+            uvs = ngf.sample_uniform(rate)
+            V = ngf.eval(*uvs).detach()
+            F = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
+
+            # Q = quadify(ngf.complexes.shape[0], rate)
+            # F = shorted_indices(V, ngf.complexes, rate)
+
+            m = ps.register_surface_mesh(f, V.cpu().numpy(), F.cpu().numpy())
+            m.set_color([0.5, 0.5, 1.0])
+            m.set_material('wax')
+            return
+
+    ps.init()
+
+    ps.set_ground_plane_mode('none')
+
+    rate = 4
+    def callback():
+        import polyscope.imgui as imgui
+
+        nonlocal rate, current
+        imgui.Text('Rate = %d' % rate)
+        imgui.SameLine()
+        if imgui.Button('Increase'):
+            rate = min(32, 2 * rate)
+            draw(rate)
+        imgui.SameLine()
+        if imgui.Button('Decrease'):
+            rate = max(2, rate // 2)
+            draw(rate)
+
+        imgui.Separator()
+
+        for ref in refs:
+            if imgui.RadioButton('Reference', current == ref):
+                current = ref
+                draw(rate)
+                return
+
+        for f in many:
+            if imgui.RadioButton(f, current == f):
+                current = f
+                draw(rate)
+                return
+
+    draw(rate)
     ps.set_user_callback(callback)
     ps.show()
 
@@ -138,8 +217,9 @@ def preview_lods(lods):
             complex_count = ngf.complexes.shape[0]
             V = V.reshape(complex_count, -1, 3)
 
-            Q = quadify(1, rate)
+            # Q = quadify(1, rate)
             for i, patch in enumerate(V):
+
                 p = ps.register_surface_mesh('patch-%d' % i, patch, Q)
                 p.set_material('wax')
                 # p.set_smooth_shade(True)
@@ -215,7 +295,8 @@ def preview_lods(lods):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--ngf', type=str, help='path to ngf')
-    parser.add_argument('--reference', type=str, help='path to reference mesh')
+    parser.add_argument('--many', type=str, nargs='+', help='path to ngfs')
+    parser.add_argument('--references', type=str, nargs='*', help='path to reference mesh')
     parser.add_argument('--lods', type=str, help='directory with lods')
     args = parser.parse_args()
 
@@ -226,22 +307,24 @@ if __name__ == '__main__':
         ngf = torch.load(args.ngf)
         ngf = load_ngf(ngf)
 
-    ref = None
-    if args.reference is not None:
-        assert os.path.exists(args.reference)
-        mesh = meshio.read(args.reference)
+    many = None
+    if args.many is not None:
+        many = {}
+        for file in args.many:
+            f = os.path.basename(file).split('.')[0]
+            f = os.path.dirname(file) + '-' + f
+            n = torch.load(file)
+            n = load_ngf(n)
+            many[f] = n
 
-        V = mesh.points
-        F = mesh.cells_dict['triangle']
-
-        max_v = np.max(V, axis=0)
-        min_v = np.min(V, axis=0)
-
-        center = (min_v + max_v) / 2
-        extent = np.sqrt(np.sum((max_v - min_v) ** 2)) / 2.0
-
-        V = (V - center) / extent
-        ref = (V, F)
+    refs = []
+    if args.references is not None:
+        refs = {}
+        for file in args.references:
+            mesh, _ = load_mesh(file)
+            # refs.append(mesh)
+            f = os.path.basename(file)
+            refs[f] = mesh
 
     lods = {}
     if args.lods is not None:
@@ -250,12 +333,15 @@ if __name__ == '__main__':
             for file in files:
                 if p.match(file):
                     base = file.split('.')[0]
+                    base = os.path.dirname(file) + '-' + base
                     ngf = torch.load(os.path.join(root, file))
                     ngf = load_ngf(ngf)
                     lods[base] = ngf
 
     if lods:
         preview_lods(lods)
+    if many:
+        preview_many(many, refs)
     else:
-        assert ngf is not None or ref is not None
-        preview_single(ngf, ref)
+        assert ngf is not None or refs is not None
+        preview_single(ngf, refs)

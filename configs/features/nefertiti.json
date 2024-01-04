@@ -1,13 +1,23 @@
 {
-	"target": "meshes/dragon-statue/target.obj",
-	"directory": "results/dragon-statue",
-	"clusters": 100,
-	"batch_size": 20,
+	"target": "meshes/nefertiti/target.obj",
+	"directory": "results/nefertiti",
+	"clusters": 200,
+	"batch_size": 50,
 	"resolution": 16,
 	"experiments": [
 		{
-			"name": "lod4",
-			"source": "meshes/dragon-statue/source-lod4.obj",
+			"name": "feat50",
+			"source": "meshes/nefertiti/source-lod2.obj",
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 50,
+			"jittering": true,
+			"normals": "numerical"
+		},
+
+		{
+			"name": "feat20",
+			"source": "meshes/nefertiti/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
 			"features": 20,
@@ -16,31 +26,21 @@
 		},
 		
 		{
-			"name": "lod3",
-			"source": "meshes/dragon-statue/source-lod3.obj",
+			"name": "feat10",
+			"source": "meshes/nefertiti/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
-			"features": 20,
+			"features": 10,
 			"jittering": true,
 			"normals": "numerical"
 		},
-		
+
 		{
-			"name": "lod2",
-			"source": "meshes/dragon-statue/source-lod2.obj",
+			"name": "feat5",
+			"source": "meshes/nefertiti/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 10,
-			"features": 20,
-			"jittering": true,
-			"normals": "numerical"
-		},
-		
-		{
-			"name": "lod1",
-			"source": "meshes/dragon-statue/source-lod1.obj",
-			"encoder": "sincos",
-			"encoding_levels": 10,
-			"features": 20,
+			"features": 5,
 			"jittering": true,
 			"normals": "numerical"
 		}
