@@ -2,9 +2,10 @@ import argparse
 import figuregen
 import json
 import matplotlib.pyplot as plt
+import numpy as np
 import os
 import simpleimageio as sio
-import numpy as np
+import torch
 
 from figuregen.util.image import Cropbox, relative_mse
 from figuregen.util.templates import CropComparison
@@ -224,28 +225,30 @@ def cropbox(images):
 
 # Results plots (gather from directory)
 def results_plot(name, db):
-    # TODO: custom tex generator for the figure
-    # also remove the whitespace...
-    # TODO: use exr images...
-    # TODO: tonemapping...
-    # TODO: align the normal map (rotate) so that it is blue
+    print('scene', name, 'database', db.keys())
+    print('ours', db['Ours'].keys())
+
+    # Get closest to 1000 patches
+    counts = np.array(list(db['Ours'].keys()))
+    index = np.argmin(np.abs(1000 - counts))
+    primary = counts[index]
 
     # Load all images from the database and crop them to relavant regions
-    images = {}
-    for method in db.values():
-        for entry in method:
-            for img in entry['images'].values():
-                images[img] = sio.read(img)
-
-    # print('Images', images.keys())
-
-    display = cropbox(images)
-    for img in images.keys():
-        images[img] = display.crop(images[img])
-
-        # Tone map
-        images[img] = np.power(images[img], 1/2.2)
-        images[img] = np.clip(images[img], 0, 1)
+    # images = {}
+    # for method in db.values():
+    #     for entry in method:
+    #         for img in entry['images'].values():
+    #             images[img] = sio.read(img)
+    #
+    # # print('Images', images.keys())
+    #
+    # display = cropbox(images)
+    # for img in images.keys():
+    #     images[img] = display.crop(images[img])
+    #
+    #     # Tone map
+    #     images[img] = np.power(images[img], 1/2.2)
+    #     images[img] = np.clip(images[img], 0, 1)
 
     # Cropbox for all scenes
     cropboxes = {
@@ -261,136 +264,191 @@ def results_plot(name, db):
     cbox = cropboxes[name]
 
     # Unpack database
-    keys = list(db.keys())
-    print('Keys: {}'.format(keys))
+    # keys = list(db.keys())
+    # print('Keys: {}'.format(keys))
+    #
+    # # Render subfigure
+    # def textsc(text):
+    #     return r'\textsc{' + text + '}'
+    #
+    
+    ref_ours_grid = figuregen.Grid(num_rows=2, num_cols=2)
 
-    # Render subfigure
-    def textsc(text):
-        return r'\textsc{' + text + '}'
+    directory = os.path.join('media', 'figures', 'generated')
 
-    ref_grid = figuregen.Grid(num_rows=2, num_cols=2)
-    inset_grid = figuregen.Grid(num_rows=2, num_cols=1 + len(keys))
+    import torchvision
 
-    target_render = db[keys[0]][0]['images']['render-target']
-    target_normal = db[keys[0]][0]['images']['normal-target']
+    primary_ngf = db['Ours'][primary]
+    for k, img in primary_ngf['images'].items():
+        k = os.path.join(directory, k.replace(':', '-') + '.png')
+        img = img.permute(2, 0, 1)
+        print('saving image', k, img.shape)
+        torchvision.utils.save_image(img.cpu(), k)
 
-    target_render = images[target_render]
-    target_normal = images[target_normal]
+    abs_generated = os.path.abspath(directory)
 
-    # Set reference full
-    e = ref_grid.get_element(0, 0)
-    e.set_image(figuregen.PNG(target_render))
-    e.set_marker(cbox.get_marker_pos(), cbox.get_marker_size(), color=[255, 0, 0])
+    # Create the code
+    code = fr'''
+\documentclass[varwidth=10cm]{{standalone}}
 
-    e = ref_grid.get_element(1, 0)
-    e.set_image(figuregen.PNG(target_normal))
-    e.set_marker(cbox.get_marker_pos(), cbox.get_marker_size(), color=[255, 0, 0])
+\usepackage{{graphicx}}
 
-    ref_grid.set_row_titles(txt_list=[ 'Render', 'Normal' ], position='left')
-    ref_grid.set_col_titles(txt_list=[ textsc('Reference'), textsc('NGF (Ours)') ], position='top')
+\begin{{document}}
 
-    # Set reference inset
-    target_inset_render = cbox.crop(target_render)
-    target_inset_normal = cbox.crop(target_normal)
+\begin{{figure}}
+    \centering
+    \includegraphics[width=\textwidth]{{ { abs_generated + '/render-ref.png' } }}
+    \includegraphics[width=\textwidth]{{ { abs_generated + '/render-mesh.png' } }}
+    \includegraphics[width=\textwidth]{{ { abs_generated + '/normal-ref.png' } }}
+    \includegraphics[width=\textwidth]{{ { abs_generated + '/normal-mesh.png' } }}
+\end{{figure}}
 
-    e = inset_grid.get_element(0, 0)
-    e.set_image(figuregen.PNG(target_inset_render))
-    e.set_frame(linewidth=1, color=[0, 0, 0])
-    # e.set_caption(r'$\mathcal{L}_ 1$')
+\end{{document}}
+    '''
 
-    e = inset_grid.get_element(1, 0)
-    e.set_image(figuregen.PNG(target_inset_normal))
-    e.set_frame(linewidth=1, color=[0, 0, 0])
-    # e.set_caption(r'$\mathcal{L}_ 1$')
+    synthesize_tex(code, os.path.join('media', 'figures', name + '.pdf'))
 
-    cols = [ 'Reference' ] + [ key for key in keys ]
-    inset_grid.set_col_titles(txt_list=[ textsc(key) for key in cols ], position='top')
+    # Set reference insets
+    # e = ref_ours_grid.get_element(0, 0)
+    # e.set_image(figuregen.PNG(primary_ngf['images']['render:ref']))
+    # print('REF RENDER', primary_ngf['images']['render:ref'].shape)
+    # 
+    # e = ref_ours_grid.get_element(0, 1)
+    # e.set_image(figuregen.PNG(primary_ngf['images']['normal:ref']))
+    #
+    # # Set our insets
+    # e = ref_ours_grid.get_element(1, 0)
+    # e.set_image(figuregen.PNG(primary_ngf['images']['render:mesh']))
+    # 
+    # e = ref_ours_grid.get_element(1, 1)
+    # e.set_image(figuregen.PNG(primary_ngf['images']['normal:mesh']))
+    #
+    # # inset_grid = figuregen.Grid(num_rows=2, num_cols=1 + len(keys))
+    # inset_grid = figuregen.Grid(num_rows=1, num_cols=1)
+    # e = inset_grid.get_element(0, 0)
+    # e.set_image(figuregen.PNG(primary_ngf['images']['normal:mesh']))
 
-    for i, key in enumerate(keys):
-        img = db[key][0]['images']['render-source']
-        img = images[img]
+    #
+    # target_render = db[keys[0]][0]['images']['render-target']
+    # target_normal = db[keys[0]][0]['images']['normal-target']
+    #
+    # target_render = images[target_render]
+    # target_normal = images[target_normal]
+    #
+    # # Set reference full
+    # e = ref_grid.get_element(0, 0)
+    # e.set_image(figuregen.PNG(target_render))
+    # e.set_marker(cbox.get_marker_pos(), cbox.get_marker_size(), color=[255, 0, 0])
+    #
+    # e = ref_grid.get_element(1, 0)
+    # e.set_image(figuregen.PNG(target_normal))
+    # e.set_marker(cbox.get_marker_pos(), cbox.get_marker_size(), color=[255, 0, 0])
+    #
+    # ref_grid.set_row_titles(txt_list=[ 'Render', 'Normal' ], position='left')
+    # ref_grid.set_col_titles(txt_list=[ textsc('Reference'), textsc('NGF (Ours)') ], position='top')
+    #
+    # # Set reference inset
+    # target_inset_render = cbox.crop(target_render)
+    # target_inset_normal = cbox.crop(target_normal)
+    #
+    # e = inset_grid.get_element(0, 0)
+    # e.set_image(figuregen.PNG(target_inset_render))
+    # e.set_frame(linewidth=1, color=[0, 0, 0])
+    # # e.set_caption(r'$\mathcal{L}_ 1$')
+    #
+    # e = inset_grid.get_element(1, 0)
+    # e.set_image(figuregen.PNG(target_inset_normal))
+    # e.set_frame(linewidth=1, color=[0, 0, 0])
+    # # e.set_caption(r'$\mathcal{L}_ 1$')
+    #
+    # cols = [ 'Reference' ] + [ key for key in keys ]
+    # inset_grid.set_col_titles(txt_list=[ textsc(key) for key in cols ], position='top')
+    #
+    # for i, key in enumerate(keys):
+    #     img = db[key][0]['images']['render-source']
+    #     img = images[img]
+    #
+    #     if key == 'NGF (Ours)':
+    #         grid_render = ref_grid.get_element(0, 1)
+    #         grid_render.set_image(figuregen.PNG(img))
+    #         grid_render.set_marker(cbox.get_marker_pos(), cbox.get_marker_size(), color=[255, 0, 0])
+    #
+    #     # TODO: PSNR as well...
+    #     e = inset_grid.get_element(0, 1 + i)
+    #     l1 = np.abs(target_render - img).mean()
+    #     e.set_caption('{:.3f}'.format(l1))
+    #     e.set_frame(linewidth=1, color=[0, 0, 0])
+    #
+    #     render_inset = cbox.crop(img)
+    #     e.set_image(figuregen.PNG(render_inset))
+    #
+    #     img = db[key][0]['images']['normal-source']
+    #     img = images[img]
+    #
+    #     if key == 'NGF (Ours)':
+    #         grid_render = ref_grid.get_element(1, 1)
+    #         grid_render.set_image(figuregen.PNG(img))
+    #         grid_render.set_marker(cbox.get_marker_pos(), cbox.get_marker_size(), color=[255, 0, 0])
+    #
+    #     e = inset_grid.get_element(1, 1 + i)
+    #     l1 = np.abs(target_normal - img).mean()
+    #     e.set_caption('{:.3f}'.format(l1))
+    #     e.set_frame(linewidth=1, color=[0, 0, 0])
+    #
+    #     normal_inset = cbox.crop(img)
+    #     e.set_image(figuregen.PNG(normal_inset))
+    #
+    # lay = ref_grid.get_layout()
+    # lay.set_padding(right=1)
 
-        if key == 'NGF (Ours)':
-            grid_render = ref_grid.get_element(0, 1)
-            grid_render.set_image(figuregen.PNG(img))
-            grid_render.set_marker(cbox.get_marker_pos(), cbox.get_marker_size(), color=[255, 0, 0])
-
-        # TODO: PSNR as well...
-        e = inset_grid.get_element(0, 1 + i)
-        l1 = np.abs(target_render - img).mean()
-        e.set_caption('{:.3f}'.format(l1))
-        e.set_frame(linewidth=1, color=[0, 0, 0])
-
-        render_inset = cbox.crop(img)
-        e.set_image(figuregen.PNG(render_inset))
-
-        img = db[key][0]['images']['normal-source']
-        img = images[img]
-
-        if key == 'NGF (Ours)':
-            grid_render = ref_grid.get_element(1, 1)
-            grid_render.set_image(figuregen.PNG(img))
-            grid_render.set_marker(cbox.get_marker_pos(), cbox.get_marker_size(), color=[255, 0, 0])
-
-        e = inset_grid.get_element(1, 1 + i)
-        l1 = np.abs(target_normal - img).mean()
-        e.set_caption('{:.3f}'.format(l1))
-        e.set_frame(linewidth=1, color=[0, 0, 0])
-
-        normal_inset = cbox.crop(img)
-        e.set_image(figuregen.PNG(normal_inset))
-
-    lay = ref_grid.get_layout()
-    lay.set_padding(right=1)
-
-    os.makedirs(os.path.dirname('media/figures/generated/'), exist_ok=True)
-    figuregen.horizontal_figure([ ref_grid, inset_grid ], width_cm=15, filename=os.path.join('media/figures/generated', name + '-insets.pdf'))
+    # os.makedirs(os.path.dirname('media/figures/generated/'), exist_ok=True)
+    # figuregen.horizontal_figure([ ref_ours_grid, inset_grid ], width_cm=15, filename=os.path.join('media/figures/generated', name + '-insets.pdf'))
 
     # Collect lineplot data
-    render_data = {}
-    normal_data = {}
-    chamfer_data = {}
-
-    for key in keys:
-        render_data[key] = []
-        normal_data[key] = []
-        chamfer_data[key] = []
-
-        for entry in db[key]:
-            cratio = entry['cratio']
-            render_data[key].append((cratio, entry['render']))
-            normal_data[key].append((cratio, entry['normal']))
-            chamfer_data[key].append((cratio, entry['chamfer']))
-
-        # Sort by cratio
-        render_data[key] = sorted(render_data[key], key=lambda x: x[0])
-        normal_data[key] = sorted(normal_data[key], key=lambda x: x[0])
-        chamfer_data[key] = sorted(chamfer_data[key], key=lambda x: x[0])
-
-    print('Render data', render_data)
-    print('Normal data', normal_data)
-    print('Chamfer data', chamfer_data)
-
-    # Generate lineplots
-    cn0, code0 = lineplot(render_data, 'Render Loss', ylabel='Error', xlabel='Compression Ratio', height=4)
-    cn1, code1 = lineplot(normal_data, 'Normal Loss', at=cn0 + '.south east', xlabel='Compression Ratio', height=4, legend=True)
-    _,   code2 = lineplot(chamfer_data, 'Chamfer Loss', at=cn1 + '.south east', xlabel='Compression Ratio', height=4)
-
-    combined = code0 + '\n' + code1 + '\n' + code2
-    combined = document_template % combined
-
-    synthesize_tex(combined, os.path.join('media/figures/generated', name + '-losses.pdf'))
-
-    # Create combined figure
-    path0 = os.path.join('media/figures/generated', name + '-insets.pdf')
-    path1 = os.path.join('media/figures/generated', name + '-losses.pdf')
-
-    path0 = os.path.abspath(path0)
-    path1 = os.path.abspath(path1)
-
-    combined = combined_template % (path0, path1)
-
-    synthesize_tex(combined, os.path.join('media/figures', name + '.pdf'))
+    # render_data = {}
+    # normal_data = {}
+    # chamfer_data = {}
+    #
+    # for key in keys:
+    #     render_data[key] = []
+    #     normal_data[key] = []
+    #     chamfer_data[key] = []
+    #
+    #     for entry in db[key]:
+    #         cratio = entry['cratio']
+    #         render_data[key].append((cratio, entry['render']))
+    #         normal_data[key].append((cratio, entry['normal']))
+    #         chamfer_data[key].append((cratio, entry['chamfer']))
+    #
+    #     # Sort by cratio
+    #     render_data[key] = sorted(render_data[key], key=lambda x: x[0])
+    #     normal_data[key] = sorted(normal_data[key], key=lambda x: x[0])
+    #     chamfer_data[key] = sorted(chamfer_data[key], key=lambda x: x[0])
+    #
+    # print('Render data', render_data)
+    # print('Normal data', normal_data)
+    # print('Chamfer data', chamfer_data)
+    #
+    # # Generate lineplots
+    # cn0, code0 = lineplot(render_data, 'Render Loss', ylabel='Error', xlabel='Compression Ratio', height=4)
+    # cn1, code1 = lineplot(normal_data, 'Normal Loss', at=cn0 + '.south east', xlabel='Compression Ratio', height=4, legend=True)
+    # _,   code2 = lineplot(chamfer_data, 'Chamfer Loss', at=cn1 + '.south east', xlabel='Compression Ratio', height=4)
+    #
+    # combined = code0 + '\n' + code1 + '\n' + code2
+    # combined = document_template % combined
+    #
+    # synthesize_tex(combined, os.path.join('media/figures/generated', name + '-losses.pdf'))
+    #
+    # # Create combined figure
+    # path0 = os.path.join('media/figures/generated', name + '-insets.pdf')
+    # path1 = os.path.join('media/figures/generated', name + '-losses.pdf')
+    #
+    # path0 = os.path.abspath(path0)
+    # path1 = os.path.abspath(path1)
+    #
+    # combined = combined_template % (path0, path1)
+    #
+    # synthesize_tex(combined, os.path.join('media/figures', name + '.pdf'))
 
 # Loss plots (gather from directory)
 def loss_plot(dir):
@@ -418,7 +476,7 @@ def loss_plot(dir):
 def table(dbs):
     from prettytable import PrettyTable
 
-    exclude = [ 'Metatron', 'Armadillo', 'Nefertiti' ]
+    exclude = [ 'Nefertiti' ]
     # exclude = [ ]
 
     def round_nines(x, k):
@@ -753,12 +811,16 @@ if __name__ == '__main__':
     if args.type == 'loss':
         loss_plot(args.dir)
     elif args.type == 'results':
-        db = json.load(open(args.db))
-        if args.key == 'all':
-            for key in db.keys():
-                results_plot(key, db[key])
-        else:
-            results_plot(args.key, db[args.key])
+        db = torch.load(args.db)
+        name = os.path.basename(args.db)
+        name = name.split('.')[0]
+        results_plot(name, db)
+
+        # if args.key == 'all':
+        #     for key in db.keys():
+        #         results_plot(key, db[key])
+        # else:
+        #     results_plot(args.key, db[args.key])
     elif args.type == 'table':
         dbs = {}
         for root, directory, files in os.walk(args.dir):
@@ -766,8 +828,8 @@ if __name__ == '__main__':
                 continue
 
             for file in files:
-                if file.endswith('.json'):
-                    db = json.load(open(os.path.join(root, file)))
+                if file.endswith('.pt'):
+                    db = torch.load(os.path.join(root, file))
                     f = file.split('.')[0].capitalize()
                     dbs[f] = db
 

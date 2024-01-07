@@ -35,13 +35,49 @@ class Evaluator:
         self.views = arrange_views(reference, Evaluator.CAMERAS)
         print('views:', self.views.shape)
         self.renderer = construct_renderer()
+        self.preview = True
 
     # TODO: util function
     def postprocess(self, f):
         f = torch.log(torch.clamp(f, min=0, max=65535) + 1)
         return torch.where(f > 0.0031308, torch.pow(torch.clamp(f, min=0.0031308), 1.0/2.4) * 1.055 - 0.055, 12.92 * f)
 
-    def eval_render(self, mesh):
+    def get_view(self, tag):
+        predef = {
+                'xyz': torch.tensor([ 2, 0, 1 ], device='cuda').float(),
+                'einstein': torch.tensor([ 0, 0, 3.5 ], device='cuda').float(),
+                'skull': torch.tensor([ -0.5, 0, 2.5 ], device='cuda').float(),
+        }
+
+        eye    = torch.tensor([ 0, 0, 3 ], device='cuda').float()
+        up     = torch.tensor([ 0, 1, 0 ], device='cuda').float()
+        center = torch.tensor([ 0, 0, 0 ], device='cuda').float()
+
+        if tag in predef:
+            eye = predef[tag]
+
+        look = center - eye
+        if torch.dot(look, up).abs().item() > 1.0 - 1e-6:
+            up = torch.tensor([1, 0, 0], device='cuda').float()
+        if torch.dot(look, up).abs().item() > 1.0 - 1e-6:
+            up = torch.tensor([0, 0, 1], device='cuda').float()
+
+        right = torch.cross(look, up)
+        right /= right.norm()
+
+        up = torch.cross(look, right)
+        up /= up.norm()
+
+        look /= look.norm()
+
+        return torch.tensor([
+            [ right[0], up[0], look[0], eye[0] ],
+            [ right[1], up[1], look[1], eye[1] ],
+            [ right[2], up[2], look[2], eye[2] ],
+            [ 0, 0, 0, 1 ]
+        ], dtype=torch.float32, device='cuda').inverse()
+
+    def eval_render(self, mesh, tag):
         batch = 10
         views = torch.split(self.views, batch)
 
@@ -53,20 +89,13 @@ class Evaluator:
             error = torch.mean(torch.abs(ref_imgs - mesh_imgs))
             errors.append(error.item())
 
-        # Present view
-        # TODO: should be configurable
-        eye    = torch.tensor([ 0, 0, -2.5 ], device='cuda')
-        up     = torch.tensor([0.0, -1.0, 0.0], device='cuda')
-        center = torch.tensor([0.0, 0.0, 0.0], device='cuda')
-
-        camera = lookat(eye, center, up).unsqueeze(0)
-
+        camera = self.get_view(tag).unsqueeze(0)
         ref_img = self.renderer.render_spherical_harmonics(self.reference.vertices, self.reference.normals, self.reference.faces, camera)[0]
         mesh_img = self.renderer.render_spherical_harmonics(mesh.vertices, mesh.normals, mesh.faces, camera)[0]
 
         return { 'error': np.mean(errors), 'ref': ref_img, 'mesh': mesh_img }
 
-    def eval_normals(self, mesh):
+    def eval_normals(self, mesh, tag):
         batch = 10
         views = torch.split(self.views, batch)
 
@@ -78,16 +107,15 @@ class Evaluator:
             error = torch.mean(torch.abs(ref_imgs - mesh_imgs))
             errors.append(error.item())
 
-        # Present view
-        # TODO: should be configurable
-        eye    = torch.tensor([ 0, 0, -2.5 ], device='cuda')
-        up     = torch.tensor([0.0, -1.0, 0.0], device='cuda')
-        center = torch.tensor([0.0, 0.0, 0.0], device='cuda')
-
-        camera = lookat(eye, center, up).unsqueeze(0)
-
+        camera = self.get_view(tag).unsqueeze(0)
         ref_img = self.renderer.render_normals(self.reference.vertices, self.reference.normals, self.reference.faces, camera)[0]
         mesh_img = self.renderer.render_normals(mesh.vertices, mesh.normals, mesh.faces, camera)[0]
+
+        if self.preview:
+            self.preview = False
+            import matplotlib.pyplot as plt
+            plt.imshow(ref_img.cpu().numpy())
+            plt.show()
 
         return { 'error': np.mean(errors), 'ref': ref_img, 'mesh': mesh_img }
 
@@ -96,9 +124,9 @@ class Evaluator:
         error = chamfer_distance(mesh.vertices.unsqueeze(0), self.reference.vertices.unsqueeze(0))
         return { 'error': error.item() }
 
-    def eval_metrics(self, mesh):
-        render = self.eval_render(mesh)
-        normals = self.eval_normals(mesh)
+    def eval_metrics(self, mesh, tag=None):
+        render = self.eval_render(mesh, tag)
+        normals = self.eval_normals(mesh, tag)
         chamfer = self.eval_chamfer(mesh)
         return {
             'render': render['error'],
@@ -108,7 +136,7 @@ class Evaluator:
                 'render:ref': render['ref'],
                 'render:mesh': render['mesh'],
                 'normal:ref': normals['ref'],
-                'normal:mesh': normals['mesh'],
+                'normal:mesh': normals['mesh']
             }
         }
 
@@ -119,11 +147,15 @@ def ngf_size(ngf):
 
 def scene_evaluations(reference, directory, alt=None):
     import re
-    import sys
-    import json
-    import subprocess
+    # import sys
+    # import json
+    # import subprocess
+
+    name = os.path.basename(directory)
+    print('Evaluating scene', name)
 
     ref, _ = load_mesh(reference)
+    ref_size = mesh_size(ref.vertices, ref.faces)
     key = os.path.basename(directory)
     pattern = re.compile('lod[1-4].pt$')
     assert len(key) > 0
@@ -173,7 +205,7 @@ def scene_evaluations(reference, directory, alt=None):
             if not pattern.match(file):
                 continue
 
-            print('Loading NGF from ', file)
+            print('Loading NGF from', file)
 
             ngf = torch.load(path)
             ngf = load_ngf(ngf)
@@ -190,13 +222,15 @@ def scene_evaluations(reference, directory, alt=None):
 
             ngf_mesh = mesh_from(V, F)
 
-            metrics = evaluator.eval_metrics(ngf_mesh)
+            metrics = evaluator.eval_metrics(ngf_mesh, name)
+
             metrics['count'] = ngf.complexes.shape[0]
+            # count = ngf.complexes.shape[0]
             metrics['size'] = size
-            del metrics['images']
+            metrics['cratio'] = ref_size/size
 
-            print('  > metrics:', metrics)
-
+            # evaluations.setdefault('Ours', {})
+            # evaluations['Ours'][count] = metrics
             evaluations.setdefault('Ours', []).append(metrics)
 
     # QSlim and nvdiffmodeling at various sizes
@@ -206,60 +240,59 @@ def scene_evaluations(reference, directory, alt=None):
 
         smashed, _ = load_mesh(qslim_result)
 
-        metrics = evaluator.eval_metrics(smashed)
+        metrics = evaluator.eval_metrics(smashed, name)
         metrics['count'] = smashed.faces.shape[0]
         metrics['size'] = mesh_size(smashed.vertices, smashed.faces)
-        del metrics['images']
-
-        print('  > metrics:', metrics)
+        metrics['cratio'] = ref_size/metrics['size']
 
         evaluations.setdefault('QSlim', []).append(metrics)
 
         # nvdiffmodeling
-        data = {
-                'base_mesh': qslim_result,
-                'ref_mesh': alt if alt else reference,
-                'camera_eye': [ 2.5, 0.0, -2.5 ],
-                'camera_up': [ 0.0, 1.0, 0.0 ],
-                'random_textures': True,
-                'iter': 5000,
-                'save_interval': 250,
-                'train_res': 512,
-                'batch': 8,
-                'learning_rate': 0.001,
-                'min_roughness' : 0.25,
-                'out_dir' : os.path.join('evals', 'nvdiffmodeling', key)
-        }
-
-        print('running with config', data)
-
-        PYTHON = sys.executable
-        SCRIPT = os.environ['HOME'] + '/sources/nvdiffmodeling/train.py'
-
-        os.makedirs('evals/nvdiffmodeling', exist_ok=True)
-        config = os.path.join('evals', 'nvdiffmodeling', key + '.json')
-        with open(config, 'w') as f:
-            json.dump(data, f, indent=4)
-
-        cmd = '{} {} --config {}'.format(PYTHON, SCRIPT, config)
-        print('cmd', cmd)
-
-        subprocess.run(cmd.split())
-
-        nvdiff, _ = load_mesh(os.path.join('evals', 'nvdiffmodeling', key, 'mesh', 'mesh.obj'))
-
-        metrics = evaluator.eval_metrics(nvdiff)
-        metrics['count'] = nvdiff.faces.shape[0]
-        metrics['size'] = mesh_size(nvdiff.vertices, nvdiff.faces)
-        del metrics['images']
-
-        print('  > metrics:', metrics)
-
-        evaluations.setdefault('nvdiffmodeling', []).append(metrics)
+        # data = {
+        #         'base_mesh': qslim_result,
+        #         'ref_mesh': alt if alt else reference,
+        #         'camera_eye': [ 2.5, 0.0, -2.5 ],
+        #         'camera_up': [ 0.0, 1.0, 0.0 ],
+        #         'random_textures': True,
+        #         'iter': 5000,
+        #         'save_interval': 250,
+        #         'train_res': 512,
+        #         'batch': 8,
+        #         'learning_rate': 0.001,
+        #         'min_roughness' : 0.25,
+        #         'out_dir' : os.path.join('evals', 'nvdiffmodeling', key)
+        # }
+        #
+        # print('running with config', data)
+        #
+        # PYTHON = sys.executable
+        # SCRIPT = os.environ['HOME'] + '/sources/nvdiffmodeling/train.py'
+        #
+        # os.makedirs('evals/nvdiffmodeling', exist_ok=True)
+        # config = os.path.join('evals', 'nvdiffmodeling', key + '.json')
+        # with open(config, 'w') as f:
+        #     json.dump(data, f, indent=4)
+        #
+        # cmd = '{} {} --config {}'.format(PYTHON, SCRIPT, config)
+        # print('cmd', cmd)
+        #
+        # subprocess.run(cmd.split())
+        #
+        # nvdiff, _ = load_mesh(os.path.join('evals', 'nvdiffmodeling', key, 'mesh', 'mesh.obj'))
+        #
+        # metrics = evaluator.eval_metrics(nvdiff)
+        # metrics['count'] = nvdiff.faces.shape[0]
+        # metrics['size'] = mesh_size(nvdiff.vertices, nvdiff.faces)
+        # del metrics['images']
+        #
+        # print('  > metrics:', metrics)
+        #
+        # evaluations.setdefault('nvdiffmodeling', []).append(metrics)
 
     os.makedirs('evals', exist_ok=True)
-    with open(os.path.join('evals', key + '.json'), 'w') as f:
-        json.dump(evaluations, f)
+    torch.save(evaluations, os.path.join('evals', key + '.pt'))
+    # with open(os.path.join('evals', key + '.json'), 'w') as f:
+    #     json.dump(evaluations, f)
 
     # TODO: store the images in evals/
     # torch.save(evaluations, os.path.join('evals', key + '.pt'))
@@ -459,11 +492,13 @@ def packed_geometry_image():
         patches_size_gim = []
         for p, metrics in data.items():
             patches.append(p)
-            patches_size_ngf.append(metrics[0])
-            patches_size_gim.append(metrics[1])
+            patches_size_ngf.append(metrics[0] // 1024)
+            patches_size_gim.append(metrics[1] // 1024)
 
         plt.plot(patches, patches_size_ngf, label='NGF')
         plt.plot(patches, patches_size_gim, label='GIM')
+        plt.xlabel('Patches')
+        plt.ylabel('Size (KB)')
         plt.legend()
         plt.show()
 

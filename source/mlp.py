@@ -18,6 +18,7 @@ class MLP(nn.Module):
             # nn.Linear(64, 3,    dtype=torch.float16)
             
             nn.Linear(ffin, 64),
+            # nn.Linear(64, 64),
             nn.Linear(64, 64),
             nn.Linear(64, 64),
             nn.Linear(64, 3)

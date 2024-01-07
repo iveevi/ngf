@@ -87,8 +87,8 @@ class Evaluator:
 
         errors = []
         for batch_views in views:
-            ref_imgs = self.renderer.render(self.reference.vertices, self.reference.normals, self.reference.faces, batch_views)
-            mesh_imgs = self.renderer.render(mesh.vertices, mesh.normals, mesh.faces, batch_views)
+            ref_imgs = self.renderer.render_spherical_harmonics(self.reference.vertices, self.reference.normals, self.reference.faces, batch_views)
+            mesh_imgs = self.renderer.render_spherical_harmonics(mesh.vertices, mesh.normals, mesh.faces, batch_views)
 
             error = torch.mean(torch.abs(ref_imgs - mesh_imgs))
             errors.append(error.item())
@@ -101,8 +101,8 @@ class Evaluator:
 
         camera = lookat(eye, center, up).unsqueeze(0)
 
-        ref_img = self.renderer.render(self.reference.vertices, self.reference.normals, self.reference.faces, camera)[0]
-        mesh_img = self.renderer.render(mesh.vertices, mesh.normals, mesh.faces, camera)[0]
+        ref_img = self.renderer.render_spherical_harmonics(self.reference.vertices, self.reference.normals, self.reference.faces, camera)[0]
+        mesh_img = self.renderer.render_spherical_harmonics(mesh.vertices, mesh.normals, mesh.faces, camera)[0]
 
         return { 'error': np.mean(errors), 'ref': ref_img, 'mesh': mesh_img }
 
@@ -215,16 +215,16 @@ if __name__ == '__main__':
 
         return size // 1024
 
-    small, large = 0.001, 0.95
-    for i in range(15):
-        mid = (small + large) / 2
-        size = qslim_exec(mid)
-        if size > metrics['size']:
-            large = mid
-        else:
-            small = mid
-
-    qslim_exec((small + large) / 2)
+    # small, large = 0.001, 0.95
+    # for i in range(15):
+    #     mid = (small + large) / 2
+    #     size = qslim_exec(mid)
+    #     if size > metrics['size']:
+    #         large = mid
+    #     else:
+    #         small = mid
+    #
+    # qslim_exec((small + large) / 2)
 
     # # Instant NGP
     import pyngp as ngp
@@ -326,13 +326,13 @@ if __name__ == '__main__':
     #
     # print('Closest config is', closest)
 
-    STEPS = 35_000
-
-    testbed, _ = run_testbed(12, 2)
-    testbed.init_window(1920, 1080)
-    testbed.shall_train = False
-    while testbed.frame():
-        continue
+    # STEPS = 10_000
+    #
+    # testbed, _ = run_testbed(13, 2)
+    # testbed.init_window(1920, 1080)
+    # testbed.shall_train = False
+    # while testbed.frame():
+    #     continue
 
     # Load both
     assert os.path.exists(qslim_result)
@@ -354,3 +354,11 @@ if __name__ == '__main__':
     metrics['size'] //= 1024
     del metrics['images']
     print(metrics)
+
+    import polyscope as ps
+
+    ps.init()
+    ps.register_surface_mesh('ngf', ngf_mesh.vertices.detach().cpu().numpy(), ngf_mesh.faces.cpu().numpy())
+    ps.register_surface_mesh('qslim', smashed.vertices.cpu().numpy(), smashed.faces.cpu().numpy())
+    ps.register_surface_mesh('ingp', ingp.vertices.cpu().numpy(), ingp.faces.cpu().numpy())
+    ps.show()

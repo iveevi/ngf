@@ -192,12 +192,12 @@ def arrange_views(simplified: Mesh, cameras: int):
         centroid = (v0 + v1 + v2) / 3.0
         centroid = centroid.mean(dim=0)
 
-
         normal = torch.cross(v1 - v0, v2 - v0)
         normal = normal.mean(dim=0)
         normal = normal / torch.norm(normal)
 
         eye = centroid + 0.5 * normal
+        # eye = centroid + normal
         up = torch.tensor([0, 1, 0], dtype=torch.float32, device='cuda')
         look = -normal
 
@@ -208,7 +208,11 @@ def arrange_views(simplified: Mesh, cameras: int):
 
         right = torch.cross(look, up)
         right /= right.norm()
+
         up = torch.cross(look, right)
+        up /= up.norm()
+        
+        look /= look.norm()
 
         view = torch.tensor([
             [ right[0], up[0], look[0], eye[0] ],

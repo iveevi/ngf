@@ -1,24 +1,18 @@
 {
-	"name": "deer",
 	"target": "meshes/deer/target.obj",
 	"directory": "results/deer",
+	"clusters": 200,
+	"batch_size": 10,
+	"resolution": 16,
 	"experiments": [
 		{
 			"name": "cut",
 			"source": "meshes/deer/cut.obj",
-			"method": "lrelu/linear",
-			"clusters": 250,
-			"batch": 10,
-			"resolution": 16
-		},
-
-		{
-			"name": "full",
-			"source": "meshes/deer/source.obj",
-			"method": "lrelu/linear",
-			"clusters": 250,
-			"batch": 10,
-			"resolution": 16
+			"encoder": "sincos",
+			"encoding_levels": 10,
+			"features": 20,
+			"jittering": true,
+			"normals": "numerical"
 		}
 	]
 }

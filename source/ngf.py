@@ -23,10 +23,11 @@ class NGF:
         self.ffin = features
         if self.encoder == 'sincos':
             self.ffin = features + 3 * (2 * self.encoding_levels + 1)
+            # self.ffin = features + 3 * (self.encoding_levels + 1)
             self.encoder = self.sincos
-        elif self.encoder == 'extint':
-            self.ffin = features + 3 + 4 * (2 * self.encoding_levels)
-            self.encoder = self.extint
+        # elif self.encoder == 'extint':
+        #     self.ffin = features + 3 + 4 * (2 * self.encoding_levels)
+        #     self.encoder = self.extint
         else:
             raise ValueError('Unknown encoder: %s' % self.encoder)
 
@@ -113,38 +114,17 @@ class NGF:
 
         X = [ features, bases ]
         for i in range(self.encoding_levels):
-            # k = 2 ** (0.618 * i)
             k = 2 ** i
             X += [ torch.sin(k * bases), torch.cos(k * bases) ]
+        
+        # for i in range(self.encoding_levels):
+        #     discrete = (bases * 2 ** i).int().sum(dim=-1)
+        #     frequency = (4 + discrete.remainder(5)).unsqueeze(-1)
+        #     normed = (bases * 2 ** i).frac()
+        #     wavelet = torch.exp(-frequency * normed ** 2) * torch.cos(frequency * normed)
+        #     X += [ wavelet ]
 
         return torch.cat(X, dim=-1)
-
-    def extint(self, **kwargs):
-        bases    = kwargs['points']
-        features = kwargs['features']
-        u        = kwargs['u']
-        v        = kwargs['v']
-
-        X = [ features, bases ]
-
-        x = bases[:, 0].unsqueeze(-1)
-        y = bases[:, 1].unsqueeze(-1)
-        z = bases[:, 2].unsqueeze(-1)
-        uv = u + v
-
-        # for i in range(self.encoding_levels):
-        #     k = 2 ** i
-        #     X += [ torch.sin(k * bases), torch.sin(k * uvs) ]
-        #     X += [ torch.cos(k * bases), torch.cos(k * uvs) ]
-
-        for i in range(self.encoding_levels):
-            k = 2 ** (0.618 * i)
-            X += [ torch.sin(k * uv), torch.sin(k * (x + y)), torch.sin(k * (x + z)), torch.sin(k * (y + z)) ]
-            X += [ torch.cos(k * uv), torch.cos(k * (x + y)), torch.cos(k * (x + z)), torch.cos(k * (y + z)) ]
-
-        X = torch.cat(X, dim=-1)
-
-        return X
 
     # Functionals
     def eval_normals(self, U, V, delta):

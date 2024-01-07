@@ -324,6 +324,7 @@ if __name__ == '__main__':
             mesh, _ = load_mesh(file)
             # refs.append(mesh)
             f = os.path.basename(file)
+            f = os.path.dirname(file) + '-' + f
             refs[f] = mesh
 
     lods = {}

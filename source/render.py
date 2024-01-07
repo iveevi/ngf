@@ -119,8 +119,9 @@ class Renderer:
         v_ndc = torch.matmul(v_hom, mvps.transpose(1,2))
         rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
         col = dr.interpolate(n * 0.5 + 0.5, rast, f)[0]
-        bgs = torch.ones_like(col)
-        return dr.antialias(torch.where(rast[..., -1:] != 0, col, bgs), rast, v_ndc, f)
+        # bgs = torch.ones_like(col)
+        # return dr.antialias(torch.where(rast[..., -1:] != 0, col, bgs), rast, v_ndc, f)
+        return dr.antialias(col, rast, v_ndc, f)
 
 def construct_renderer():
     import os
@@ -167,6 +168,12 @@ def arrange_camera_views(target):
             eye = amin_vertex + distance * amin_normal
             up = torch.tensor([0, 1, 0], dtype=torch.float32, device='cuda')
             look = -amin_normal
+
+            if torch.dot(look, up).abs().item() > 1.0 - 1e-6:
+                up = torch.tensor([1, 0, 0], dtype=torch.float32, device='cuda')
+            if torch.dot(look, up).abs().item() > 1.0 - 1e-6:
+                up = torch.tensor([0, 0, 1], dtype=torch.float32, device='cuda')
+
             right = torch.cross(look, up)
             right /= right.norm()
             up = torch.cross(look, right)

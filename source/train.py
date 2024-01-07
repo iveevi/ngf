@@ -75,11 +75,11 @@ def train(target, generator, opt, sch, batch_views, iterations):
         # lights /= torch.linalg.norm(lights, dim=-1).unsqueeze(-1)
         # light_colors = torch.rand((10, 3), device='cuda')
 
-        opt_imgs = renderer.render(V, N, F, lights, view_mats).bfloat16()
+        opt_imgs = renderer.render(V, N, F, lights, view_mats) #.bfloat16()
         # opt_imgs = postprocess(opt_imgs)
 
         with torch.no_grad():
-            ref_imgs = renderer.render(target.vertices, target.normals, target.faces, lights, view_mats).bfloat16()
+            ref_imgs = renderer.render(target.vertices, target.normals, target.faces, lights, view_mats) #.bfloat16()
             # ref_imgs = postprocess(ref_imgs)
 
         # import matplotlib.pyplot as plt
@@ -281,13 +281,13 @@ if __name__ == '__main__':
 
     print('Loaded target: {} vertices, {} faces'.format(target.vertices.shape[0], target.faces.shape[0]))
 
-    # all_views = arrange_camera_views(target)
-    # add_views = arrange_views(target, 100)
-    # all_views = torch.concat([all_views, add_views])
+    all_views = arrange_camera_views(target)
+    add_views = arrange_views(target, 100)
+    all_views = torch.concat([all_views, add_views])
 
-    all_views = arrange_views(target, 200)
+    # all_views = arrange_views(target, 200)
 
-    # visualize_views(all_views)
+    visualize_views(all_views)
 
     # Iterate over experiments
     for experiment in experiments:
@@ -356,7 +356,7 @@ if __name__ == '__main__':
             sch = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.9995)
 
             print('Refining with rate {}'.format(rate))
-            losses += refine(target, ngf, rate, views, laplacian_strength, opt, sch, iterations=125)
+            losses += refine(target, ngf, rate, views, laplacian_strength, opt, sch, iterations=250)
 
             laplacian_strength *= 0.75
             rate *= 2
