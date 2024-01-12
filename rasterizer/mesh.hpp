@@ -14,4 +14,5 @@ struct Mesh {
 	static Mesh normalize(const Mesh &);
 };
 
+std::vector <glm::vec3> smooth_normals(const Mesh &);
 std::vector <float> interleave_attributes(const Mesh &);

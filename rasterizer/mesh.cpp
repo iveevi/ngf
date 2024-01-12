@@ -5,6 +5,30 @@
 #include "mesh.hpp"
 #include "microlog.h"
 
+
+std::vector <glm::vec3> smooth_normals(const Mesh &m)
+{
+	std::vector <glm::vec3> normals;
+	normals.resize(m.vertices.size(), glm::vec3 { 0.0f });
+
+	for (const glm::uvec3 &t : m.triangles) {
+		const glm::vec3 &v0 = m.vertices[t.x];
+		const glm::vec3 &v1 = m.vertices[t.y];
+		const glm::vec3 &v2 = m.vertices[t.z];
+
+		glm::vec3 cross = glm::cross(v0 - v1, v0 - v2);
+
+		normals[t.x] += cross;
+		normals[t.y] += cross;
+		normals[t.z] += cross;
+	}
+
+	for (glm::vec3 &n : normals)
+		n = glm::normalize(n);
+
+	return normals;
+}
+
 std::vector <float> interleave_attributes(const Mesh &m)
 {
 	std::vector <float> attributes;

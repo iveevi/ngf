@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <optional>
+#include <fstream>
 
 #include <glm/glm.hpp>
 
@@ -65,8 +66,8 @@ Pipeline ppl_normals
 	Pipeline ppl;
 
 	// Read shader source
-	std::string vertex_source = readfile("../mesh.vert.glsl");
-	std::string fragment_source = readfile("../normals.frag.glsl");
+	std::string vertex_source = readfile("../shaders/mesh.vert.glsl");
+	std::string fragment_source = readfile("../shaders/normals.frag.glsl");
 
 	// Compile shader modules
 	vk::ShaderModule vertex_module = littlevk::shader::compile(
@@ -78,6 +79,15 @@ Pipeline ppl_normals
 		device, fragment_source,
 		vk::ShaderStageFlagBits::eFragment
 	).unwrap(dal);
+
+	std::vector <vk::PipelineShaderStageCreateInfo> shader_stages {
+		vk::PipelineShaderStageCreateInfo {
+			{}, vk::ShaderStageFlagBits::eVertex, vertex_module, "main"
+		},
+		vk::PipelineShaderStageCreateInfo {
+			{}, vk::ShaderStageFlagBits::eFragment, fragment_module, "main"
+		}
+	};
 
 	// Create the pipeline
 	vk::PushConstantRange push_constant_range {
@@ -93,10 +103,86 @@ Pipeline ppl_normals
 	).unwrap(dal);
 
 	littlevk::pipeline::GraphicsCreateInfo pipeline_info;
+	pipeline_info.shader_stages = shader_stages;
 	pipeline_info.vertex_binding = vertex_binding;
 	pipeline_info.vertex_attributes = vertex_attributes;
-	pipeline_info.vertex_shader = vertex_module;
-	pipeline_info.fragment_shader = fragment_module;
+	pipeline_info.extent = extent;
+	pipeline_info.pipeline_layout = ppl.layout;
+	pipeline_info.render_pass = rp;
+	pipeline_info.fill_mode = vk::PolygonMode::eFill;
+	pipeline_info.cull_mode = vk::CullModeFlagBits::eNone;
+	pipeline_info.dynamic_viewport = true;
+
+	ppl.pipeline = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
+
+	return ppl;
+}
+
+Pipeline ppl_ngf
+(
+		const vk::Device      &device,
+		const vk::RenderPass  &rp,
+		const vk::Extent2D    &extent,
+		littlevk::Deallocator *dal
+)
+{
+	Pipeline ppl;
+
+	// Read shader source
+	std::string task_source = readfile("../shaders/ngf.task.glsl");
+	std::string mesh_source = readfile("../shaders/ngf.mesh.glsl");
+	std::string fragment_source = readfile("../shaders/ngf.frag.glsl");
+
+	// Compile shader modules
+	vk::ShaderModule task_module = littlevk::shader::compile(
+		device, task_source,
+		vk::ShaderStageFlagBits::eTaskEXT
+	).unwrap(dal);
+
+	vk::ShaderModule mesh_module = littlevk::shader::compile(
+		device, mesh_source,
+		vk::ShaderStageFlagBits::eMeshEXT
+	).unwrap(dal);
+
+	vk::ShaderModule fragment_module = littlevk::shader::compile(
+		device, fragment_source,
+		vk::ShaderStageFlagBits::eFragment
+	).unwrap(dal);
+
+	printf("task module: %p\n", task_module);
+	printf("mesh module: %p\n", mesh_module);
+	printf("fragment module: %p\n", fragment_module);
+
+	std::vector <vk::PipelineShaderStageCreateInfo> shader_stages {
+		vk::PipelineShaderStageCreateInfo {
+			{}, vk::ShaderStageFlagBits::eTaskEXT, task_module, "main"
+		},
+		vk::PipelineShaderStageCreateInfo {
+			{}, vk::ShaderStageFlagBits::eMeshEXT, mesh_module, "main"
+		},
+		vk::PipelineShaderStageCreateInfo {
+			{}, vk::ShaderStageFlagBits::eFragment, fragment_module, "main"
+		}
+	};
+
+	// Create the pipeline
+	// TODO: put mvp and stuff here later
+	// vk::PushConstantRange push_constant_range {
+	// 	vk::ShaderStageFlagBits::eVertex,
+	// 	0, sizeof(BasePushConstants)
+	// };
+
+	ppl.layout = littlevk::pipeline_layout(
+		device,
+		vk::PipelineLayoutCreateInfo {
+			{}, {}, {}
+		}
+	).unwrap(dal);
+
+	littlevk::pipeline::GraphicsCreateInfo pipeline_info;
+	pipeline_info.shader_stages = shader_stages;
+	// pipeline_info.vertex_binding = vertex_binding;
+	// pipeline_info.vertex_attributes = vertex_attributes;
 	pipeline_info.extent = extent;
 	pipeline_info.pipeline_layout = ppl.layout;
 	pipeline_info.render_pass = rp;
@@ -186,6 +272,7 @@ struct Engine : littlevk::Skeleton {
 
 	// Pipelines
 	Pipeline normals;
+	Pipeline ngf_meshlet;
 
 	// ImGui resources
 	vk::DescriptorPool imgui_descriptor_pool;
@@ -252,11 +339,45 @@ struct Engine : littlevk::Skeleton {
 
 	static Engine from(const vk::PhysicalDevice &phdev) {
 		Engine engine;
-		engine.skeletonize(phdev, { 1000, 1000 }, "Neural Geometry Fields Testbed");
 
 		engine.phdev = phdev;
 		engine.memory_properties = phdev.getMemoryProperties();
 		engine.dal = new littlevk::Deallocator(engine.device);
+
+		// Analyze the properties
+		vk::PhysicalDeviceMeshShaderPropertiesEXT ms_properties = {};
+		vk::PhysicalDeviceProperties2 properties = {};
+		properties.pNext = &ms_properties;
+
+		phdev.getProperties2(&properties);
+		printf("properties:\n");
+		printf("  max (task) payload memory: %d KB\n", ms_properties.maxTaskPayloadSize / 1024);
+		printf("  max (task) shared memory: %d KB\n", ms_properties.maxTaskSharedMemorySize / 1024);
+		printf("  max (mesh) shared memory: %d KB\n", ms_properties.maxMeshSharedMemorySize / 1024);
+		printf("  max output vertices: %d\n", ms_properties.maxMeshOutputVertices);
+		printf("  max output primitives: %d\n", ms_properties.maxMeshOutputPrimitives);
+
+		// Configure the features
+		vk::PhysicalDeviceMeshShaderFeaturesEXT ms_ft = {};
+		vk::PhysicalDeviceMaintenance4FeaturesKHR m4_ft = {};
+		vk::PhysicalDeviceFeatures2KHR ft = {};
+
+		ft.features.independentBlend = true;
+		ft.features.fillModeNonSolid = true;
+		ft.features.geometryShader = true;
+
+		ft.pNext = &ms_ft;
+		ms_ft.pNext = &m4_ft;
+
+		phdev.getFeatures2(&ft);
+
+		printf("features:\n");
+		printf("  task shaders: %s\n", ms_ft.taskShader ? "true" : "false");
+		printf("  mesh shaders: %s\n", ms_ft.meshShader ? "true" : "false");
+		printf("  m4: %s\n", m4_ft.maintenance4 ? "true" : "false");
+
+		// Initialize the device and surface
+		engine.skeletonize(phdev, { 1000, 1000 }, "Neural Geometry Fields Testbed", ft);
 
 		// Create the render pass
 		engine.render_pass = littlevk::default_color_depth_render_pass
@@ -308,6 +429,14 @@ struct Engine : littlevk::Skeleton {
 		configure_imgui(engine);
 
 		engine.normals = ppl_normals
+		(
+			engine.device,
+			engine.render_pass,
+			engine.window->extent,
+			engine.dal
+		);
+
+		engine.ngf_meshlet = ppl_ngf
 		(
 			engine.device,
 			engine.render_pass,
@@ -469,22 +598,132 @@ const Pipeline &activate_pipeline(const Engine &engine, const vk::CommandBuffer 
 
 int main(int argc, char *argv[])
 {
-	if (argc < 2) {
-		ulog_error("testbed", "Usage: testbed <reference mesh>\n");
+	if (argc < 3) {
+		ulog_error("testbed", "Usage: testbed <reference mesh> <ngf>\n");
 		return EXIT_FAILURE;
 	}
 
-	std::string path = argv[1];
+	std::string path_ref = argv[1];
+	std::string path_ngf = argv[2];
 
-	Mesh reference = *Mesh::load(path).begin();
+	Mesh reference = *Mesh::load(path_ref).begin();
 	reference = Mesh::normalize(reference);
 
-	ulog_info("testbed", "Loaded mesh with %d vertices and %d faces\n", reference.vertices.size(), reference.triangles.size());
+	ulog_info("testbed", "loaded mesh with %d vertices and %d faces\n", reference.vertices.size(), reference.triangles.size());
+
+	// Load the neural geometry field
+	constexpr int32_t LAYERS = 4;
+
+	struct Tensor {
+		std::vector <float> vec;
+		int32_t width;
+		int32_t height;
+	};
+
+	struct NGF {
+		std::vector <glm::ivec4> patches;
+		std::vector <glm::vec3> vertices;
+		std::vector <float> features;
+
+		std::array <Tensor, LAYERS> weights;
+		std::array <Tensor, LAYERS> biases;
+	} ngf;
+
+	{
+		std::ifstream fin(path_ngf);
+		ulog_assert(fin.good(), "Bad ngf file %s\n", path_ngf.c_str());
+
+		int32_t sizes[3];
+		fin.read(reinterpret_cast <char *> (sizes), sizeof(sizes));
+		ulog_info("ngf io", "%d patches, %d vertices, %d feature size\n", sizes[0], sizes[1], sizes[2]);
+
+		std::vector <glm::ivec4> patches;
+		std::vector <glm::vec3> vertices;
+		std::vector <float> features;
+
+		patches.resize(sizes[0]);
+		vertices.resize(sizes[1]);
+		features.resize(sizes[1] * sizes[2]);
+
+		fin.read(reinterpret_cast <char *> (patches.data()), patches.size() * sizeof(glm::ivec4));
+		fin.read(reinterpret_cast <char *> (vertices.data()), vertices.size() * sizeof(glm::vec3));
+		fin.read(reinterpret_cast <char *> (features.data()), features.size() * sizeof(float));
+
+		ulog_info("ngf io", "read patches data\n");
+
+		std::array <Tensor, LAYERS> weights;
+		for (int32_t i = 0; i < LAYERS; i++) {
+			int32_t sizes[2];
+			fin.read(reinterpret_cast <char *> (sizes), sizeof(sizes));
+			ulog_info("ngf io", "weight matrix with size %d x %d\n", sizes[0], sizes[1]);
+
+			Tensor w;
+			w.width = sizes[0];
+			w.height = sizes[1];
+			w.vec.resize(sizes[0] * sizes[1]);
+			fin.read(reinterpret_cast <char *> (w.vec.data()), w.vec.size() * sizeof(float));
+
+			weights[i] = w;
+		}
+
+		std::array <Tensor, LAYERS> biases;
+		for (int32_t i = 0; i < LAYERS; i++) {
+			int32_t size;
+			fin.read(reinterpret_cast <char *> (&size), sizeof(size));
+			ulog_info("ngf io", "bias vector with size %d\n", size);
+
+			Tensor w;
+			w.width = size;
+			w.height = 1;
+			w.vec.resize(size);
+			fin.read(reinterpret_cast <char *> (w.vec.data()), w.vec.size() * sizeof(float));
+
+			biases[i] = w;
+		}
+
+		ngf.patches = patches;
+		ngf.vertices = vertices;
+		ngf.features = features;
+		ngf.weights = weights;
+		ngf.biases = biases;
+	}
+
+	reference.normals = smooth_normals(reference);
+
+	Mesh ngf_base;
+
+	{
+		// Get the base mesh
+		std::vector <glm::vec3> vertices;
+		std::vector <glm::vec3> normals;
+		std::vector <glm::uvec3> triangles;
+
+		for (const glm::ivec4 &p : ngf.patches) {
+			int32_t size = vertices.size();
+			vertices.push_back(ngf.vertices[p.x]);
+			vertices.push_back(ngf.vertices[p.y]);
+			vertices.push_back(ngf.vertices[p.w]);
+			vertices.push_back(ngf.vertices[p.z]);
+
+			normals.push_back(glm::vec3 {});
+			normals.push_back(glm::vec3 {});
+			normals.push_back(glm::vec3 {});
+			normals.push_back(glm::vec3 {});
+
+			triangles.push_back({ size, size + 1, size + 3 });
+			triangles.push_back({ size, size + 3, size + 2 });
+		}
+
+		ngf_base = Mesh { vertices, normals, triangles };
+		ngf_base.normals = smooth_normals(ngf_base);
+	}
 
 	// Configure renderer
 	auto predicate = [](vk::PhysicalDevice phdev) {
 		return littlevk::physical_device_able(phdev, {
-			VK_KHR_SWAPCHAIN_EXTENSION_NAME
+			VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+			VK_EXT_MESH_SHADER_EXTENSION_NAME,
+			VK_KHR_MAINTENANCE_4_EXTENSION_NAME,
 		});
 	};
 
@@ -494,8 +733,10 @@ int main(int argc, char *argv[])
 	Engine engine = Engine::from(phdev);
 
 	VulkanMesh vk_ref = VulkanMesh::from(engine, reference);
-	for (int i = 0; i < 1000000; i++)
-		ulog_progress("bar", i/1000000.0f);
+	VulkanMesh vk_ngf = VulkanMesh::from(engine, ngf_base);
+
+	for (int i = 0; i < 1000; i++)
+		ulog_progress("bar", i/1000.0f);
 
 	size_t frame = 0;
 	while (valid_window(engine)) {
@@ -526,6 +767,15 @@ int main(int argc, char *argv[])
 		cmd.bindVertexBuffers(0, { vk_ref.vertices.buffer }, { 0 });
 		cmd.bindIndexBuffer(vk_ref.triangles.buffer, 0, vk::IndexType::eUint32);
 		cmd.drawIndexed(vk_ref.indices, 1, 0, 0, 0);
+
+		cmd.bindVertexBuffers(0, { vk_ngf.vertices.buffer }, { 0 });
+		cmd.bindIndexBuffer(vk_ngf.triangles.buffer, 0, vk::IndexType::eUint32);
+		cmd.drawIndexed(vk_ngf.indices, 1, 0, 0, 0);
+
+		// const auto &ppl = activate_pipeline(engine, cmd);
+		// TODO: active pipeline by key
+		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.ngf_meshlet.pipeline);
+		cmd.drawMeshTasksEXT(1, 1, 1);
 
 		render_pass_end(engine, cmd);
 
