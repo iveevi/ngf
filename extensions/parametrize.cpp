@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <thread>
 
 #include <glm/gtc/random.hpp>
 
@@ -122,11 +123,11 @@ static std::vector <glm::vec2> harmonic_disk_parametrization
 	} while(segment < 0.75f * length);
 	int32_t c3 = index;
 
-	printf("Boundary corners: %d %d %d %d (%d, %d, %d, %d)\n",
-		c0, c1, c2, c3,
-		boundary[c0], boundary[c1],
-		boundary[c2], boundary[c3]
-	);
+	// printf("Boundary corners: %d %d %d %d (%d, %d, %d, %d)\n",
+	// 	c0, c1, c2, c3,
+	// 	boundary[c0], boundary[c1],
+	// 	boundary[c2], boundary[c3]
+	// );
 
 	// Set boundary conditions
 	// for (int32_t i = 0; i < boundary.size(); i++) {
@@ -232,7 +233,7 @@ static glm::vec3 stretch_metric
 	float t2 = uv2.y;
 	float t3 = uv3.y;
 
-	float A = 0.5 * ((s2 - s1) * (t3 - t1) - (s3 - s1) * (t2 - t1));
+	float A = 0.5 * ((s2 - s1) * (t3 - t1) - (s3 - s1) * (t2 - t1)) + 1e-6f;
 	// glm::vec2 e0 = uv1 - uv2;
 	// glm::vec2 e1 = uv1 - uv3;
 	// float A = 0.5f * glm::length(cross(e0, e1));
@@ -247,10 +248,12 @@ static glm::vec3 stretch_metric
 
 	float stretch = glm::sqrt(0.5 * (a + c));
 
-	// if (glm::isnan(stretch)) {
-	// 	printf("   NAN STRETCH!!! %f, %f | Ss = (%f, %f) | St = (%f, %f) | A = %f, area = %f\n", a, c,
-	// 		Ss.x, Ss.y, St.x, St.y, A, area);
-	// }
+	if (glm::isnan(stretch)) {
+                printf("   NAN STRETCH! points are (%.2f, %.2f), (%.2f, %.2f), "
+                       "(%.2f, %.2f) | Ss = (%.2f, %.2f) | St = (%.2f, %.2f) | "
+                       "A = %f\n",
+                       s1, t1, s2, t3, s3, t3, Ss.x, Ss.y, St.x, St.y, A);
+        }
 
 	return { stretch, area, A };
 }
@@ -589,21 +592,22 @@ static std::vector <glm::vec2> geometric_stretch_optimization
 
 	std::vector <glm::vec2> new_uvs = uvs;
 	for (int32_t i = 0; i < 500; i++) {
-		printf("\rGeometric stretch optimization: %d", i);
+		// printf("\rGeometric stretch optimization: %d", i);
 		geometric_stretch_optimization_iteration(conn, vertices, tris, new_uvs, boundary, bset, 1.0f/(i + 1.0f));
-		fflush(stdout);
+		// fflush(stdout);
 	}
-	printf("\n");
+	// printf("\n");
 
 	float start_stretch = stretch_metric(vertices, tris, uvs);
 	float end_stretch = stretch_metric(vertices, tris, new_uvs);
 
-	printf("Stretch metric improvement: %.4f -> %.4f\n", start_stretch, end_stretch);
+	// printf("Stretch metric improvement: %.4f -> %.4f\n", start_stretch, end_stretch);
 
 	return new_uvs;
 }
 
-std::tuple <torch::Tensor, torch::Tensor> parametrize
+// std::tuple <torch::Tensor, torch::Tensor> parametrize
+torch::Tensor parametrize
 (
 		const torch::Tensor         &tch_vertices,
 		const torch::Tensor         &tch_faces,
@@ -614,6 +618,7 @@ std::tuple <torch::Tensor, torch::Tensor> parametrize
 	tensor_check <torch::kCPU, torch::kInt32, 3>   (tch_faces);
 
 	// Localizing buffers
+	// printf("Parametrizing patch with %d vertices and %d faces\n", tch_vertices.size(0), tch_faces.size(0));
 	std::vector <glm::vec3> vertices;
 	std::vector <glm::ivec3> faces;
 
@@ -638,8 +643,72 @@ std::tuple <torch::Tensor, torch::Tensor> parametrize
 	std::vector <glm::vec2> huvs = harmonic_disk_parametrization(vertices, conn, boundary, bset);
 	// std::vector <glm::vec2> uvs = geometric_stretch_optimization(conn, vertices, faces, huvs, boundary, bset);
 
-	return {
-		vector_to_tensor <glm::vec2, torch::kFloat32, 2> (huvs),
-		vector_to_tensor <glm::vec2, torch::kFloat32, 2> (huvs)
-	};
+	return vector_to_tensor <glm::vec2, torch::kFloat32, 2> (huvs);
+
+	// TODO: fix this to uvs instead of harmonic only
+	// return vector_to_tensor <glm::vec2, torch::kFloat32, 2> (uvs);
+}
+
+std::vector <torch::Tensor> parametrize_parallel
+(
+		const std::vector <
+			std::tuple <
+				torch::Tensor,
+				torch::Tensor,
+				std::vector <int32_t>
+			>
+		> &patches
+)
+{
+	int32_t threads = std::thread::hardware_concurrency();
+
+	// Return
+	std::vector <torch::Tensor> parametrizations;
+	parametrizations.resize(patches.size());
+
+	// Job counter (index)
+	std::mutex jobber;
+
+	int32_t next = 0;
+
+	// Worker pool
+	std::vector <std::thread> workers;
+	for (int32_t i = 0; i < threads; i++) {
+		workers.emplace_back
+		(
+			[&](int32_t tid) {
+				while (true) {
+					int32_t index = -1;
+					{
+						std::lock_guard lock { jobber };
+						index = next++;
+					}
+
+					if (index >= patches.size())
+						break;
+
+					// printf("Thread %d grabbed job %d\n", tid, index);
+					//
+					// torch::Tensor vertices         = std::get <0> (patches[i]);
+					// torch::Tensor faces            = std::get <1> (patches[i]);
+					// std::vector <int32_t> &boundary = std::get <2> (patches[i]);
+
+					parametrizations[index] = parametrize
+					(
+						std::get <0> (patches[index]),
+						std::get <1> (patches[index]),
+						std::get <2> (patches[index])
+					);
+				}
+			}, i
+		);
+	}
+
+	// Wait to finish
+	for (int32_t i = 0; i < threads; i++)
+		workers[i].join();
+
+	printf("Joined all threads\n");
+
+	return parametrizations;
 }

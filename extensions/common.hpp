@@ -30,8 +30,13 @@ struct vertex_graph {
 std::vector <std::vector <int32_t>> cluster_geometry
 (const geometry &, const std::vector <int32_t> &, int32_t, const std::string &);
 
-std::tuple <torch::Tensor, torch::Tensor> parametrize
+// Patch parametrization (multichart geometry images)
+// std::tuple <torch::Tensor, torch::Tensor> parametrize
+torch::Tensor parametrize
 (const torch::Tensor &, const torch::Tensor &, const std::vector <int32_t> &);
+
+std::vector <torch::Tensor> parametrize_parallel
+(const std::vector <std::tuple <torch::Tensor, torch::Tensor, std::vector <int32_t>>> &);
 
 // Triangulation utilities
 // TODO: refactor

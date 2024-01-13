@@ -5,6 +5,7 @@ largesteps
 matplotlib
 meshio
 nvdiffrast @ git+https://github.com/NVlabs/nvdiffrast
+opencv-python
 polyscope
 pymeshlab
 seaborn
