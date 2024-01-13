@@ -36,8 +36,9 @@ def preview_single(ngf, refs):
         ps.remove_all_structures()
 
         if ngf is not None and mode == 'ngf':
-            uvs = ngf.sample_uniform(rate)
-            V = ngf.eval(*uvs).detach()
+            sample = ngf.sample_uniform(rate)
+            V = ngf.eval(*sample).detach()
+            print('EVALLED V', V.shape)
 
             if patches:
                 complex_count = ngf.complexes.shape[0]
@@ -88,8 +89,10 @@ def preview_single(ngf, refs):
         for r, ref in refs.items():
             if mode == r:
                 V, F = ref.vertices, ref.faces
+                colors = torch.rand((F.shape[0], 3))
                 m = ps.register_surface_mesh(r, V.cpu().numpy(), F.cpu().numpy())
-                m.set_color([0.5, 0.5, 1.0])
+                m.add_color_quantity('false', colors.numpy(), defined_on='faces', enabled=True)
+                # m.set_color([0.5, 0.5, 1.0])
                 m.set_material('wax')
                 # m.set_smooth_shade(True)
                 return

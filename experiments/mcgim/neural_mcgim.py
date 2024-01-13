@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+# Run an image learning exploration (with several discontinuities and pixel graphics)
 class NeuralMulticharts(nn.Module):
     LEVELS = 16
     FEATURE_SIZE = 500
@@ -10,13 +11,13 @@ class NeuralMulticharts(nn.Module):
 
         ffin = 2 * (2 * NeuralMulticharts.LEVELS + 1) + NeuralMulticharts.FEATURE_SIZE
         self.model = nn.Sequential(
-                nn.Linear(ffin, 256),
+                nn.Linear(ffin, 64),
                 nn.LeakyReLU(),
-                nn.Linear(256, 256),
+                nn.Linear(64, 64),
                 nn.LeakyReLU(),
-                nn.Linear(256, 256),
+                nn.Linear(64, 64),
                 nn.LeakyReLU(),
-                nn.Linear(256, 3)
+                nn.Linear(64, 3)
         )
 
     def encoding(self, X, F):

@@ -5,7 +5,7 @@
 # 	python construct.py ../../meshes/nefertiti/target.obj $i 16
 # done
 
-for filename in *.pt
+for filename in results/nefertiti/mcgim*.pt
 do
 	echo "Training neural representation of $filename"
 	python train.py --mcgim $filename

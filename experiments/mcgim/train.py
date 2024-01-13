@@ -44,18 +44,10 @@ neural_mcgims = NeuralMulticharts().cuda()
 features = torch.zeros((N, M, NeuralMulticharts.FEATURE_SIZE),
     dtype=torch.float32, device='cuda', requires_grad=True)
 
-# features = torch.zeros((N, M, 4, FEATURE_SIZE), dtype=torch.float32, device='cuda', requires_grad=True)
-# print('features', features.shape)
-
 U = torch.linspace(0, 1, N * sampling)
 V = torch.linspace(0, 1, M * sampling)
 U, V = torch.meshgrid(U, V, indexing='ij')
 UV_whole = torch.stack([U, V], dim=-1).cuda()
-
-# U = torch.linspace(0, 1, sampling)
-# V = torch.linspace(0, 1, sampling)
-# U, V = torch.meshgrid(U, V, indexing='ij')
-# U, V = U.flatten(), V.flatten()
 
 opt = torch.optim.Adam(list(neural_mcgims.parameters()) + [ features ], 1e-3)
 sch = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.999)
@@ -63,7 +55,7 @@ sch = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.999)
 # TODO: evaluate on linear patches in the feature space instead of UV space?
 
 losses = []
-for i in trange(2_500):
+for i in trange(10_000):
     # TODO: run the interpolation version
 
     # f0, f1, f2, f3 = features[..., 0], features[..., 1], features[..., 2], features[..., 3]
