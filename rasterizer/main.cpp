@@ -52,6 +52,13 @@ struct BasePushConstants {
 	glm::mat4 proj;
 };
 
+struct NGFPushConstants {
+	glm::mat4 model;
+	glm::mat4 view;
+	glm::mat4 proj;
+	uint32_t feature_size;
+};
+
 struct Pipeline {
 	vk::Pipeline pipeline;
 	vk::PipelineLayout layout;
@@ -172,7 +179,7 @@ Pipeline ppl_ngf
 	// TODO: put mvp and stuff here later
 	vk::PushConstantRange push_constant_range {
 		vk::ShaderStageFlagBits::eMeshEXT,
-		0, sizeof(BasePushConstants)
+		0, sizeof(NGFPushConstants)
 	};
 
 	// Buffer bindings
@@ -182,18 +189,26 @@ Pipeline ppl_ngf
 	points.descriptorType = vk::DescriptorType::eStorageBuffer;
 	points.stageFlags = vk::ShaderStageFlagBits::eMeshEXT;
 
+	vk::DescriptorSetLayoutBinding features {};
+	features.binding = 1;
+	features.descriptorCount = 1;
+	features.descriptorType = vk::DescriptorType::eStorageBuffer;
+	features.stageFlags = vk::ShaderStageFlagBits::eMeshEXT;
+
 	vk::DescriptorSetLayoutBinding patches {};
 	patches.binding = 2;
 	patches.descriptorCount = 1;
 	patches.descriptorType = vk::DescriptorType::eStorageBuffer;
 	patches.stageFlags = vk::ShaderStageFlagBits::eMeshEXT;
 
-	// 	0, vk::DescriptorType::eStorageBuffer,
-	// 	vk::ShaderStageFlagBits::eMeshEXT, nullptr
-	// };
+	vk::DescriptorSetLayoutBinding network {};
+	network.binding = 3;
+	network.descriptorCount = 1;
+	network.descriptorType = vk::DescriptorType::eStorageBuffer;
+	network.stageFlags = vk::ShaderStageFlagBits::eMeshEXT;
 
-	std::array <vk::DescriptorSetLayoutBinding, 2> bindings {
-		points, patches
+	std::array <vk::DescriptorSetLayoutBinding, 4> bindings {
+		points, features, patches, network
 	};
 
 	vk::DescriptorSetLayoutCreateInfo dsl_info {};
@@ -673,6 +688,9 @@ int main(int argc, char *argv[])
 		std::vector <glm::vec4> vertices;
 		std::vector <float> features;
 
+		uint32_t patch_count;
+		uint32_t feature_size;
+
 		std::array <Tensor, LAYERS> weights;
 		std::array <Tensor, LAYERS> biases;
 	} ngf;
@@ -692,6 +710,9 @@ int main(int argc, char *argv[])
 		patches.resize(sizes[0]);
 		vertices.resize(sizes[1]);
 		features.resize(sizes[1] * sizes[2]);
+
+		ngf.patch_count = sizes[0];
+		ngf.feature_size = sizes[2];
 
 		fin.read(reinterpret_cast <char *> (patches.data()), patches.size() * sizeof(glm::ivec4));
 		fin.read(reinterpret_cast <char *> (vertices.data()), vertices.size() * sizeof(glm::vec3));
@@ -725,6 +746,11 @@ int main(int argc, char *argv[])
 			w.height = 1;
 			w.vec.resize(size);
 			fin.read(reinterpret_cast <char *> (w.vec.data()), w.vec.size() * sizeof(float));
+
+			printf("BIAS %d: ", i);
+			for (float f : w.vec)
+				printf("%f ", f);
+			printf("\n");
 
 			biases[i] = w;
 		}
@@ -792,6 +818,7 @@ int main(int argc, char *argv[])
 		littlevk::Buffer points;
 		littlevk::Buffer features;
 		littlevk::Buffer patches;
+		littlevk::Buffer network;
 		vk::DescriptorSet dset;
 	} vk_ngf_buffers;
 
@@ -810,13 +837,33 @@ int main(int argc, char *argv[])
 			engine.memory_properties
 		).unwrap(engine.dal);
 
-		// vk_ngf_buffers.patches = littlevk::buffer(
-		// 	engine.device,
-		// 	ngf.patches,
-		// 	vk::BufferUsageFlagBits::eStorageBuffer,
-		// 	engine.memory_properties
-		// ).unwrap(engine.dal);
+		vk_ngf_buffers.features = littlevk::buffer(
+			engine.device,
+			ngf.features,
+			vk::BufferUsageFlagBits::eStorageBuffer,
+			engine.memory_properties
+		).unwrap(engine.dal);
 
+		// First in the neural network weights
+		std::vector <float> network;
+		for (int32_t i = 0; i < LAYERS; i++) {
+			network.insert(network.begin(), ngf.weights[i].vec.begin(), ngf.weights[i].vec.end());
+			network.insert(network.begin(), ngf.biases[i].vec.begin(), ngf.biases[i].vec.end());
+		}
+
+		printf("first 64 network terms: ");
+		for (int32_t i = 0; i < 64; i++)
+			printf("%f ", network[i]);
+		printf("\n");
+
+		vk_ngf_buffers.network = littlevk::buffer(
+			engine.device,
+			network,
+			vk::BufferUsageFlagBits::eStorageBuffer,
+			engine.memory_properties
+		).unwrap(engine.dal);
+
+		// Bind resources
 		vk::DescriptorSetAllocateInfo info {};
 		info.descriptorPool = engine.descriptor_pool;
 		info.descriptorSetCount = 1;
@@ -824,8 +871,10 @@ int main(int argc, char *argv[])
 
 		vk_ngf_buffers.dset = engine.device.allocateDescriptorSets(info).front();
 
-		littlevk::bind(engine.device, vk_ngf_buffers.dset, vk_ngf_buffers.points, 0);
-		littlevk::bind(engine.device, vk_ngf_buffers.dset, vk_ngf_buffers.patches, 2);
+		littlevk::bind(engine.device, vk_ngf_buffers.dset, vk_ngf_buffers.points,   0);
+		littlevk::bind(engine.device, vk_ngf_buffers.dset, vk_ngf_buffers.features, 1);
+		littlevk::bind(engine.device, vk_ngf_buffers.dset, vk_ngf_buffers.patches,  2);
+		littlevk::bind(engine.device, vk_ngf_buffers.dset, vk_ngf_buffers.network,  3);
 	}
 
 	// for (int i = 0; i < 1000; i++)
@@ -845,35 +894,43 @@ int main(int argc, char *argv[])
 
 		render_pass_begin(engine, cmd, op);
 
-		const auto &ppl = activate_pipeline(engine, cmd);
+		// const auto &ppl = activate_pipeline(engine, cmd);
 
-		BasePushConstants push_constants = engine.push_constants;
-		push_constants.model = Transform().matrix();
+		// cmd.pushConstants <BasePushConstants>
+		// (
+		// 	ppl.layout,
+		// 	vk::ShaderStageFlagBits::eVertex,
+		// 	0, push_constants
+		// );
 
-		cmd.pushConstants <BasePushConstants>
-		(
-			ppl.layout,
-			vk::ShaderStageFlagBits::eVertex,
-			0, push_constants
-		);
-
-		cmd.bindVertexBuffers(0, { vk_ref.vertices.buffer }, { 0 });
-		cmd.bindIndexBuffer(vk_ref.triangles.buffer, 0, vk::IndexType::eUint32);
-		cmd.drawIndexed(vk_ref.indices, 1, 0, 0, 0);
+		// cmd.bindVertexBuffers(0, { vk_ref.vertices.buffer }, { 0 });
+		// cmd.bindIndexBuffer(vk_ref.triangles.buffer, 0, vk::IndexType::eUint32);
+		// cmd.drawIndexed(vk_ref.indices, 1, 0, 0, 0);
 
 		// const auto &ppl = activate_pipeline(engine, cmd);
 		// TODO: active pipeline by key
+
 		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.ngf_meshlet.pipeline);
 		cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, engine.ngf_meshlet.layout, 0, { vk_ngf_buffers.dset }, nullptr);
 
-		cmd.pushConstants <BasePushConstants>
+		NGFPushConstants push_constants {
+			engine.push_constants.model,
+			engine.push_constants.view,
+			engine.push_constants.proj,
+			ngf.feature_size
+		};
+		push_constants.model = Transform().matrix();
+		// push_constants.feature_size = ngf.feature_size;
+
+		cmd.pushConstants <NGFPushConstants>
 		(
 			engine.ngf_meshlet.layout,
 			vk::ShaderStageFlagBits::eMeshEXT,
 			0, push_constants
 		);
 
-		cmd.drawMeshTasksEXT(ngf.patches.size(), 1, 1);
+		cmd.drawMeshTasksEXT(ngf.patch_count, 1, 1);
+		// cmd.drawMeshTasksEXT(1, 1, 1);
 
 		render_pass_end(engine, cmd);
 
