@@ -1,11 +1,17 @@
 #version 450
 
+#extension GL_GOOGLE_include_directive: require
 #extension GL_EXT_mesh_shader: require
-// #extension GL_KHR_shader_subgroup_ballot: require
+#extension GL_EXT_debug_printf : require
+
+#include "payload.h"
+
+taskPayloadSharedEXT Payload payload;
 
 void main()
 {
-	// uvec4 validVotes = subgroupBallot(true);
-	// uint validCount = subgroupBallotBitCount(validVotes);
-	EmitMeshTasksEXT(4, 4, 1);
+	// TODO: dyanmic LOD
+	// debugPrintfEXT("TASK ID %d\n", gl_GlobalInvocationID.x);
+	payload.pindex = gl_GlobalInvocationID.x;
+	EmitMeshTasksEXT(1, 1, 1);
 }

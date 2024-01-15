@@ -11,6 +11,8 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
 
+#include <vulkan/vulkan_enums.hpp>
+
 #include "mesh.hpp"
 #include "microlog.h"
 #include "util.hpp"
@@ -53,6 +55,7 @@ struct BasePushConstants {
 struct Pipeline {
 	vk::Pipeline pipeline;
 	vk::PipelineLayout layout;
+	vk::DescriptorSetLayout dsl;
 };
 
 Pipeline ppl_normals
@@ -167,15 +170,41 @@ Pipeline ppl_ngf
 
 	// Create the pipeline
 	// TODO: put mvp and stuff here later
-	// vk::PushConstantRange push_constant_range {
-	// 	vk::ShaderStageFlagBits::eVertex,
-	// 	0, sizeof(BasePushConstants)
+	vk::PushConstantRange push_constant_range {
+		vk::ShaderStageFlagBits::eMeshEXT,
+		0, sizeof(BasePushConstants)
+	};
+
+	// Buffer bindings
+	vk::DescriptorSetLayoutBinding points {};
+	points.binding = 0;
+	points.descriptorCount = 1;
+	points.descriptorType = vk::DescriptorType::eStorageBuffer;
+	points.stageFlags = vk::ShaderStageFlagBits::eMeshEXT;
+
+	vk::DescriptorSetLayoutBinding patches {};
+	patches.binding = 2;
+	patches.descriptorCount = 1;
+	patches.descriptorType = vk::DescriptorType::eStorageBuffer;
+	patches.stageFlags = vk::ShaderStageFlagBits::eMeshEXT;
+
+	// 	0, vk::DescriptorType::eStorageBuffer,
+	// 	vk::ShaderStageFlagBits::eMeshEXT, nullptr
 	// };
 
+	std::array <vk::DescriptorSetLayoutBinding, 2> bindings {
+		points, patches
+	};
+
+	vk::DescriptorSetLayoutCreateInfo dsl_info {};
+	dsl_info.bindingCount = bindings.size();
+	dsl_info.pBindings = bindings.data();
+
+	ppl.dsl = device.createDescriptorSetLayout(dsl_info);
 	ppl.layout = littlevk::pipeline_layout(
 		device,
 		vk::PipelineLayoutCreateInfo {
-			{}, {}, {}
+			{}, ppl.dsl, push_constant_range
 		}
 	).unwrap(dal);
 
@@ -264,6 +293,7 @@ struct Engine : littlevk::Skeleton {
 
 	vk::RenderPass render_pass;
 	vk::CommandPool command_pool;
+	vk::DescriptorPool descriptor_pool;
 
 	std::vector <vk::Framebuffer> framebuffers;
 	std::vector <vk::CommandBuffer> command_buffers;
@@ -356,6 +386,7 @@ struct Engine : littlevk::Skeleton {
 		printf("  max (mesh) shared memory: %d KB\n", ms_properties.maxMeshSharedMemorySize / 1024);
 		printf("  max output vertices: %d\n", ms_properties.maxMeshOutputVertices);
 		printf("  max output primitives: %d\n", ms_properties.maxMeshOutputPrimitives);
+		printf("  max work group invocations: %d\n", ms_properties.maxMeshWorkGroupInvocations);
 
 		// Configure the features
 		vk::PhysicalDeviceMeshShaderFeaturesEXT ms_ft = {};
@@ -421,6 +452,22 @@ struct Engine : littlevk::Skeleton {
 			engine.command_pool,
 			vk::CommandBufferLevel::ePrimary, 2
 		});
+
+		// Allocate descriptor pool
+		vk::DescriptorPoolSize pool_sizes[] = {
+			{ vk::DescriptorType::eStorageBuffer, 1 << 10 },
+		};
+
+		vk::DescriptorPoolCreateInfo pool_info = {};
+		pool_info.poolSizeCount = sizeof(pool_sizes) / sizeof(pool_sizes[0]);
+		pool_info.pPoolSizes = pool_sizes;
+		pool_info.maxSets = 1 << 10;
+
+		engine.descriptor_pool = littlevk::descriptor_pool
+		(
+			engine.device,
+			pool_info
+		).unwrap(engine.dal);
 
 		// Present syncronization
 		engine.sync = littlevk::present_syncronization(engine.device, 2).unwrap(engine.dal);
@@ -608,6 +655,7 @@ int main(int argc, char *argv[])
 
 	Mesh reference = *Mesh::load(path_ref).begin();
 	reference = Mesh::normalize(reference);
+	reference.normals = smooth_normals(reference);
 
 	ulog_info("testbed", "loaded mesh with %d vertices and %d faces\n", reference.vertices.size(), reference.triangles.size());
 
@@ -622,7 +670,7 @@ int main(int argc, char *argv[])
 
 	struct NGF {
 		std::vector <glm::ivec4> patches;
-		std::vector <glm::vec3> vertices;
+		std::vector <glm::vec4> vertices;
 		std::vector <float> features;
 
 		std::array <Tensor, LAYERS> weights;
@@ -682,13 +730,16 @@ int main(int argc, char *argv[])
 		}
 
 		ngf.patches = patches;
-		ngf.vertices = vertices;
 		ngf.features = features;
 		ngf.weights = weights;
 		ngf.biases = biases;
-	}
 
-	reference.normals = smooth_normals(reference);
+		// ngf.vertices = vertices;
+		// Need special care for vertices to align them properly
+		ngf.vertices.resize(vertices.size());
+		for (int32_t i = 0; i < vertices.size(); i++)
+			ngf.vertices[i] = glm::vec4(vertices[i], 0.0f);
+	}
 
 	Mesh ngf_base;
 
@@ -724,6 +775,7 @@ int main(int argc, char *argv[])
 			VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 			VK_EXT_MESH_SHADER_EXTENSION_NAME,
 			VK_KHR_MAINTENANCE_4_EXTENSION_NAME,
+			VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,
 		});
 	};
 
@@ -735,8 +787,49 @@ int main(int argc, char *argv[])
 	VulkanMesh vk_ref = VulkanMesh::from(engine, reference);
 	VulkanMesh vk_ngf = VulkanMesh::from(engine, ngf_base);
 
-	for (int i = 0; i < 1000; i++)
-		ulog_progress("bar", i/1000.0f);
+	// Upload NGF as Vulkan buffers
+	struct {
+		littlevk::Buffer points;
+		littlevk::Buffer features;
+		littlevk::Buffer patches;
+		vk::DescriptorSet dset;
+	} vk_ngf_buffers;
+
+	{
+		vk_ngf_buffers.points = littlevk::buffer(
+			engine.device,
+			ngf.vertices,
+			vk::BufferUsageFlagBits::eStorageBuffer,
+			engine.memory_properties
+		).unwrap(engine.dal);
+
+		vk_ngf_buffers.patches = littlevk::buffer(
+			engine.device,
+			ngf.patches,
+			vk::BufferUsageFlagBits::eStorageBuffer,
+			engine.memory_properties
+		).unwrap(engine.dal);
+
+		// vk_ngf_buffers.patches = littlevk::buffer(
+		// 	engine.device,
+		// 	ngf.patches,
+		// 	vk::BufferUsageFlagBits::eStorageBuffer,
+		// 	engine.memory_properties
+		// ).unwrap(engine.dal);
+
+		vk::DescriptorSetAllocateInfo info {};
+		info.descriptorPool = engine.descriptor_pool;
+		info.descriptorSetCount = 1;
+		info.pSetLayouts = &engine.ngf_meshlet.dsl;
+
+		vk_ngf_buffers.dset = engine.device.allocateDescriptorSets(info).front();
+
+		littlevk::bind(engine.device, vk_ngf_buffers.dset, vk_ngf_buffers.points, 0);
+		littlevk::bind(engine.device, vk_ngf_buffers.dset, vk_ngf_buffers.patches, 2);
+	}
+
+	// for (int i = 0; i < 1000; i++)
+	// 	ulog_progress("bar", i/1000.0f);
 
 	size_t frame = 0;
 	while (valid_window(engine)) {
@@ -768,14 +861,19 @@ int main(int argc, char *argv[])
 		cmd.bindIndexBuffer(vk_ref.triangles.buffer, 0, vk::IndexType::eUint32);
 		cmd.drawIndexed(vk_ref.indices, 1, 0, 0, 0);
 
-		cmd.bindVertexBuffers(0, { vk_ngf.vertices.buffer }, { 0 });
-		cmd.bindIndexBuffer(vk_ngf.triangles.buffer, 0, vk::IndexType::eUint32);
-		cmd.drawIndexed(vk_ngf.indices, 1, 0, 0, 0);
-
 		// const auto &ppl = activate_pipeline(engine, cmd);
 		// TODO: active pipeline by key
 		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.ngf_meshlet.pipeline);
-		cmd.drawMeshTasksEXT(1, 1, 1);
+		cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, engine.ngf_meshlet.layout, 0, { vk_ngf_buffers.dset }, nullptr);
+
+		cmd.pushConstants <BasePushConstants>
+		(
+			engine.ngf_meshlet.layout,
+			vk::ShaderStageFlagBits::eMeshEXT,
+			0, push_constants
+		);
+
+		cmd.drawMeshTasksEXT(ngf.patches.size(), 1, 1);
 
 		render_pass_end(engine, cmd);
 
