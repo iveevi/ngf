@@ -41,3 +41,7 @@ std::vector <torch::Tensor> parametrize_parallel
 // Triangulation utilities
 // TODO: refactor
 torch::Tensor triangulate_shorted(const torch::Tensor &, size_t, size_t);
+
+// Loading a mesh
+std::tuple <torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+load_mesh(const std::string &);

@@ -57,8 +57,10 @@ struct NGFPushConstants {
 	glm::mat4 model;
 	glm::mat4 view;
 	glm::mat4 proj;
+	float time;
 };
 
+// General pipeline structure
 struct Pipeline {
 	vk::Pipeline pipeline;
 	vk::PipelineLayout layout;
@@ -178,7 +180,7 @@ Pipeline ppl_ngf
 	// Create the pipeline
 	// TODO: put mvp and stuff here later
 	vk::PushConstantRange push_constant_range {
-		vk::ShaderStageFlagBits::eMeshEXT,
+		vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT,
 		0, sizeof(NGFPushConstants)
 	};
 
@@ -927,14 +929,16 @@ int main(int argc, char *argv[])
 			engine.push_constants.model,
 			engine.push_constants.view,
 			engine.push_constants.proj,
+			(float) glfwGetTime()
 		};
+
 		push_constants.model = Transform().matrix();
 		// push_constants.feature_size = ngf.feature_size;
 
 		cmd.pushConstants <NGFPushConstants>
 		(
 			engine.ngf_meshlet.layout,
-			vk::ShaderStageFlagBits::eMeshEXT,
+			vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT,
 			0, push_constants
 		);
 

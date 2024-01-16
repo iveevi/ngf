@@ -1,15 +1,18 @@
-#version 450
+#version 460
 
 #extension GL_GOOGLE_include_directive: require
 #extension GL_EXT_mesh_shader: require
 #extension GL_EXT_debug_printf : require
+#extension GL_EXT_control_flow_attributes : require
 
 #include "payload.h"
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+const uint WORK_GROUP_SIZE = 8;
 
-// NOTE: each mesh shader does one half of a patch
-layout (triangles, max_vertices = 256, max_primitives = 15 * 15) out;
+layout (local_size_x = WORK_GROUP_SIZE, local_size_y = WORK_GROUP_SIZE) in;
+
+// NOTE: each mesh shader does at least a quadrant of a patch
+layout (triangles, max_vertices = 64, max_primitives = 98) out;
 
 // Inputs
 taskPayloadSharedEXT Payload payload;
@@ -18,6 +21,7 @@ layout (push_constant) uniform PushConstants {
 	mat4 model;
 	mat4 view;
 	mat4 proj;
+	float time;
 };
 
 layout (binding = 0) readonly buffer Points
@@ -63,7 +67,7 @@ layout (binding = 3) readonly buffer Layers
 // Outputs
 // TODO: also vertex position
 layout (location = 0) out vec3 position[];
-layout (location = 1) out vec3 normals[];
+layout (location = 1) out vec3 color[];
 
 vec4 project(vec3 p)
 {
@@ -113,6 +117,8 @@ vec3 eval(ivec4 complex, float u, float v)
 	float ffin[FFIN];
 
 	uint k = 0;
+
+	[[unroll]]
 	for (uint i = 0; i < FEATURE_SIZE; i++)
 		ffin[k++] = feature[i];
 
@@ -180,7 +186,8 @@ vec3 eval(ivec4 complex, float u, float v)
 	isize = 64;
 	osize = 3;
 
-	for (uint i = 0; i < osize; i++) {
+	[[unroll]]
+	for (uint i = 0; i < 3; i++) {
 		float sum = 0.0f;
 		for (uint j = 0; j < isize; j++)
 			sum += layers.weight3[i * isize + j] * hidden2[j];
@@ -196,10 +203,33 @@ vec3 eval(ivec4 complex, float u, float v)
 
 void main()
 {
-	const uint TRIS = 7;
-	SetMeshOutputsEXT(8 * 8, TRIS * TRIS);
+	// int qwidth = 7;
+	// int qheight = 7;
+	const uint MAX_QSIZE = WORK_GROUP_SIZE - 1;
 
-	vec2 uv = gl_LocalInvocationID.xy/float(TRIS);
+	// TODO: need dyanmic QSIZE/stride depending on resolution
+	uvec2 offset = gl_LocalInvocationID.xy + (MAX_QSIZE * gl_WorkGroupID.xy);
+	if (offset.x > payload.resolution || offset.y > payload.resolution)
+		return;
+
+	uvec2 offset_triangles = MAX_QSIZE * gl_WorkGroupID.xy;
+
+	uint total_qsize = payload.resolution - 1;
+	uint qwidth = min(MAX_QSIZE, total_qsize - offset_triangles.x);
+	uint qheight = min(MAX_QSIZE, total_qsize - offset_triangles.y);
+
+	uint vwidth = qwidth + 1;
+	uint vheight = qheight + 1;
+	SetMeshOutputsEXT(vwidth * vheight, 2 * qwidth * qheight);
+
+	// TODO: skip if over the needed vertex res
+	debugPrintfEXT("work group (%d, %d), triangle batch is (%d, %d) out of total (%d, %d)\n",
+		gl_WorkGroupID.x, gl_WorkGroupID.y,
+		qwidth, qheight,
+		total_qsize, total_qsize);
+
+	vec2 uv = offset/float(payload.resolution - 1);
+
 	vec3 v = eval(patches.data[payload.pindex], uv.x, uv.y);
 
 	gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = project(v);
@@ -207,11 +237,20 @@ void main()
 	// Send position to fragment shader for normal vector calculations
 	position[gl_LocalInvocationIndex] = v;
 
-	if (gl_LocalInvocationID.x < TRIS && gl_LocalInvocationID.y < TRIS) {
-		uint primitive_index = gl_LocalInvocationID.x + TRIS * gl_LocalInvocationID.y;
-		if (gl_WorkGroupID.x == 0)
-			gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(gl_LocalInvocationIndex, gl_LocalInvocationIndex + 1, gl_LocalInvocationIndex + TRIS + 1);
-		else
-			gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(gl_LocalInvocationIndex + TRIS + 2, gl_LocalInvocationIndex + 1, gl_LocalInvocationIndex + TRIS + 1);
+	if (gl_LocalInvocationID.x < qwidth && gl_LocalInvocationID.y < qheight) {
+		uint primitive_index = 2 * (gl_LocalInvocationID.x + qwidth * gl_LocalInvocationID.y);
+
+		// TODO: diagonal cutting? switch to NV mesh shaders for read access
+		gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(gl_LocalInvocationIndex, gl_LocalInvocationIndex + 1, gl_LocalInvocationIndex + WORK_GROUP_SIZE);
+		gl_PrimitiveTriangleIndicesEXT[primitive_index + 1] = uvec3(gl_LocalInvocationIndex + WORK_GROUP_SIZE + 1, gl_LocalInvocationIndex + 1, gl_LocalInvocationIndex + WORK_GROUP_SIZE);
 	}
+
+	vec3 WHEEL[4] = vec3[4](
+		vec3(1, 0, 0),
+		vec3(0, 1, 0),
+		vec3(0, 0, 1),
+		vec3(1, 1, 0)
+	);
+
+	color[gl_LocalInvocationIndex] = WHEEL[gl_WorkGroupID.x * 2 + gl_WorkGroupID.y];
 }

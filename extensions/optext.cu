@@ -1113,4 +1113,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 	m.def("mesh_deduplicate", &deduplicate, "Deduplicate mesh vertices and reindex the mesh");
 	m.def("parametrize_chart", &parametrize, "Parametrize a chart with disk topology");
 	m.def("parametrize_multicharts", &parametrize_parallel, "Parametrize multiple charts with disk topology in parallel");
+	m.def("load_mesh", &load_mesh);
 }
