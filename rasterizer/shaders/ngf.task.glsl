@@ -10,8 +10,6 @@ taskPayloadSharedEXT Payload payload;
 
 void main()
 {
-	// TODO: dyanmic LOD
-	// debugPrintfEXT("TASK ID %d\n", gl_GlobalInvocationID.x);
 	payload.pindex = gl_GlobalInvocationID.x;
-	EmitMeshTasksEXT(1, 1, 1);
+	EmitMeshTasksEXT(2, 1, 1);
 }

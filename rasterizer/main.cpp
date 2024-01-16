@@ -52,11 +52,11 @@ struct BasePushConstants {
 	glm::mat4 proj;
 };
 
+// TODO: use the same...
 struct NGFPushConstants {
 	glm::mat4 model;
 	glm::mat4 view;
 	glm::mat4 proj;
-	uint32_t feature_size;
 };
 
 struct Pipeline {
@@ -713,6 +713,7 @@ int main(int argc, char *argv[])
 
 		ngf.patch_count = sizes[0];
 		ngf.feature_size = sizes[2];
+		ulog_assert(ngf.feature_size == 20, "testbed", "Expected an NGF with feature size of 20.\n");
 
 		fin.read(reinterpret_cast <char *> (patches.data()), patches.size() * sizeof(glm::ivec4));
 		fin.read(reinterpret_cast <char *> (vertices.data()), vertices.size() * sizeof(glm::vec3));
@@ -732,6 +733,11 @@ int main(int argc, char *argv[])
 			w.vec.resize(sizes[0] * sizes[1]);
 			fin.read(reinterpret_cast <char *> (w.vec.data()), w.vec.size() * sizeof(float));
 
+			printf("\nWEIGHT %d: ", i);
+			for (float f : w.vec)
+				printf("%f ", f);
+			printf("\n");
+
 			weights[i] = w;
 		}
 
@@ -747,7 +753,7 @@ int main(int argc, char *argv[])
 			w.vec.resize(size);
 			fin.read(reinterpret_cast <char *> (w.vec.data()), w.vec.size() * sizeof(float));
 
-			printf("BIAS %d: ", i);
+			printf("\nBIAS %d: ", i);
 			for (float f : w.vec)
 				printf("%f ", f);
 			printf("\n");
@@ -837,9 +843,13 @@ int main(int argc, char *argv[])
 			engine.memory_properties
 		).unwrap(engine.dal);
 
+		std::vector <float> features = ngf.features;
+
+		float casted = *reinterpret_cast <float *> (&ngf.feature_size);
+		features.insert(features.begin(), casted);
 		vk_ngf_buffers.features = littlevk::buffer(
 			engine.device,
-			ngf.features,
+			features,
 			vk::BufferUsageFlagBits::eStorageBuffer,
 			engine.memory_properties
 		).unwrap(engine.dal);
@@ -917,7 +927,6 @@ int main(int argc, char *argv[])
 			engine.push_constants.model,
 			engine.push_constants.view,
 			engine.push_constants.proj,
-			ngf.feature_size
 		};
 		push_constants.model = Transform().matrix();
 		// push_constants.feature_size = ngf.feature_size;
@@ -930,7 +939,7 @@ int main(int argc, char *argv[])
 		);
 
 		cmd.drawMeshTasksEXT(ngf.patch_count, 1, 1);
-		// cmd.drawMeshTasksEXT(1, 1, 1);
+		// cmd.drawMeshTasksEXT(100, 1, 1);
 
 		render_pass_end(engine, cmd);
 

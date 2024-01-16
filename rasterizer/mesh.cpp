@@ -5,7 +5,6 @@
 #include "mesh.hpp"
 #include "microlog.h"
 
-
 std::vector <glm::vec3> smooth_normals(const Mesh &m)
 {
 	std::vector <glm::vec3> normals;
