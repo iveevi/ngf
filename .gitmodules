@@ -10,3 +10,6 @@
 [submodule "rasterizer/stb"]
 	path = rasterizer/stb
 	url = https://github.com/nothings/stb
+[submodule "rasterizer/implot"]
+	path = rasterizer/implot
+	url = https://github.com/epezent/implot

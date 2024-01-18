@@ -6,7 +6,7 @@
 
 #include "payload.h"
 
-layout (push_constant) uniform PushConstants {
+layout (push_constant) uniform NGFPushConstants {
 	mat4 model;
 	mat4 view;
 	mat4 proj;
@@ -21,10 +21,10 @@ void main()
 {
 	// TODO: compute distance and set resolution
 	payload.pindex = gl_GlobalInvocationID.x;
+	// payload.resolution = 2 + int(13 * max(0, sin(time)));
+	payload.resolution = 15;
 
-	// max resolution is 15, each work group is necessarily 8 x 8 and might overflow...
-	payload.resolution = 2 + int(7 * sin(time) + 7);
-
+	// TODO: group offsets
 	uint groups = (payload.resolution - 1 + 6)/7;
 	EmitMeshTasksEXT(groups, groups, 1);
 }

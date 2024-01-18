@@ -17,7 +17,7 @@ layout (triangles, max_vertices = 64, max_primitives = 98) out;
 // Inputs
 taskPayloadSharedEXT Payload payload;
 
-layout (push_constant) uniform PushConstants {
+layout (push_constant) uniform NGFPushConstants {
 	mat4 model;
 	mat4 view;
 	mat4 proj;
@@ -65,9 +65,8 @@ layout (binding = 3) readonly buffer Layers
 } layers;
 
 // Outputs
-// TODO: also vertex position
 layout (location = 0) out vec3 position[];
-layout (location = 1) out vec3 color[];
+layout (location = 2) out flat uint pindex[];
 
 vec4 project(vec3 p)
 {
@@ -81,6 +80,12 @@ float leaky_relu(float x)
 {
 	return max(x, 0.01f * x);
 }
+
+// Eval variables
+float hidden0[64];
+float hidden1[64];
+float hidden2[64];
+
 
 vec3 eval(ivec4 complex, float u, float v)
 {
@@ -98,7 +103,7 @@ vec3 eval(ivec4 complex, float u, float v)
 	vec3 vertex = v0 + v1 + v2 + v3;
 
 	// TODO: vectorize this calculation by packing (and padding) features into vec4s
-	float feature[64];
+	float feature[FEATURE_SIZE];
 	for (uint i = 0; i < FEATURE_SIZE; i++) {
 		float f0 = features.data[complex.x * FEATURE_SIZE + i];
 		float f1 = features.data[complex.y * FEATURE_SIZE + i];
@@ -140,10 +145,6 @@ vec3 eval(ivec4 complex, float u, float v)
 	}
 
 	// Network evaluation
-	float hidden0[64];
-	float hidden1[64];
-	float hidden2[64];
-
 	uint isize;
 	uint osize;
 
@@ -223,19 +224,19 @@ void main()
 	SetMeshOutputsEXT(vwidth * vheight, 2 * qwidth * qheight);
 
 	// TODO: skip if over the needed vertex res
-	debugPrintfEXT("work group (%d, %d), triangle batch is (%d, %d) out of total (%d, %d)\n",
-		gl_WorkGroupID.x, gl_WorkGroupID.y,
-		qwidth, qheight,
-		total_qsize, total_qsize);
+	// debugPrintfEXT("work group (%d, %d), triangle batch is (%d, %d) out of total (%d, %d)\n",
+	// 	gl_WorkGroupID.x, gl_WorkGroupID.y,
+	// 	qwidth, qheight,
+	// 	total_qsize, total_qsize);
 
 	vec2 uv = offset/float(payload.resolution - 1);
-
 	vec3 v = eval(patches.data[payload.pindex], uv.x, uv.y);
 
 	gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = project(v);
 
 	// Send position to fragment shader for normal vector calculations
-	position[gl_LocalInvocationIndex] = v;
+	position[gl_LocalInvocationIndex] = vec3(model * vec4(v, 1.0f));
+	pindex[gl_LocalInvocationIndex] = payload.pindex;
 
 	if (gl_LocalInvocationID.x < qwidth && gl_LocalInvocationID.y < qheight) {
 		uint primitive_index = 2 * (gl_LocalInvocationID.x + qwidth * gl_LocalInvocationID.y);
@@ -244,13 +245,4 @@ void main()
 		gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(gl_LocalInvocationIndex, gl_LocalInvocationIndex + 1, gl_LocalInvocationIndex + WORK_GROUP_SIZE);
 		gl_PrimitiveTriangleIndicesEXT[primitive_index + 1] = uvec3(gl_LocalInvocationIndex + WORK_GROUP_SIZE + 1, gl_LocalInvocationIndex + 1, gl_LocalInvocationIndex + WORK_GROUP_SIZE);
 	}
-
-	vec3 WHEEL[4] = vec3[4](
-		vec3(1, 0, 0),
-		vec3(0, 1, 0),
-		vec3(0, 0, 1),
-		vec3(1, 1, 0)
-	);
-
-	color[gl_LocalInvocationIndex] = WHEEL[gl_WorkGroupID.x * 2 + gl_WorkGroupID.y];
 }

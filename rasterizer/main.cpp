@@ -11,7 +11,7 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
 
-#include <vulkan/vulkan_enums.hpp>
+#include <implot.h>
 
 #include "mesh.hpp"
 #include "microlog.h"
@@ -53,11 +53,17 @@ struct BasePushConstants {
 };
 
 // TODO: use the same...
-struct NGFPushConstants {
+struct alignas(16) NGFPushConstants {
 	glm::mat4 model;
 	glm::mat4 view;
 	glm::mat4 proj;
 	float time;
+};
+
+struct ShadingPushConstants {
+	alignas(16) glm::vec3 viewing;
+	alignas(16) glm::vec3 color;
+	uint32_t mode;
 };
 
 // General pipeline structure
@@ -141,6 +147,7 @@ Pipeline ppl_ngf
 	Pipeline ppl;
 
 	// Read shader source
+	// TODO: shaders dir
 	std::string task_source = readfile("../shaders/ngf.task.glsl");
 	std::string mesh_source = readfile("../shaders/ngf.mesh.glsl");
 	std::string fragment_source = readfile("../shaders/ngf.frag.glsl");
@@ -179,9 +186,19 @@ Pipeline ppl_ngf
 
 	// Create the pipeline
 	// TODO: put mvp and stuff here later
-	vk::PushConstantRange push_constant_range {
+	vk::PushConstantRange mesh_task_pc {
 		vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT,
 		0, sizeof(NGFPushConstants)
+	};
+
+	vk::PushConstantRange shading_pc {
+		vk::ShaderStageFlagBits::eFragment,
+		sizeof(NGFPushConstants), sizeof(ShadingPushConstants)
+	};
+
+	// TODO: inline this stuff
+	std::array <vk::PushConstantRange, 2> push_constants {
+		mesh_task_pc, shading_pc
 	};
 
 	// Buffer bindings
@@ -221,7 +238,7 @@ Pipeline ppl_ngf
 	ppl.layout = littlevk::pipeline_layout(
 		device,
 		vk::PipelineLayoutCreateInfo {
-			{}, ppl.dsl, push_constant_range
+			{}, ppl.dsl, push_constants
 		}
 	).unwrap(dal);
 
@@ -382,6 +399,9 @@ struct Engine : littlevk::Skeleton {
 				ImGui_ImplVulkan_CreateFontsTexture(cmd);
 			}
 		);
+
+		// Configure ImPlot as well
+		ImPlot::CreateContext();
 	}
 
 	static Engine from(const vk::PhysicalDevice &phdev) {
@@ -425,7 +445,7 @@ struct Engine : littlevk::Skeleton {
 		printf("  m4: %s\n", m4_ft.maintenance4 ? "true" : "false");
 
 		// Initialize the device and surface
-		engine.skeletonize(phdev, { 1000, 1000 }, "Neural Geometry Fields Testbed", ft);
+		engine.skeletonize(phdev, { 1000, 1000 }, "Neural Geometry Fields Testbed", ft, vk::PresentModeKHR::eImmediate);
 
 		// Create the render pass
 		engine.render_pass = littlevk::default_color_depth_render_pass
@@ -643,7 +663,7 @@ void render_pass_begin(const Engine &engine, const vk::CommandBuffer &cmd, const
 	const auto &rpbi = littlevk::default_rp_begin_info <2>
 		(engine.render_pass, engine.framebuffers[op.index], engine.window)
 		.clear_value(0, vk::ClearColorValue {
-			std::array <float, 4> { 1.0f, 1.0f, 1.0f, 1.0f }
+			std::array <float, 4> { 0.0f, 0.0f, 0.0f, 0.0f }
 		});
 
 	return cmd.beginRenderPass(rpbi, vk::SubpassContents::eInline);
@@ -735,10 +755,10 @@ int main(int argc, char *argv[])
 			w.vec.resize(sizes[0] * sizes[1]);
 			fin.read(reinterpret_cast <char *> (w.vec.data()), w.vec.size() * sizeof(float));
 
-			printf("\nWEIGHT %d: ", i);
-			for (float f : w.vec)
-				printf("%f ", f);
-			printf("\n");
+			// printf("\nWEIGHT %d: ", i);
+			// for (float f : w.vec)
+			// 	printf("%f ", f);
+			// printf("\n");
 
 			weights[i] = w;
 		}
@@ -755,10 +775,10 @@ int main(int argc, char *argv[])
 			w.vec.resize(size);
 			fin.read(reinterpret_cast <char *> (w.vec.data()), w.vec.size() * sizeof(float));
 
-			printf("\nBIAS %d: ", i);
-			for (float f : w.vec)
-				printf("%f ", f);
-			printf("\n");
+			// printf("\nBIAS %d: ", i);
+			// for (float f : w.vec)
+			// 	printf("%f ", f);
+			// printf("\n");
 
 			biases[i] = w;
 		}
@@ -808,6 +828,7 @@ int main(int argc, char *argv[])
 		return littlevk::physical_device_able(phdev, {
 			VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 			VK_EXT_MESH_SHADER_EXTENSION_NAME,
+			VK_NV_MESH_SHADER_EXTENSION_NAME,
 			VK_KHR_MAINTENANCE_4_EXTENSION_NAME,
 			VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,
 		});
@@ -892,6 +913,12 @@ int main(int argc, char *argv[])
 	// for (int i = 0; i < 1000; i++)
 	// 	ulog_progress("bar", i/1000.0f);
 
+	// Plotting data
+	constexpr uint32_t SAMPLES = 100;
+
+	std::deque <float> frametimes;
+	uint32_t mode = 1;
+
 	size_t frame = 0;
 	while (valid_window(engine)) {
 		// Get events
@@ -925,25 +952,92 @@ int main(int argc, char *argv[])
 		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.ngf_meshlet.pipeline);
 		cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, engine.ngf_meshlet.layout, 0, { vk_ngf_buffers.dset }, nullptr);
 
-		NGFPushConstants push_constants {
+		float time = glfwGetTime();
+
+		// Task/Mesh shader push constants
+		NGFPushConstants ngf_pc {
 			engine.push_constants.model,
 			engine.push_constants.view,
 			engine.push_constants.proj,
-			(float) glfwGetTime()
+			time
 		};
 
-		push_constants.model = Transform().matrix();
-		// push_constants.feature_size = ngf.feature_size;
+		Transform tf;
+		// tf.rotation.y = fmod(10.0f * time, 360.0f);
+		ngf_pc.model = tf.matrix();
 
 		cmd.pushConstants <NGFPushConstants>
 		(
 			engine.ngf_meshlet.layout,
 			vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT,
-			0, push_constants
+			0, ngf_pc
 		);
 
+		// Fragment shader push constants
+		ShadingPushConstants shading_pc {
+			.viewing = glm::vec3(glm::inverse(ngf_pc.view) * glm::vec4(0, 0, 1, 0)),
+			.color = glm::vec3(1.0f, 0.5f, 0.2f),
+			.mode = mode
+		};
+
+		cmd.pushConstants <ShadingPushConstants>
+		(
+			engine.ngf_meshlet.layout,
+			vk::ShaderStageFlagBits::eFragment,
+			sizeof(NGFPushConstants), shading_pc
+		);
+
+		// TODO: time this process (timer class)
 		cmd.drawMeshTasksEXT(ngf.patch_count, 1, 1);
-		// cmd.drawMeshTasksEXT(100, 1, 1);
+
+		// ImGui pass
+		{
+			ImGui_ImplVulkan_NewFrame();
+			ImGui_ImplGlfw_NewFrame();
+			ImGui::NewFrame();
+
+			ImGui::Begin("Info");
+
+			float ft = ImGui::GetIO().DeltaTime;
+			ImGui::Text("Frame time: %f ms / %d fps", ft * 1000.0f, int32_t(1.0f/ft));
+			ImGui::Text("Number of active patches: %d\n", ngf.patch_count);
+			ImGui::Separator();
+
+			static const std::unordered_map <uint32_t, std::string> mode_descriptions {
+				{ 0, "Shaded" },
+				{ 1, "Normal" },
+				{ 2, "Patches" }
+			};
+
+			ImGui::Text("Render mode");
+			for (const auto &[m, desc] : mode_descriptions) {
+				if (ImGui::RadioButton(desc.c_str(), mode == m))
+					mode = m;
+			}
+
+			// ImGui::Separator();
+			//
+			// frametimes.push_back(1000.0f * ft);
+			// if (frametimes.size() > SAMPLES)
+			// 	frametimes.pop_front();
+			//
+			// if (ImPlot::BeginPlot("Frametime")) {
+			// 	std::vector <float> flat(frametimes.begin(), frametimes.end());
+			// 	float max = 0.0f;
+			// 	for (float f : flat)
+			// 		max = std::max(max, f);
+			//
+			// 	ImPlot::SetupAxesLimits(0, 100, 0, max);
+			// 	ImPlot::SetNextAxisLimits(0, 100, 0, max);
+			// 	ImPlot::PlotLine("Frametimes", flat.data(), flat.size());
+			// 	ImPlot::EndPlot();
+			// }
+
+			ImGui::End();
+
+			ImGui::Render();
+			ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+		}
 
 		render_pass_end(engine, cmd);
 

@@ -23,7 +23,9 @@ add_library(imgui OBJECT
 	imgui/imgui_widgets.cpp
 	imgui/imgui_tables.cpp
 	imgui/backends/imgui_impl_glfw.cpp
-	imgui/backends/imgui_impl_vulkan.cpp)
+	imgui/backends/imgui_impl_vulkan.cpp
+	implot/implot.cpp
+	implot/implot_items.cpp)
 
 add_executable(testbed
 	main.cpp
@@ -40,4 +42,4 @@ target_link_libraries(testbed
 	OpenMP::OpenMP_CXX
 	Vulkan::Vulkan)
 
-include_directories(. ../thirdparty/glm imgui)
+include_directories(. ../thirdparty/glm imgui implot)
