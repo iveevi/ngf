@@ -1,16 +1,6 @@
 import torch
 
 def compute_face_normals(verts, faces):
-    """
-    Compute per-face normals.
-
-    Parameters
-    ----------
-    verts : torch.Tensor
-        Vertex positions
-    faces : torch.Tensor
-        Triangle faces
-    """
     fi = torch.transpose(faces, 0, 1).long()
     verts = torch.transpose(verts, 0, 1)
 
@@ -18,16 +8,9 @@ def compute_face_normals(verts, faces):
                  verts.index_select(1, fi[1]),
                  verts.index_select(1, fi[2])]
 
-    # assert not torch.isnan(v[0]).any()
-    # assert not torch.isnan(v[1]).any()
-    # assert not torch.isnan(v[2]).any()
-
     c = torch.cross(v[1] - v[0], v[2] - v[0])
-    # assert not torch.isnan(c).any()
     l = torch.linalg.norm(c, dim=0)
     l = torch.where(l == 0, torch.ones_like(l), l)
-    # assert not (l == 0).any()
-
     return (c / l)
 
 def safe_acos(x):
