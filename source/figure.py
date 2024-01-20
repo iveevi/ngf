@@ -46,9 +46,7 @@ document_template = r'''
 
 \begin{document}
 \begin{center}
-\begin{tikzpicture}
 %s
-\end{tikzpicture}
 \end{center}
 \end{document}
 '''
@@ -57,7 +55,7 @@ combined_template = r'''
 \documentclass[varwidth=500cm, border=0pt]{standalone}
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
-\usepackage{libertine}
+\usepackage{libertine}measure
 \usepackage{graphicx}
 
 \begin{document}
@@ -73,10 +71,11 @@ combined_template = r'''
 '''
 
 # y label style={at={(1.07, 0.5)}, rotate=180},
+#legend style={fill=none},
 lineplot_template = r'''\begin{tikzpicture}[baseline=(current bounding box.north)]
 \begin{axis}[
     ymode=log,
-    title style={font=\small},
+    title style={font=\large},
     title=%s,
     name=%s, %s
     xshift=2cm,
@@ -84,8 +83,8 @@ lineplot_template = r'''\begin{tikzpicture}[baseline=(current bounding box.north
     height=%.2f cm,
     ylabel=%s,
     xlabel=%s,
-    legend style={draw=none, fill=none, at={(0.5, -0.4)}, anchor=north, font=\footnotesize},
     legend columns=%d,
+    legend style={draw=none, fill=none, at={(0.5, -0.4)}, anchor=north, font=\large},
     xmin=%.3f,
     xmax=%.3f,
     ymin=%.3f,
@@ -104,20 +103,20 @@ def fill_lineplot(**kwargs):
     return lineplot_template % (kwargs['title'], kwargs['codename'],
                                 kwargs['loc'], kwargs['width'],
                                 kwargs['height'], kwargs['ylabel'],
-                                kwargs['xlabel'], 1,
+                                kwargs['xlabel'], 3,
                                 kwargs['x_min'], kwargs['x_max'],
                                 kwargs['y_min'], kwargs['y_max'],
                                 kwargs['tick_step'], kwargs['plots'])
 
 def plot_marked(key, d, color, legend):
-    line = '\\addplot [mark=*, line width=2pt, color=%s] coordinates {' % color
+    line = r'\addplot [mark=*, line width=2pt, color=%s] coordinates {' % color
 
     for v in d:
         line += '(%f, %f) ' % v
     line += '};\n'
     if legend:
-        line += '\\label{plot:' + key + '}'
-        line += '\\addlegendentry{\\textsc{' + key + '}}'
+        line += r'\label{plot:' + key + '}'
+        line += r'\addlegendentry{\textsc{' + key + '}}'
 
     return line
 
@@ -129,16 +128,16 @@ def plot_transparent_end(key, d, color, legend):
     line += '};\n'
     line += '\\label{' + key + '}'
     if legend:
-        line += '\\addlegendentry{\\textsc{' + key.capitalize() + '}}\n'
+        line += r'\addlegendentry{\large \textsc{' + key.capitalize() + '}}\n'
 
     # Add coordinate at the end
     line += '\\addplot [mark=*, color=%s, forget plot] coordinates { (%f, %f) };' % (color, d[-1][0], d[-1][1])
 
     return line
 
-def lineplot(data, name, xlabel='X', ylabel='', width=8, height=6, mode='marked', at=None, legend=False):
+def lineplot(data, name, xlabel='X', ylabel='', xtick_step=10, width=8, height=6, mode='marked', at=None, legend=False):
     codename = name.lower().replace(' ', '-')
-    title = '\\textsc{%s}' % name.capitalize()
+    title = '\\textsc{%s}' % name #.capitalize()
     print('Codename', codename, 'at', at)
 
     # Generate LaTeX code
@@ -170,11 +169,11 @@ def lineplot(data, name, xlabel='X', ylabel='', width=8, height=6, mode='marked'
     print('--> yrange:', y_min, y_max)
 
     # Find best tick step (5, 10, 25, etc.)
-    tick_step = (x_max - x_min)
-    tick_step_10 = 10 ** np.floor(np.log10(tick_step))
-    tick_step_5 = tick_step_10 / 2
-    tick_step = tick_step_10 if tick_step / tick_step_10 > 25 else tick_step_5
-    tick_step = int(tick_step)
+    # tick_step = (x_max - x_min)
+    # tick_step_10 = 10 ** np.floor(np.log10(tick_step))
+    # tick_step_5 = tick_step_10 / 2
+    # tick_step = tick_step_10 if tick_step / tick_step_10 > 25 else tick_step_5
+    # tick_step = int(tick_step)
 
     loc = '' if at is None else 'at={(%s)},' % at
     addplot = '\n'.join(lines)
@@ -238,8 +237,8 @@ def results_plot(name, db):
     # primary = counts[index]
     primary, mind = 0, 1e10
     for i, entry in enumerate(db['Ours']):
-        if mind > abs(entry['count'] - 1000):
-            mind = abs(entry['count'] - 1000)
+        if mind > abs(entry['count'] - 2500):
+            mind = abs(entry['count'] - 2500)
             primary = i
 
     directory = os.path.join('media', 'figures', 'generated')
@@ -301,11 +300,11 @@ def results_plot(name, db):
         'armadillo' : (350, 450, 100, 200),
         'dragon'    : (0, 150, 500, 650),
         'metatron'  : (300, 500, 50, 250),
-        'nefertiti' : (150, 250, 100, 200),
-        'skull'     : (300, 450, 0, 150),
-        'venus'     : (100, 250, 300, 400),
+        'nefertiti' : (150, 250, 300, 500),
+        'skull'     : (520, 720, 180, 330),
+        'venus'     : (100, 250, 300, 600),
         'xyz'       : (300, 500, 250, 400),
-        'lucy'      : (50, 200, 50, 200),
+        'lucy'      : (100, 200, 300, 480),
         'einstein'  : (300, 450, 250, 400),
     }
 
@@ -338,7 +337,7 @@ def results_plot(name, db):
         box = torch.tensor([ incbox[0], incbox[2], incbox[1], incbox[3] ]).unsqueeze(0)
         img = torchvision.io.read_image(pimg)
         rgb = img[:3]
-        rgb = torchvision.utils.draw_bounding_boxes(rgb, boxes=box, colors="red", width=5) / 255
+        rgb = torchvision.utils.draw_bounding_boxes(rgb, boxes=box, colors="red", width=8) / 255
         img = torch.concat([ rgb, img[None, 3] ], dim=0)
         torchvision.utils.save_image(img, pimg)
 
@@ -368,11 +367,10 @@ def results_plot(name, db):
         chamfer_data[key] = sorted(chamfer_data[key], key=lambda x: x[0])
 
     # # Generate lineplots
-    cn0, code0 = lineplot(render_data, 'Render', ylabel=r'\textsc{Error}', xlabel='{}', width=6, height=4)
-    cn1, code1 = lineplot(normal_data, 'Normal', ylabel=r'\textsc{Error}', xlabel='{}', width=6, height=4)
-    _,   code2 = lineplot(chamfer_data, 'Chamfer', ylabel=r'\textsc{Error}', xlabel='Compression ratio', width=6, height=4, legend=True)
+    _, code0 = lineplot(render_data, '', ylabel=r'\textsc{Render}', xlabel='{}', width=6, height=4)
+    _, code2 = lineplot(chamfer_data, '', ylabel=r'\textsc{Chamfer}', xlabel='Compression ratio', width=6, height=4, legend=True)
 
-    combined = code0 + '\n' + code1 + '\n' + code2
+    combined = code0 + '\n' + code2
 
     # Create the code
     round_ten = lambda x: 5 * ((x + 4) // 5)
@@ -415,44 +413,48 @@ def results_plot(name, db):
         scaled y ticks=false
     }
 
+    %%\newcolumntype{b}{>{\columncolor{blue!25}}c}
+
     \begin{document}
         \setlength{\fboxsep}{0pt}
         \setlength{\fboxrule}{1pt}
 
         %%\begin{tabular}[H]{ccccccc}
         \begin{tblr}{
+                stretch=0,
                 cells={valign=m, halign=c},
-                row{1}={bg=lightgray, font=\bfseries, rowsep=4pt},
+                row{1}={bg=blue!25, font=\Large, rowsep=5pt},
+                column{7}={bg=white, font=\normalsize},
                 colspec={ccccccc},
         }
-            \textsc{Reference} & \textsc{NGF (Ours)} & \textsc{Reference} & \textsc{NGF (Ours)} & \textsc{QSlim} & \textsc{nvdiffmodeling} \\
-            & & & $%.0f\times$ compression & $%.0f\times$ compression & $%.0f\times$ compression
-            & \SetCell[r=4]{c}
-            \begin{minipage}{6cm}
+            { \textsc{Reference} } & { \textsc{NGF (Ours)} } & { \textsc{Reference} } & { \textsc{NGF (Ours)} } & { \textsc{QSlim} } & { \textsc{nvdiffmodeling} }
+            & \SetCell[r=6]{c}
+            \begin{minipage}{7cm}
                 %s
             \end{minipage} \\
-            \includegraphics[height=5cm]{%s} &
-            \includegraphics[height=5cm]{%s} &
-            \fbox{\includegraphics[height=4cm]{%s}} &
-            \fbox{\includegraphics[height=4cm]{%s}} &
-            \fbox{\includegraphics[height=4cm]{%s}} &
-            \fbox{\includegraphics[height=4cm]{%s}} & \\
-            & & & %.4f & %.4f & %.4f & \\
-            \includegraphics[height=5cm]{%s} &
-            \includegraphics[height=5cm]{%s} &
-            \fbox{\includegraphics[height=4cm]{%s}} &
-            \fbox{\includegraphics[height=4cm]{%s}} &
-            \fbox{\includegraphics[height=4cm]{%s}} &
-            \fbox{\includegraphics[height=4cm]{%s}} & \\
-            & & & %.4f & %.4f & %.4f & \\
+            & & & { \large $%.0f\times$ Compression } & { \large $%.0f\times$ Compression } & { \large $%.0f\times$ Compression } & \\
+            \SetCell[r=2]{c} \includegraphics[width=3cm]{%s} &
+            \SetCell[r=2]{c} \includegraphics[width=3cm]{%s} &
+            \fbox{\includegraphics[width=3cm]{%s}} &
+            \fbox{\includegraphics[width=3cm]{%s}} &
+            \fbox{\includegraphics[width=3cm]{%s}} &
+            \fbox{\includegraphics[width=3cm]{%s}} & \\
+            & & \large $\mathcal{L}_1$ & \large %.4f & \large %.4f & \large %.4f & \\
+            \SetCell[r=2]{c} \includegraphics[width=3cm]{%s} &
+            \SetCell[r=2]{c} \includegraphics[width=3cm]{%s} &
+            \fbox{\includegraphics[width=3cm]{%s}} &
+            \fbox{\includegraphics[width=3cm]{%s}} &
+            \fbox{\includegraphics[width=3cm]{%s}} &
+            \fbox{\includegraphics[width=3cm]{%s}} & \\
+            & & \large $\mathcal{L}_1$ & \large %.4f & \large %.4f & \large %.4f & \\
         \end{tblr}
         %%\end{tabular}
     \end{document}''' % (
+            combined,
+
             round_ten(primary_ngf['cratio']),
             round_ten(primary_qslim['cratio']),
             round_ten(primary_nvdiff['cratio']),
-
-            combined,
 
             abs_directory + '/render-ref.png',
             abs_directory + '/render-ngf.png',
@@ -728,13 +730,12 @@ def table(dbs):
     print(tbl.get_latex_string())
 
 def tessellation(db):
-    print(db)
-
     render = {}
     normal = {}
     chamfer = {}
 
     for scene in db:
+        print('scene', scene)
         render_line = []
         normal_line = []
         chamfer_line = []
@@ -745,9 +746,6 @@ def tessellation(db):
             chamfer_error = db[scene][entry]['chamfer']
 
             entry = int(entry)
-            # render_line.append((entry, np.log10(render_error)))
-            # normal_line.append((entry, np.log10(normal_error)))
-            # chamfer_line.append((entry, np.log10(chamfer_error)))
 
             render_line.append((entry, render_error))
             normal_line.append((entry, normal_error))
@@ -757,27 +755,145 @@ def tessellation(db):
         normal[scene] = normal_line
         chamfer[scene] = chamfer_line
 
-    n0, render_code = lineplot(render, 'Render', xlabel='Tessellation', width=8)
-    n1, normal_code = lineplot(normal, 'Normal', xlabel='Tessellation', at=n0 + '.south east', width=8, legend=True)
-    n2, chamfer_code = lineplot(chamfer, 'Chamfer', xlabel='Tessellation', ylabel='Error', at=n1 + '.south east', width=8)
+    primary = db[args.primary]
 
-    combined = render_code + '\n' + normal_code + '\n' + chamfer_code
-    combined = document_template % combined
+    images = {
+            'ref'    : primary[2]['ref'],
+            'tess2'  : primary[2]['mesh'],
+            'tess4'  : primary[4]['mesh'],
+            'tess8'  : primary[8]['mesh'],
+            'tess12' : primary[12]['mesh'],
+            'tess16' : primary[16]['mesh'],
+    }
 
-    os.makedirs('tex', exist_ok=True)
-    with open('tex/tessellation.tex', 'w') as f:
-        f.write(combined)
+    # Whitespace removal cropbox
+    cbox = cropbox(images)
 
-    synthesize_tex(combined, 'tessellation.pdf')
+    import torchvision
+
+    directory     = os.path.join('media', 'figures', 'generated')
+    abs_directory = os.path.abspath(directory)
+
+    for k, img in images.items():
+        pimg = os.path.join(directory, k + '.png')
+
+        img = img.permute(2, 0, 1)
+        img = img[ :, cbox[2] : cbox[3] + 1, cbox[0] : cbox[1] + 1]
+        img = (img/5).pow(1/2.2)
+
+        alpha = (img.sum(dim=0) > 0).unsqueeze(0)
+        img = torch.concat([ img, alpha ], dim=0)
+        torchvision.utils.save_image(img, pimg)
+
+    print(args.primary, primary.keys())
+
+    _, render_code = lineplot(render, '', xlabel='Tessellation', ylabel='Render', width=6, height=5)
+    _, normal_code = lineplot(normal, '', xlabel='Tessellation', ylabel='Normal', width=6, height=5)
+    _, chamfer_code = lineplot(chamfer, '', xlabel='Tessellation', ylabel='Chamfer', width=10, height=5, legend=True)
+
+    combined = render_code + '\n' + normal_code + '\n\n' + chamfer_code
+
+    code = r'''
+    \documentclass[varwidth=100cm, border=0pt]{standalone}
+
+    \renewcommand{\familydefault}{\sfdefault}
+
+    \usepackage[utf8]{inputenc}
+    \usepackage[T1]{fontenc}
+    \usepackage{amsmath}
+    \usepackage{amssymb}
+    \usepackage{bm}
+    \usepackage{caption}
+    \usepackage{graphicx}
+    \usepackage{libertine}
+    \usepackage{multirow}
+    \usepackage{pgfplots}
+    \usepackage{subcaption}
+    \usepackage{tikz}
+    \usepackage{array}
+    \usepackage{tabularray}
+    \usepackage{multirow}
+
+    \usetikzlibrary{calc}
+
+    \definecolor{color0}{HTML}{ea7aa5}
+    \definecolor{color1}{HTML}{65d59e}
+    \definecolor{color2}{HTML}{ab92e6}
+    \definecolor{color3}{HTML}{b2c65d}
+    \definecolor{color4}{HTML}{e19354}
+
+    \pgfplotsset{compat=1.18}
+    \pgfplotsset{
+        yticklabel style={
+            /pgf/number format/fixed,
+            /pgf/number format/precision=5
+        },
+        scaled y ticks=false
+    }
+
+    \captionsetup[subfigure]{justification=centering}
+
+    \begin{document}
+        \setlength{\fboxsep}{0pt}
+        \setlength{\fboxrule}{1pt}
+
+        \begin{tblr}{ colspec={cccc}, cells={valign=t, halign=c} }
+            \begin{minipage}{3cm}
+                \centering
+                \textsc{Reference}\vspace{1mm}
+                \includegraphics[width=\textwidth]{%s}
+            \end{minipage}
+            & \begin{minipage}{3cm}
+                \centering
+                \textsc{Resolution %d}\vspace{1mm}
+                \includegraphics[width=\textwidth]{%s}
+            \end{minipage}
+            & \begin{minipage}{3cm}
+                \centering
+                \textsc{Resolution %d}\vspace{1mm}
+                \includegraphics[width=\textwidth]{%s}
+            \end{minipage}
+            & \SetCell[r=2]{c} \begin{minipage}{14cm} \centering %s \end{minipage} \\
+            \begin{minipage}{3cm}
+                \centering
+                \textsc{Resolution %d}\vspace{1mm}
+                \includegraphics[width=\textwidth]{%s}
+            \end{minipage}
+            & \begin{minipage}{3cm}
+                \centering
+                \textsc{Resolution %d}\vspace{1mm}
+                \includegraphics[width=\textwidth]{%s}
+            \end{minipage}
+            & \begin{minipage}{3cm}
+                \centering
+                \textsc{Resolution %d}\vspace{1mm}
+                \includegraphics[width=\textwidth]{%s}
+            \end{minipage}
+            & \\
+        \end{tblr}
+    \end{document}''' % (
+        abs_directory + '/ref.png',
+        2, abs_directory + '/tess2.png',
+        4, abs_directory + '/tess4.png',
+        combined,
+        8, abs_directory + '/tess8.png',
+        12, abs_directory + '/tess12.png',
+        16, abs_directory + '/tess16.png'
+    )
+
+    synthesize_tex(code, 'tessellation.pdf')
 
 def features(db):
-    print(db)
-
     render = {}
     normal = {}
     chamfer = {}
 
+    exclude = { 'skull' }
     for scene in db:
+        if scene in exclude:
+            continue
+
+        print('scene', scene)
         render_line = []
         normal_line = []
         chamfer_line = []
@@ -786,7 +902,6 @@ def features(db):
         entries = list(entries.items())
         entries = [ (int(f), d) for f, d in entries ]
         entries = sorted(entries, key=lambda v: v[0])
-        print('entries', entries)
         if len(entries) < 4:
             continue
 
@@ -804,30 +919,163 @@ def features(db):
         normal[scene] = normal_line
         chamfer[scene] = chamfer_line
 
-    n0, render_code = lineplot(render, 'Render', xlabel='Size (KB)')
-    n1, normal_code = lineplot(normal, 'Normal', xlabel='Size (KB)', at=n0 + '.south east', legend=True)
-    _,  chamfer_code = lineplot(chamfer, 'Chamfer', xlabel='Size (KB)', ylabel='Error', at=n1 + '.south east')
+    # Plots
+    n0, render_code = lineplot(render, 'Render', xlabel='Size (KB)', ylabel='Error', width=5, height=4)
+    n1, normal_code = lineplot(normal, 'Normal', xlabel='Size (KB)', ylabel='', width=5, height=4)
+    _,  chamfer_code = lineplot(chamfer, '', xlabel='Size (KB)', ylabel='Chamfer', height=4, legend=True)
 
-    combined = render_code + '\n' + normal_code + '\n' + chamfer_code
-    combined = document_template % combined
+    combined = render_code + '\n' + normal_code + '\n\n' + chamfer_code
 
-    synthesize_tex(combined, 'features.pdf')
+    # Load the images
+    primary = db[args.primary]
 
-def gimgs(db):
-    measure = {}
-    for k in db:
-        mean = db[k]['mean']
-        size = db[k]['size'] // 1024
-        gsize = db[k]['gsize'] // 1024
+    images = {
+            'ref'    : primary[5]['ref'],
+            'feat5'  : primary[5]['mesh'],
+            'feat10'  : primary[10]['mesh'],
+            'feat20'  : primary[20]['mesh'],
+            'feat50'  : primary[50]['mesh'],
+    }
 
-        measure.setdefault('NGF (Ours)', []).append((size, mean))
-        measure.setdefault('Geometry Image', []).append((gsize, mean))
+    # Whitespace removal cropbox
+    cbox = cropbox(images)
 
-    print(measure)
+    cbox1 = 100, 200, 250, 350
+    cbox2 = 100, 200, 50, 150
 
-    _, code = lineplot(measure, '', ylabel='Error', xlabel='Size (KB)', width=8, legend=True)
+    import torchvision
+
+    directory     = os.path.join('media', 'figures', 'generated')
+    abs_directory = os.path.abspath(directory)
+
+    for k, img in images.items():
+        img = img.permute(2, 0, 1)
+        img = img[ :, cbox[2] : cbox[3] + 1, cbox[0] : cbox[1] + 1]
+        # img = (img/5).pow(1/2.2)
+
+        alpha = (img.sum(dim=0) > 0).unsqueeze(0)
+        img = torch.concat([ img, alpha ], dim=0)
+
+        # And the insets as well
+        inset1 = img[ :, cbox1[2] : cbox1[3] + 1, cbox1[0] : cbox1[1] + 1]
+        inset2 = img[ :, cbox2[2] : cbox2[3] + 1, cbox2[0] : cbox2[1] + 1]
+
+        pimg = os.path.join(directory, k + '.png')
+        pinset1 = os.path.join(directory, k.replace(':', '-') + '-inset1.png')
+        pinset2 = os.path.join(directory, k.replace(':', '-') + '-inset2.png')
+
+        torchvision.utils.save_image(inset1, pinset1)
+        torchvision.utils.save_image(inset2, pinset2)
+        torchvision.utils.save_image(img, pimg)
+
+        box1 = torch.tensor([ cbox1[0], cbox1[2], cbox1[1], cbox1[3] ]).unsqueeze(0)
+        box2 = torch.tensor([ cbox2[0], cbox2[2], cbox2[1], cbox2[3] ]).unsqueeze(0)
+
+        img = torchvision.io.read_image(pimg)
+        rgb = img[:3]
+        rgb = torchvision.utils.draw_bounding_boxes(rgb, boxes=box1, colors="red", width=8)
+        rgb = torchvision.utils.draw_bounding_boxes(rgb, boxes=box2, colors="blue", width=8)
+        rgb = rgb / 255
+
+        img = torch.concat([ rgb, img[None, 3] ], dim=0)
+        torchvision.utils.save_image(img, pimg)
+
+    print(args.primary, primary.keys())
+
+    code = r'''
+    \documentclass[varwidth=100cm, border=0pt]{standalone}
+
+    \renewcommand{\familydefault}{\sfdefault}
+
+    \usepackage[utf8]{inputenc}
+    \usepackage[T1]{fontenc}
+    \usepackage{amsmath}
+    \usepackage{amssymb}
+    \usepackage{bm}
+    \usepackage{caption}
+    \usepackage{graphicx}
+    \usepackage{libertine}
+    \usepackage{multirow}
+    \usepackage{pgfplots}
+    \usepackage{subcaption}
+    \usepackage{tikz}
+    \usepackage{array}
+    \usepackage{tabularray}
+    \usepackage{multirow}
+
+    \usetikzlibrary{calc}
+
+    \definecolor{color0}{HTML}{ea7aa5}
+    \definecolor{color1}{HTML}{65d59e}
+    \definecolor{color2}{HTML}{ab92e6}
+    \definecolor{color3}{HTML}{b2c65d}
+    \definecolor{color4}{HTML}{e19354}
+
+    \pgfplotsset{compat=1.18}
+    \pgfplotsset{
+        yticklabel style={
+            /pgf/number format/fixed,
+            /pgf/number format/precision=5
+        },
+        scaled y ticks=false
+    }
+
+    \captionsetup[subfigure]{justification=centering}
+
+    \begin{document}
+        \setlength{\fboxsep}{0pt}
+        \setlength{\fboxrule}{1pt}
+
+        \begin{figure}
+            \centering
+            \begin{tblr}{ colspec={cccccc}, cells={valign=t, halign=c} }
+                \SetCell[r=3]{c}
+                \begin{minipage}{5cm}
+                    \centering
+                    \textsc{Reference}
+                    \vspace{1mm}
+                    \includegraphics[width=5cm]{%s}
+                \end{minipage}
+                & \textsc{5 Features} & \textsc{10 Features} & \textsc{20 Features} & \textsc{50 Features}
+                & \SetCell[r=3]{c} \begin{minipage}{10cm} \centering %s \end{minipage} \\
+                & \fbox{\includegraphics[width=3cm]{%s}}
+                & \fbox{\includegraphics[width=3cm]{%s}}
+                & \fbox{\includegraphics[width=3cm]{%s}}
+                & \fbox{\includegraphics[width=3cm]{%s}} & \\
+                & \fbox{\includegraphics[width=3cm]{%s}}
+                & \fbox{\includegraphics[width=3cm]{%s}}
+                & \fbox{\includegraphics[width=3cm]{%s}}
+                & \fbox{\includegraphics[width=3cm]{%s}} & \\
+            \end{tblr}
+        \end{figure}
+    \end{document}''' % (
+        abs_directory + '/ref.png',
+        combined,
+        abs_directory + '/feat5-inset1.png',
+        abs_directory + '/feat10-inset1.png',
+        abs_directory + '/feat20-inset1.png',
+        abs_directory + '/feat50-inset1.png',
+        abs_directory + '/feat5-inset2.png',
+        abs_directory + '/feat10-inset2.png',
+        abs_directory + '/feat20-inset2.png',
+        abs_directory + '/feat50-inset2.png'
+    )
+
+    synthesize_tex(code, 'features.pdf')
+
+def mutlichart(db):
+    data = {}
+    for k, d in db.items():
+        for x in d:
+            data.setdefault(k, []).append((x[0] // 1024, x[1]))
+
+    for key in data:
+        data[key] = sorted(data[key], key=lambda x: x[0])
+
+    _, code = lineplot(data, 'Patch Representations', ylabel='Error', xlabel='Size (KB)', width=12, height=8, xtick_step=50, legend=True)
 
     combined = document_template % code
+    print('code', combined)
     synthesize_tex(combined, 'geometry-images.pdf')
 
 if __name__ == '__main__':
@@ -837,6 +1085,7 @@ if __name__ == '__main__':
     parser.add_argument('--key', type=str, default='dpm', help='Key to plot from')
     parser.add_argument('--dir', type=str, default='.', help='Directory to plot from')
     parser.add_argument('--tick', type=int, default=5, help='Tick step for plots')
+    parser.add_argument('--primary', type=str, help='Primary model to display')
 
     args = parser.parse_args()
 
@@ -847,12 +1096,6 @@ if __name__ == '__main__':
         name = os.path.basename(args.db)
         name = name.split('.')[0]
         results_plot(name, db)
-
-        # if args.key == 'all':
-        #     for key in db.keys():
-        #         results_plot(key, db[key])
-        # else:
-        #     results_plot(args.key, db[args.key])
     elif args.type == 'table':
         dbs = {}
         for root, directory, files in os.walk(args.dir):
@@ -866,14 +1109,14 @@ if __name__ == '__main__':
                     dbs[f] = db
 
         table(dbs)
-    elif args.type == 'tess':
-        db = json.load(open(args.db))
+    elif args.type == 'tessellation':
+        db = torch.load(args.db)
         tessellation(db)
     elif args.type == 'features':
-        db = json.load(open(args.db))
+        db = torch.load(args.db)
         features(db)
-    elif args.type == 'gimgs':
+    elif args.type == 'multichart':
         db = json.load(open(args.db))
-        gimgs(db)
+        mutlichart(db)
     else:
         raise NotImplementedError
