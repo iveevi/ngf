@@ -2,6 +2,20 @@ import torch
 import numpy as np
 import nvdiffrast.torch as dr
 
+from geometry import vertex_density
+
+def persp_proj(fov_x=45, ar=1, near=0.1, far=100):
+    fov_rad = np.deg2rad(fov_x)
+    proj_mat = np.array([
+        [-1.0 / np.tan(fov_rad / 2.0), 0, 0, 0],
+        [0, np.float32(ar) / np.tan(fov_rad / 2.0), 0, 0],
+        [0, 0, -(near + far) / (near-far), 2 * far * near / (near-far)],
+        [0, 0, 1, 0]
+    ])
+
+    proj = torch.tensor(proj_mat, device='cuda', dtype=torch.float32)
+    return proj
+
 class SphericalHarmonics:
     def __init__(self, envmap):
         h, w = envmap.shape[:2]
@@ -61,25 +75,11 @@ class SphericalHarmonics:
             torch.stack([ c2 * L[1][1] , c2 * L[1][-1], c2 * L[1][0] , c4 * L[0][0] - c5 * L[2][0]])
         ]).movedim(2,0)
 
-        # self.eval = torch.compile(self.eval_kernel, fullgraph=True)
-
     def eval(self, n):
         normal_array = n.view((-1, 3))
         h_n = torch.nn.functional.pad(normal_array, (0, 1), 'constant', 1.0)
         l = (h_n.t() * (self.M @ h_n.t())).sum(dim=1)
         return l.t().view(n.shape)
-
-def persp_proj(fov_x=45, ar=1, near=0.1, far=100):
-    fov_rad = np.deg2rad(fov_x)
-    proj_mat = np.array([
-        [-1.0 / np.tan(fov_rad / 2.0), 0, 0, 0],
-        [0, np.float32(ar) / np.tan(fov_rad / 2.0), 0, 0],
-        [0, 0, -(near + far) / (near-far), 2 * far * near / (near-far)],
-        [0, 0, 1, 0]
-    ])
-
-    proj = torch.tensor(proj_mat, device='cuda', dtype=torch.float32)
-    return proj
 
 # NOTE: Adapted from the 'Large Steps in Inverse Rendering' codebase
 class Renderer:
@@ -104,6 +104,22 @@ class Renderer:
         color = dr.interpolate(color, rast, f)[0]
         return dr.antialias(color, rast, v_ndc, f)
 
+    def render_attributes(self, v, n, f, view_mats):
+        mvps = self.proj @ view_mats
+        v_hom = torch.nn.functional.pad(v, (0, 1), 'constant', 1.0)
+        v_ndc = torch.matmul(v_hom, mvps.transpose(1, 2))
+
+        layers = []
+        with dr.DepthPeeler(self.ctx, v_ndc, f, self.res) as peeler:
+          for i in range(2):
+            rast, rast_db = peeler.rasterize_next_layer()
+            vertices = dr.interpolate(v, rast, f)[0]
+            normals = dr.interpolate(n, rast, f)[0]
+            attrs = torch.cat((vertices, normals), dim=-1)
+            layers.append(dr.antialias(attrs, rast, v_ndc, f))
+
+        return torch.concat(layers, dim=-1)
+
     def render_spherical_harmonics(self, v, n, f, view_mats):
         mvps = self.proj @ view_mats
         v_hom = torch.nn.functional.pad(v, (0, 1), 'constant', 1.0)
@@ -122,18 +138,6 @@ class Renderer:
         # bgs = torch.ones_like(col)
         # return dr.antialias(torch.where(rast[..., -1:] != 0, col, bgs), rast, v_ndc, f)
         return dr.antialias(col, rast, v_ndc, f)
-
-def construct_renderer():
-    import os
-    import imageio
-
-    path = os.path.join(os.path.dirname(__file__), '../images/environment.hdr')
-    environment = imageio.imread(path, format='HDR-FI')
-    environment = torch.tensor(environment, dtype=torch.float32, device='cuda')
-    alpha       = torch.ones((*environment.shape[:2], 1), dtype=torch.float32, device='cuda')
-    environment = torch.cat((environment, alpha), dim=-1)
-
-    return Renderer(width=1024, height=1024, fov=45.0, near=1e-3, far=1000.0, envmap=environment)
 
 def arrange_camera_views(target):
     import nvdiffrast.torch as dr

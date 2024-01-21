@@ -1,15 +1,15 @@
 {
-	"target": "meshes/xyz/target.obj",
-	"directory": "results/xyz",
+	"target": "meshes/planck/target.obj",
+	"directory": "results/planck",
 	"clusters": 200,
 	"batch_size": 10,
 	"resolution": 16,
 	"experiments": [
 		{
 			"name": "experimental",
-			"source": "meshes/xyz/source-lod2.obj",
+			"source": "meshes/planck/source.obj",
 			"encoder": "sincos",
-			"encoding_levels": 8,
+			"encoding_levels": 10,
 			"features": 20,
 			"jittering": true,
 			"normals": "numerical"

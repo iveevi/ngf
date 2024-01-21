@@ -1,13 +1,13 @@
 {
-	"target": "meshes/xyz/target.obj",
-	"directory": "results/xyz",
+	"target": "meshes/lucy/target.obj",
+	"directory": "results/lucy",
 	"clusters": 200,
-	"batch_size": 10,
+	"batch_size": 20,
 	"resolution": 16,
 	"experiments": [
 		{
 			"name": "experimental",
-			"source": "meshes/xyz/source-lod2.obj",
+			"source": "meshes/lucy/source-lod2.obj",
 			"encoder": "sincos",
 			"encoding_levels": 8,
 			"features": 20,

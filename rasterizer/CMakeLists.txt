@@ -31,6 +31,7 @@ add_executable(testbed
 	main.cpp
 	mesh.cpp
 	util.cpp
+	pipeline.cpp
 	$<TARGET_OBJECTS:imgui>)
 
 target_link_libraries(testbed

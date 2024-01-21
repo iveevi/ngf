@@ -28,22 +28,18 @@ def load_mesh(path, normalizer=None) -> Tuple[Mesh, Callable[[torch.Tensor], tor
     mesh = meshio.read(path)
 
     v = torch.from_numpy(mesh.points[:, :3]).float().cuda()
-    # f = torch.from_numpy(mesh.cells_dict['triangle']).int().cuda()
+
     f = None
     if 'triangle' in mesh.cells_dict:
         f = torch.from_numpy(mesh.cells_dict['triangle']).int().cuda()
     else:
         f = torch.from_numpy(mesh.cells_dict['quad']).int().cuda()
 
-    # print('Loaded mesh', mesh, 'with {} vertices and {} faces'.format(v.shape, f.shape))
-
     if normalizer is None:
         min = v.min(0)[0]
         max = v.max(0)[0]
-        # print('min', min, 'max', max)
         center = (min + max) / 2
         scale = (max - min).square().sum().sqrt() / 2.0
-        # scale = (max - min).max()
         normalizer = lambda x: (x - center) / scale
 
     v = normalizer(v)

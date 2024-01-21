@@ -1,4 +1,4 @@
-# set -e
+set -e
 # for i in {10..250..10}
 # do
 # 	echo "### Running construction with $i patches at 16 x 16 resolution"

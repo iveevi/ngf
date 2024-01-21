@@ -15,26 +15,9 @@
 
 #include "mesh.hpp"
 #include "microlog.h"
+#include "pipeline.hpp"
 #include "util.hpp"
-
-struct Vertex {
-	glm::vec3 position;
-	glm::vec3 normal;
-};
-
-static constexpr vk::VertexInputBindingDescription vertex_binding {
-	0, sizeof(Vertex), vk::VertexInputRate::eVertex,
-};
-
-static constexpr std::array <vk::VertexInputAttributeDescription, 2> vertex_attributes {
-	vk::VertexInputAttributeDescription {
-		0, 0, vk::Format::eR32G32B32Sfloat, 0
-	},
-
-	vk::VertexInputAttributeDescription {
-		1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, normal)
-	}
-};
+#include "video.hpp"
 
 struct Engine;
 
@@ -45,218 +28,6 @@ struct VulkanMesh {
 
 	static VulkanMesh from(const Engine &, const Mesh &);
 };
-
-struct BasePushConstants {
-	glm::mat4 model;
-	glm::mat4 view;
-	glm::mat4 proj;
-};
-
-// TODO: use the same...
-struct alignas(16) NGFPushConstants {
-	glm::mat4 model;
-	glm::mat4 view;
-	glm::mat4 proj;
-	float time;
-};
-
-struct ShadingPushConstants {
-	alignas(16) glm::vec3 viewing;
-	alignas(16) glm::vec3 color;
-	uint32_t mode;
-};
-
-// General pipeline structure
-struct Pipeline {
-	vk::Pipeline pipeline;
-	vk::PipelineLayout layout;
-	vk::DescriptorSetLayout dsl;
-};
-
-Pipeline ppl_normals
-(
-		const vk::Device      &device,
-		const vk::RenderPass  &rp,
-		const vk::Extent2D    &extent,
-		littlevk::Deallocator *dal
-)
-{
-	Pipeline ppl;
-
-	// Read shader source
-	std::string vertex_source = readfile("../shaders/mesh.vert.glsl");
-	std::string fragment_source = readfile("../shaders/normals.frag.glsl");
-
-	// Compile shader modules
-	vk::ShaderModule vertex_module = littlevk::shader::compile(
-		device, vertex_source,
-		vk::ShaderStageFlagBits::eVertex
-	).unwrap(dal);
-
-	vk::ShaderModule fragment_module = littlevk::shader::compile(
-		device, fragment_source,
-		vk::ShaderStageFlagBits::eFragment
-	).unwrap(dal);
-
-	std::vector <vk::PipelineShaderStageCreateInfo> shader_stages {
-		vk::PipelineShaderStageCreateInfo {
-			{}, vk::ShaderStageFlagBits::eVertex, vertex_module, "main"
-		},
-		vk::PipelineShaderStageCreateInfo {
-			{}, vk::ShaderStageFlagBits::eFragment, fragment_module, "main"
-		}
-	};
-
-	// Create the pipeline
-	vk::PushConstantRange push_constant_range {
-		vk::ShaderStageFlagBits::eVertex,
-		0, sizeof(BasePushConstants)
-	};
-
-	ppl.layout = littlevk::pipeline_layout(
-		device,
-		vk::PipelineLayoutCreateInfo {
-			{}, {}, push_constant_range
-		}
-	).unwrap(dal);
-
-	littlevk::pipeline::GraphicsCreateInfo pipeline_info;
-	pipeline_info.shader_stages = shader_stages;
-	pipeline_info.vertex_binding = vertex_binding;
-	pipeline_info.vertex_attributes = vertex_attributes;
-	pipeline_info.extent = extent;
-	pipeline_info.pipeline_layout = ppl.layout;
-	pipeline_info.render_pass = rp;
-	pipeline_info.fill_mode = vk::PolygonMode::eFill;
-	pipeline_info.cull_mode = vk::CullModeFlagBits::eNone;
-	pipeline_info.dynamic_viewport = true;
-
-	ppl.pipeline = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
-
-	return ppl;
-}
-
-Pipeline ppl_ngf
-(
-		const vk::Device      &device,
-		const vk::RenderPass  &rp,
-		const vk::Extent2D    &extent,
-		littlevk::Deallocator *dal
-)
-{
-	Pipeline ppl;
-
-	// Read shader source
-	// TODO: shaders dir
-	std::string task_source = readfile("../shaders/ngf.task.glsl");
-	std::string mesh_source = readfile("../shaders/ngf.mesh.glsl");
-	std::string fragment_source = readfile("../shaders/ngf.frag.glsl");
-
-	// Compile shader modules
-	vk::ShaderModule task_module = littlevk::shader::compile(
-		device, task_source,
-		vk::ShaderStageFlagBits::eTaskEXT
-	).unwrap(dal);
-
-	vk::ShaderModule mesh_module = littlevk::shader::compile(
-		device, mesh_source,
-		vk::ShaderStageFlagBits::eMeshEXT
-	).unwrap(dal);
-
-	vk::ShaderModule fragment_module = littlevk::shader::compile(
-		device, fragment_source,
-		vk::ShaderStageFlagBits::eFragment
-	).unwrap(dal);
-
-	printf("task module: %p\n", task_module);
-	printf("mesh module: %p\n", mesh_module);
-	printf("fragment module: %p\n", fragment_module);
-
-	std::vector <vk::PipelineShaderStageCreateInfo> shader_stages {
-		vk::PipelineShaderStageCreateInfo {
-			{}, vk::ShaderStageFlagBits::eTaskEXT, task_module, "main"
-		},
-		vk::PipelineShaderStageCreateInfo {
-			{}, vk::ShaderStageFlagBits::eMeshEXT, mesh_module, "main"
-		},
-		vk::PipelineShaderStageCreateInfo {
-			{}, vk::ShaderStageFlagBits::eFragment, fragment_module, "main"
-		}
-	};
-
-	// Create the pipeline
-	// TODO: put mvp and stuff here later
-	vk::PushConstantRange mesh_task_pc {
-		vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT,
-		0, sizeof(NGFPushConstants)
-	};
-
-	vk::PushConstantRange shading_pc {
-		vk::ShaderStageFlagBits::eFragment,
-		sizeof(NGFPushConstants), sizeof(ShadingPushConstants)
-	};
-
-	// TODO: inline this stuff
-	std::array <vk::PushConstantRange, 2> push_constants {
-		mesh_task_pc, shading_pc
-	};
-
-	// Buffer bindings
-	vk::DescriptorSetLayoutBinding points {};
-	points.binding = 0;
-	points.descriptorCount = 1;
-	points.descriptorType = vk::DescriptorType::eStorageBuffer;
-	points.stageFlags = vk::ShaderStageFlagBits::eMeshEXT;
-
-	vk::DescriptorSetLayoutBinding features {};
-	features.binding = 1;
-	features.descriptorCount = 1;
-	features.descriptorType = vk::DescriptorType::eStorageBuffer;
-	features.stageFlags = vk::ShaderStageFlagBits::eMeshEXT;
-
-	vk::DescriptorSetLayoutBinding patches {};
-	patches.binding = 2;
-	patches.descriptorCount = 1;
-	patches.descriptorType = vk::DescriptorType::eStorageBuffer;
-	patches.stageFlags = vk::ShaderStageFlagBits::eMeshEXT;
-
-	vk::DescriptorSetLayoutBinding network {};
-	network.binding = 3;
-	network.descriptorCount = 1;
-	network.descriptorType = vk::DescriptorType::eStorageBuffer;
-	network.stageFlags = vk::ShaderStageFlagBits::eMeshEXT;
-
-	std::array <vk::DescriptorSetLayoutBinding, 4> bindings {
-		points, features, patches, network
-	};
-
-	vk::DescriptorSetLayoutCreateInfo dsl_info {};
-	dsl_info.bindingCount = bindings.size();
-	dsl_info.pBindings = bindings.data();
-
-	ppl.dsl = device.createDescriptorSetLayout(dsl_info);
-	ppl.layout = littlevk::pipeline_layout(
-		device,
-		vk::PipelineLayoutCreateInfo {
-			{}, ppl.dsl, push_constants
-		}
-	).unwrap(dal);
-
-	littlevk::pipeline::GraphicsCreateInfo pipeline_info;
-	pipeline_info.shader_stages = shader_stages;
-	// pipeline_info.vertex_binding = vertex_binding;
-	// pipeline_info.vertex_attributes = vertex_attributes;
-	pipeline_info.extent = extent;
-	pipeline_info.pipeline_layout = ppl.layout;
-	pipeline_info.render_pass = rp;
-	pipeline_info.fill_mode = vk::PolygonMode::eFill;
-	pipeline_info.cull_mode = vk::CullModeFlagBits::eNone;
-	pipeline_info.dynamic_viewport = true;
-
-	ppl.pipeline = littlevk::pipeline::compile(device, pipeline_info).unwrap(dal);
-
-	return ppl;
-}
 
 struct MouseInfo {
 	bool drag = false;
@@ -445,7 +216,7 @@ struct Engine : littlevk::Skeleton {
 		printf("  m4: %s\n", m4_ft.maintenance4 ? "true" : "false");
 
 		// Initialize the device and surface
-		engine.skeletonize(phdev, { 1000, 1000 }, "Neural Geometry Fields Testbed", ft, vk::PresentModeKHR::eImmediate);
+		engine.skeletonize(phdev, { 1920, 1080 }, "Neural Geometry Fields Testbed", ft, vk::PresentModeKHR::eImmediate);
 
 		// Create the render pass
 		engine.render_pass = littlevk::default_color_depth_render_pass
@@ -663,7 +434,7 @@ void render_pass_begin(const Engine &engine, const vk::CommandBuffer &cmd, const
 	const auto &rpbi = littlevk::default_rp_begin_info <2>
 		(engine.render_pass, engine.framebuffers[op.index], engine.window)
 		.clear_value(0, vk::ClearColorValue {
-			std::array <float, 4> { 0.0f, 0.0f, 0.0f, 0.0f }
+			std::array <float, 4> { 1.0f, 1.0f, 1.0f, 1.0f }
 		});
 
 	return cmd.beginRenderPass(rpbi, vk::SubpassContents::eInline);
@@ -828,7 +599,6 @@ int main(int argc, char *argv[])
 		return littlevk::physical_device_able(phdev, {
 			VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 			VK_EXT_MESH_SHADER_EXTENSION_NAME,
-			VK_NV_MESH_SHADER_EXTENSION_NAME,
 			VK_KHR_MAINTENANCE_4_EXTENSION_NAME,
 			VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,
 		});
@@ -839,6 +609,7 @@ int main(int argc, char *argv[])
 	// Initialization
 	Engine engine = Engine::from(phdev);
 
+	engine.camera_transform.position = glm::vec3 { 0, 0, -2 };
 	VulkanMesh vk_ref = VulkanMesh::from(engine, reference);
 	VulkanMesh vk_ngf = VulkanMesh::from(engine, ngf_base);
 
@@ -917,9 +688,13 @@ int main(int argc, char *argv[])
 	constexpr uint32_t SAMPLES = 100;
 
 	std::deque <float> frametimes;
-	uint32_t mode = 1;
+	uint32_t mode = 0;
 
 	size_t frame = 0;
+
+	constexpr size_t mode_duration = 5 * 120;
+	size_t duration = 0;
+
 	while (valid_window(engine)) {
 		// Get events
 		glfwPollEvents();
@@ -959,11 +734,15 @@ int main(int argc, char *argv[])
 			engine.push_constants.model,
 			engine.push_constants.view,
 			engine.push_constants.proj,
+			{
+				engine.window->extent.width,
+				engine.window->extent.height
+			},
 			time
 		};
 
 		Transform tf;
-		// tf.rotation.y = fmod(10.0f * time, 360.0f);
+		// tf.rotation.y = fmod(50.0f * time, 360.0f);
 		ngf_pc.model = tf.matrix();
 
 		cmd.pushConstants <NGFPushConstants>
@@ -976,7 +755,7 @@ int main(int argc, char *argv[])
 		// Fragment shader push constants
 		ShadingPushConstants shading_pc {
 			.viewing = glm::vec3(glm::inverse(ngf_pc.view) * glm::vec4(0, 0, 1, 0)),
-			.color = glm::vec3(1.0f, 0.5f, 0.2f),
+			.color = glm::vec3(0.6f, 0.5f, 1.0f),
 			.mode = mode
 		};
 
@@ -1004,9 +783,9 @@ int main(int argc, char *argv[])
 			ImGui::Separator();
 
 			static const std::unordered_map <uint32_t, std::string> mode_descriptions {
-				{ 0, "Shaded" },
+				{ 0, "Patches" },
 				{ 1, "Normal" },
-				{ 2, "Patches" }
+				{ 2, "Shaded" }
 			};
 
 			ImGui::Text("Render mode");
@@ -1046,5 +825,15 @@ int main(int argc, char *argv[])
 
 		// Post frame
 		frame = 1 - frame;
+
+		// Mode incrementing
+		// duration++;
+		// if (duration > mode_duration) {
+		// 	duration = 0;
+		// 	mode++;
+		// }
+		//
+		// if (mode > 2)
+		// 	break;
 	}
 }

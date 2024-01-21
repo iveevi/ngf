@@ -11,135 +11,148 @@ import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
 from util import *
-from configurations import *
-
-from geometry import compute_vertex_normals, compute_face_normals
+from geometry import compute_vertex_normals, compute_face_normals, vertex_density
 from mesh import Mesh, load_mesh, simplify_mesh
 from ngf import NGF
 from render import Renderer, arrange_camera_views
 
 def construct_renderer():
     path = os.path.join(os.path.dirname(__file__), '../images/environment.hdr')
-    environment = imageio.imread(path, format='HDR-FI')
+    environment = imageio.imread(path, format='HDR')
     environment = torch.tensor(environment, dtype=torch.float32, device='cuda')
     alpha       = torch.ones((*environment.shape[:2], 1), dtype=torch.float32, device='cuda')
     environment = torch.cat((environment, alpha), dim=-1)
-
-    return Renderer(width=1024, height=1024, fov=45.0, near=0.1, far=1000.0, envmap=environment)
+    return Renderer(width=256, height=256, fov=45.0, near=0.1, far=1000.0, envmap=environment)
 
 def load_patches(path, normalizer):
     mesh = meshio.read(path)
-
     v = torch.from_numpy(mesh.points).float().cuda()
     f = torch.from_numpy(mesh.cells_dict['quad']).int().cuda()
     v = normalizer(v)
-
     return v, f
 
-def construct_ngf(path: str, config: dict, normalizer: Callable) -> NGF:
+def construct_ngf(path: str, config: dict, normalizer) -> NGF:
     # TODO: try random feature initialization
     points, complexes = load_patches(path, normalizer)
     features          = torch.zeros((points.shape[0], config['features']), device='cuda')
-
-    # points = points.bfloat16()
-    # features = features.bfloat16()
+    # features          = torch.randn((points.shape[0], config['features']), device='cuda')
 
     points.requires_grad   = True
     features.requires_grad = True
 
     return NGF(points, complexes, features, config)
 
-def tonemap_srgb(f):
-    return torch.where(f > 0.0031308, torch.pow(torch.clamp(f, min=0.0031308), 1.0/2.4) * 1.055 - 0.055, 12.92 * f)
+def vertex_normals(V, F):
+    Fn = compute_face_normals(V, F)
+    N  = compute_vertex_normals(V, F, Fn)
+    return N
 
-def alpha_blend(img):
-    alpha = img[..., 3:]
-    return img[..., :3] * alpha + (1.0 - alpha)
+def train(target, generator, opt, sch, viewset, iterations):
+    import torch
 
-def train(target, generator, opt, sch, batch_views, iterations):
-    def postprocess(img):
-        img = tonemap_srgb(torch.log(torch.clamp(img, min=0, max=65535) + 1))
-        return img
+    # Laplacian?
+    from kornia.filters import laplacian
+    from kaolin.metrics.pointcloud import chamfer_distance
 
-    def iterate(view_mats):
+    def lift(I):
+        return I
+        # return torch.concat((I, I.sin(), (2 * I).sin(), (4 * I).sin(), (8 * I).sin()), dim=-1)
+        # return torch.concat((I.sin(), (2 * I).sin(), (4 * I).sin()), dim=-1)
+
+    def lap(I):
+        I = I.permute(0, 3, 2, 1)
+        I = laplacian(I, kernel_size=7)
+        return I.permute(0, 3, 2, 1)
+
+    views, batch_size = viewset
+
+    VT = target.vertices[target.faces].reshape(-1, 3)
+    FT = torch.arange(VT.shape[0], device=VT.device, dtype=torch.int32).reshape(-1, 3)
+    NT = vertex_normals(VT, FT)
+
+    def iterate(ref_data, view_mats):
         V, N, F, additional = generator()
 
-        phi = torch.rand((10, 1), device='cuda') * 2 * np.pi
-        theta = torch.rand((10, 1), device='cuda') * np.pi
-        x = torch.sin(theta) * torch.cos(phi)
-        y = torch.sin(theta) * torch.sin(phi)
-        z = torch.cos(theta)
-        lights = torch.cat([ x, y, z ], dim=1)
-
-        # lights = torch.rand((10, 3), device='cuda')
-        # lights /= torch.linalg.norm(lights, dim=-1).unsqueeze(-1)
-        # light_colors = torch.rand((10, 3), device='cuda')
-
-        opt_imgs = renderer.render(V, N, F, lights, view_mats) #.bfloat16()
-        # opt_imgs = postprocess(opt_imgs)
-
-        with torch.no_grad():
-            ref_imgs = renderer.render(target.vertices, target.normals, target.faces, lights, view_mats) #.bfloat16()
-            # ref_imgs = postprocess(ref_imgs)
+        opt_imgs = renderer.render_attributes(V, N, F, view_mats)
+        # opt_laps = lap(lift(opt_imgs))
+        # ref_laps = lap(ref_data)
 
         # import matplotlib.pyplot as plt
+        # import seaborn as sns
+        #
+        # sns.set_theme()
         #
         # fig = plt.figure(layout='constrained')
         # subfigs = fig.subfigures(1, 2)
         #
         # subfigs[0].suptitle('References')
         # axs = subfigs[0].subplots(len(view_mats), 1)
-        # for ax, img in zip(axs, ref_imgs):
-        #     ax.imshow(img[..., 0].float().detach().cpu().numpy())
+        # for ax, img in zip(axs, ref_laps):
+        #     ax.imshow(img[..., 3].detach().cpu().numpy())
         #     ax.axis('off')
         #
-        # subfigs[1].suptitle('References')
+        # subfigs[1].suptitle('Opt')
         # axs = subfigs[1].subplots(len(view_mats), 1)
-        # for ax, img in zip(axs, opt_imgs):
-        #     ax.imshow(img[..., 0].float().detach().cpu().numpy())
+        # for ax, img in zip(axs, opt_laps):
+        #     ax.imshow(img[..., 3].detach().cpu().numpy())
         #     ax.axis('off')
         #
         # plt.show()
 
         # Compute losses
-        render_loss = (opt_imgs - ref_imgs).abs().mean()
-        assert not torch.isnan(render_loss).any()
-
-        loss = render_loss
+        render_loss = (lift(opt_imgs) - ref_data).abs().mean()
+        # laplacian_loss = (lift(opt_laps) - ref_laps).square().mean()
+        loss = render_loss # + laplacian_loss
         if additional is not None:
             loss += additional
 
         return loss
 
-    losses = []
+    # Caching reference views
+    cache = []
+    for view_mats in views.split(batch_size):
+        ref_data = renderer.render_attributes(VT, NT, FT, view_mats)
+        cache.append(lift(ref_data.cpu()))
+
+    all_ref_data = torch.concat(cache, dim=0)
+    all_ref_data.pin_memory()
+
+    losses = { 'render': [], 'chamfer': [] }
+    import torch.nn.utils
     for _ in tqdm.trange(iterations):
         loss_average = 0
-        for view_mats in batch_views:
-            loss = iterate(view_mats)
+
+        indices = torch.randperm(views.shape[0])
+        perm_ref_data = all_ref_data[indices].split(batch_size)
+        perm_view_mats = views[indices.cuda()].split(batch_size)
+
+        # Iterate through the batch
+        for batch_ref_data, batch_views in zip(perm_ref_data, perm_view_mats):
+            loss = iterate(batch_ref_data.cuda(), batch_views)
 
             # Optimization step
             opt.zero_grad()
-            loss.backward(retain_graph=True)
+            loss.backward()
             opt.step()
 
-            if sch is not None:
-                sch.step()
-
-            loss_average += loss.item()
-
-        loss_average /= len(batch_views)
+            loss_average += loss.item() / batch_size
 
         global writer, step
-        writer.add_scalar('Loss', loss_average, step)
+
+        with torch.no_grad():
+            V = generator()[0].unsqueeze(0)
+            T = target.vertices.unsqueeze(0)
+            chamfer = chamfer_distance(V, T)
+
+        losses['render'].append(loss_average)
+        losses['chamfer'].append(chamfer.item())
+
+        writer.add_scalar('Render', loss_average, step)
+        writer.add_scalar('Chamfer', chamfer, step)
         writer.flush()
         step += 1
 
     return losses
-
-def vertex_normals(V, F):
-    Fn = compute_face_normals(V, F)
-    N  = compute_vertex_normals(V, F, Fn)
-    return N
 
 def kickoff(target, ngf, views, batch_size):
     from largesteps.geometry import compute_matrix
@@ -157,7 +170,7 @@ def kickoff(target, ngf, views, batch_size):
     F     = remap.remap(tch_base_indices).cuda()
 
     steps     = 1_00
-    step_size = 1e-2
+    step_size = 1e-3
 
     # Optimization setup
     M = compute_matrix(base, F, lambda_ = 100)
@@ -174,8 +187,8 @@ def kickoff(target, ngf, views, batch_size):
         N = vertex_normals(V, F)
         return V, N, F, None
 
-    batch_views = torch.split(views, batch_size, dim=0)
-    train(target, generator, opt, None, batch_views, steps)
+    # batch_views = torch.split(views, batch_size, dim=0)
+    train(target, generator, opt, None, (views, batch_size), steps)
 
     V = from_differential(M, U, 'Cholesky')
     V = V.detach()
@@ -196,16 +209,17 @@ def kickoff(target, ngf, views, batch_size):
 
         bar.set_description('Overfitting, loss: {:.4f}'.format(loss.item()))
 
-def refine(target, ngf, rate, views, laplacian_strength, opt, sch, iterations):
+def refine(target, ngf, rate, views, opt, sch, iterations):
     base = ngf.base(rate).detach()
 
     cmap   = make_cmap(ngf.complexes, ngf.points.float().detach(), base.float(), rate)
     remap  = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
     quads  = torch.from_numpy(quadify(ngf.complexes.shape[0], rate)).int()
     vgraph = optext.vertex_graph(remap.remap(quads))
-    # factor = 0.5 ** 1e-3
     delta  = 1/rate
 
+    # TODO: jittering radius
+    # TODO: add depth layers?
     def generator():
         nonlocal vgraph, delta
 
@@ -213,34 +227,27 @@ def refine(target, ngf, rate, views, laplacian_strength, opt, sch, iterations):
         for p in ngf.parameters():
             p.grad = None
 
-        # base = ngf.base(rate).float()
         uvs = ngf.sampler(rate)
-        V = ngf.eval(*uvs).float()
-
-        assert not torch.isnan(V).any()
+        V = ngf.eval(*uvs)
+        # assert not torch.isnan(V).any()
 
         indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
         F = remap.remap_device(indices)
-
-        N = None
-        if ngf.normals == 'numerical':
-            N = ngf.eval_normals(*uvs, delta).float()
-        elif ngf.normals == 'geometric':
-            N = vertex_normals(V, F)
-        else:
-            raise NotImplementedError
+        N = vertex_normals(V, F)
+        # N = ngf.eval_normals(*uvs, delta)
 
         V_smoothed = vgraph.smooth_device(V, 1.0)
-        laplacian_loss = laplacian_strength * (V - V_smoothed).abs().mean()
+        laplacian_loss = (V - V_smoothed).abs().mean()
+        # laplacian_loss = (V - V_smoothed).square().mean()
 
         return V, N, F, laplacian_loss
 
-    batch_views = torch.split(views, batch_size, dim=0)
-    return train(target, generator, opt, sch, batch_views, iterations)
+    return train(target, generator, opt, sch, (views, batch_size), iterations)
 
 def visualize_views(views):
     import matplotlib.pyplot as plt
 
+    views = views[:4]
     N = int(np.sqrt(len(views)))
     M = (len(views) + N - 1) // N
 
@@ -281,12 +288,12 @@ if __name__ == '__main__':
 
     print('Loaded target: {} vertices, {} faces'.format(target.vertices.shape[0], target.faces.shape[0]))
 
-    all_views = arrange_camera_views(target)
-    add_views = arrange_views(target, 100)
-    all_views = torch.concat([all_views, add_views])
+    # all_views = arrange_camera_views(target)
+    # add_views = arrange_views(target, 100)
+    # all_views = torch.concat([all_views, add_views])
 
-    # all_views = arrange_views(target, 200)
-
+    # TODO: combine with chamfer
+    all_views = arrange_views(target, 200)
     visualize_views(all_views)
 
     # Iterate over experiments
@@ -323,7 +330,6 @@ if __name__ == '__main__':
         renderer = construct_renderer()
         kickoff(target, ngf, views, batch_size)
 
-        losses = []
         laplacian_strength = 1.0
 
         def display(rate):
@@ -334,7 +340,7 @@ if __name__ == '__main__':
 
             with torch.no_grad():
                 base = ngf.base(rate).float()
-                uvs = ngf.sampler(rate)
+                uvs = ngf.sample_uniform(rate)
                 V = ngf.eval(*uvs).float()
 
             cmap = make_cmap(ngf.complexes, ngf.points.float().detach(), base, rate)
@@ -346,33 +352,39 @@ if __name__ == '__main__':
             ps.register_surface_mesh('base', base.cpu().numpy(), F.cpu().numpy())
             ps.show()
 
-        rate = 4
-        while rate <= resolution:
+        losses = { 'render': [], 'chamfer': [] }
+
+        for rate in [ 4, 8, 16 ]:
             torch.cuda.empty_cache()
             # for group in opt.param_groups:
             #     group['lr'] = 1e-3
 
             opt = torch.optim.Adam(list(ngf.mlp.parameters()) + [ ngf.points, ngf.features ], 1e-3)
-            sch = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.9995)
+            # opt = torch.optim.Adam([
+            #     { 'params': ngf.mlp.parameters() },
+            #     { 'params': ngf.features, 'lr': 1e-3 }
+            # ], 1e-3)
+
+            sch = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.999)
 
             print('Refining with rate {}'.format(rate))
-            losses += refine(target, ngf, rate, views, laplacian_strength, opt, sch, iterations=250)
+            new_losses = refine(target, ngf, rate, views, opt, None, iterations=250)
+            # display(rate)
 
-            laplacian_strength *= 0.75
-            rate *= 2
+            losses['render'] += new_losses['render']
+            losses['chamfer'] += new_losses['chamfer']
 
-        # display(16)
+        display(16)
 
+        # Saving data
         os.makedirs(result_path, exist_ok=True)
         result = os.path.join(result_path, name + '.pt')
         print('Saving result to {}'.format(result))
         ngf.save(result)
 
-        # Save losses as CSV
-        csv_path = os.path.join(result_path, name + '-losses.csv')
-        print('Saving losses to {}'.format(csv_path))
-        with open(csv_path, 'w') as f:
-            string = ','.join(map(str, losses))
-            f.write(string)
+        fout = os.path.join(result_path, name + '-losses.json')
+        print('Saving losses to', fout)
+        with open(os.path.join(result_path, name + '-losses.json'), 'w') as fout:
+            json.dump(losses, fout)
 
         del ngf

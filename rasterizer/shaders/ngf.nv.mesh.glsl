@@ -1,21 +1,20 @@
 #version 460
 
 #extension GL_GOOGLE_include_directive: require
-#extension GL_EXT_mesh_shader: require
+#extension GL_NV_mesh_shader: require
 #extension GL_EXT_debug_printf : require
 #extension GL_EXT_control_flow_attributes : require
 
 #include "payload.h"
 
-const uint WORK_GROUP_SIZE = 8;
+layout (local_size_x = 32) in;
 
-layout (local_size_x = WORK_GROUP_SIZE, local_size_y = WORK_GROUP_SIZE) in;
-
-// NOTE: each mesh shader does at least a quadrant of a patch
 layout (triangles, max_vertices = 64, max_primitives = 98) out;
 
 // Inputs
-taskPayloadSharedEXT Payload payload;
+taskNV in Data {
+	Payload payload;
+} IN;
 
 layout (push_constant) uniform NGFPushConstants {
 	mat4 model;
@@ -67,6 +66,10 @@ layout (binding = 3) readonly buffer Layers
 } layers;
 
 // Outputs
+out gl_MeshPerVertexNV {
+	vec4  gl_Position;
+} gl_MeshVerticesNV[];
+
 layout (location = 0) out vec3 position[];
 layout (location = 2) out flat uint pindex[];
 
@@ -209,22 +212,22 @@ void main()
 {
 	// int qwidth = 7;
 	// int qheight = 7;
-	const uint MAX_QSIZE = WORK_GROUP_SIZE - 1;
-
-	// TODO: need dyanmic QSIZE/stride depending on resolution
-	uvec2 offset = gl_LocalInvocationID.xy + (MAX_QSIZE * gl_WorkGroupID.xy);
-	if (offset.x > payload.resolution || offset.y > payload.resolution)
-		return;
-
-	uvec2 offset_triangles = MAX_QSIZE * gl_WorkGroupID.xy;
-
-	uint total_qsize = payload.resolution - 1;
-	uint qwidth = min(MAX_QSIZE, total_qsize - offset_triangles.x);
-	uint qheight = min(MAX_QSIZE, total_qsize - offset_triangles.y);
-
-	uint vwidth = qwidth + 1;
-	uint vheight = qheight + 1;
-	SetMeshOutputsEXT(vwidth * vheight, 2 * qwidth * qheight);
+	// const uint MAX_QSIZE = WORK_GROUP_SIZE - 1;
+	//
+	// // TODO: need dyanmic QSIZE/stride depending on resolution
+	// uvec2 offset = gl_LocalInvocationID.xy + (MAX_QSIZE * gl_WorkGroupID.xy);
+	// if (offset.x > payload.resolution || offset.y > payload.resolution)
+	// 	return;
+	//
+	// uvec2 offset_triangles = MAX_QSIZE * gl_WorkGroupID.xy;
+	//
+	// uint total_qsize = payload.resolution - 1;
+	// uint qwidth = min(MAX_QSIZE, total_qsize - offset_triangles.x);
+	// uint qheight = min(MAX_QSIZE, total_qsize - offset_triangles.y);
+	//
+	// uint vwidth = qwidth + 1;
+	// uint vheight = qheight + 1;
+	// SetMeshOutputsEXT(vwidth * vheight, 2 * qwidth * qheight);
 
 	// TODO: skip if over the needed vertex res
 	// debugPrintfEXT("work group (%d, %d), triangle batch is (%d, %d) out of total (%d, %d)\n",
@@ -232,22 +235,38 @@ void main()
 	// 	qwidth, qheight,
 	// 	total_qsize, total_qsize);
 
-	vec2 uv = offset/float(payload.resolution - 1);
-	vec3 v = eval(patches.data[payload.pindex], uv.x, uv.y);
+	vec2 offset = vec2(0.0);
+	vec2 uv = offset/float(IN.payload.resolution - 1);
+	vec3 v = eval(patches.data[IN.payload.pindex], uv.x, uv.y);
 
-	gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = project(v);
-	// vertices[gl_LocalInvocationIndex] = v;
+	// if (gl_LocalInvocationIndex < 4)
+	gl_MeshVerticesNV[gl_LocalInvocationIndex].gl_Position = project(v);
 
-	// Send position to fragment shader for normal vector calculations
-	position[gl_LocalInvocationIndex] = vec3(model * vec4(v, 1.0f));
-	pindex[gl_LocalInvocationIndex] = payload.pindex;
+	if (gl_LocalInvocationIndex == 0) {
+		debugPrintfEXT("generating a primitive %d\n", gl_LocalInvocationIndex);
+		gl_PrimitiveCountNV = 2;
 
-	// barrier();
-	if (gl_LocalInvocationID.x < qwidth && gl_LocalInvocationID.y < qheight) {
-		uint primitive_index = 2 * (gl_LocalInvocationID.x + qwidth * gl_LocalInvocationID.y);
-
-		// TODO: diagonal cutting? switch to NV mesh shaders for read access
-		gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(gl_LocalInvocationIndex, gl_LocalInvocationIndex + 1, gl_LocalInvocationIndex + WORK_GROUP_SIZE);
-		gl_PrimitiveTriangleIndicesEXT[primitive_index + 1] = uvec3(gl_LocalInvocationIndex + WORK_GROUP_SIZE + 1, gl_LocalInvocationIndex + 1, gl_LocalInvocationIndex + WORK_GROUP_SIZE);
+		gl_PrimitiveIndicesNV[0] = 0;
+		gl_PrimitiveIndicesNV[1] = 1;
+		gl_PrimitiveIndicesNV[2] = 2;
+		gl_PrimitiveIndicesNV[3] = 1;
+		gl_PrimitiveIndicesNV[4] = 2;
+		gl_PrimitiveIndicesNV[5] = 3;
 	}
+
+	// gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = project(v);
+	// // vertices[gl_LocalInvocationIndex] = v;
+	//
+	// // Send position to fragment shader for normal vector calculations
+	// position[gl_LocalInvocationIndex] = vec3(model * vec4(v, 1.0f));
+	// pindex[gl_LocalInvocationIndex] = payload.pindex;
+	//
+	// // barrier();
+	// if (gl_LocalInvocationID.x < qwidth && gl_LocalInvocationID.y < qheight) {
+	// 	uint primitive_index = 2 * (gl_LocalInvocationID.x + qwidth * gl_LocalInvocationID.y);
+	//
+	// 	// TODO: diagonal cutting? switch to NV mesh shaders for read access
+	// 	gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(gl_LocalInvocationIndex, gl_LocalInvocationIndex + 1, gl_LocalInvocationIndex + WORK_GROUP_SIZE);
+	// 	gl_PrimitiveTriangleIndicesEXT[primitive_index + 1] = uvec3(gl_LocalInvocationIndex + WORK_GROUP_SIZE + 1, gl_LocalInvocationIndex + 1, gl_LocalInvocationIndex + WORK_GROUP_SIZE);
+	// }
 }

@@ -40,10 +40,17 @@ void main()
 	vec3 dV = dFdyFine(position);
 	vec3 N = normalize(cross(dU, dV));
 
-	if (mode == 0) {
+	if (mode == 2) {
 		vec3 diffuse = color * vec3(max(0, dot(N, light_direction)));
 		vec3 ambient = color * 0.1f;
-		fragment = vec4(diffuse + ambient, 0);
+		// fragment = vec4(diffuse + ambient, 0);
+		// vec3 specular = vec3(pow(max(0, dot(-viewing, N)), 16));
+		// fragment = vec4(specular, 0);
+
+		vec3 H = normalize(-viewing + light_direction);
+		vec3 specular = vec3(pow(max(0, dot(N, H)), 16));
+		fragment = vec4(diffuse + specular + ambient, 0);
+		fragment = pow(fragment, vec4(1/2.2));
 	} else if (mode == 1) {
 		// Normals
 		fragment = vec4(0.5 + 0.5 * N, 1.0f);

@@ -1,8 +1,9 @@
-*.pt
 *.blend
 *.egg-info/
+*.json
 *.obj
 *.pdf
+*.pt
 *.tar.gz
 .cache/
 .nsc

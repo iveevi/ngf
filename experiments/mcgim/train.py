@@ -4,6 +4,8 @@ import numpy as np
 
 from tqdm import trange
 
+from neural_mcgim import *
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--mcgim', help='path to the target multichart geometry image')
 
@@ -36,51 +38,35 @@ for i in range(mcgim.shape[0]):
     textured[x * sampling : (x + 1) * sampling, y * sampling : (y + 1) * sampling] = gim
 
 # Neural implicit function representing the image
-from neural_mcgim import NeuralMulticharts
-
-neural_mcgims = NeuralMulticharts().cuda()
-
-# TODO: test random features
-features = torch.zeros((N, M, NeuralMulticharts.FEATURE_SIZE),
-    dtype=torch.float32, device='cuda', requires_grad=True)
+neural_mcgims = ReLU_Feat_Posenc(N, M).cuda()
 
 U = torch.linspace(0, 1, N * sampling)
 V = torch.linspace(0, 1, M * sampling)
 U, V = torch.meshgrid(U, V, indexing='ij')
 UV_whole = torch.stack([U, V], dim=-1).cuda()
 
-opt = torch.optim.Adam(list(neural_mcgims.parameters()) + [ features ], 1e-3)
-sch = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.999)
+opt = torch.optim.Adam(list(neural_mcgims.parameters()), 1e-3)
+# sch = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.9995)
 
-# TODO: evaluate on linear patches in the feature space instead of UV space?
-
+# TODO: CNN architecture as well
 losses = []
 for i in trange(10_000):
-    # TODO: run the interpolation version
-
-    # f0, f1, f2, f3 = features[..., 0], features[..., 1], features[..., 2], features[..., 3]
-
-    # print('whole UV', UV_whole.shape)
-    translated = features.repeat((sampling, sampling, 1))
-    # print('  > ', translated.shape)
-
-    gims = neural_mcgims(UV_whole, translated)
+    gims = neural_mcgims(UV_whole)
     loss = (textured - gims).square().mean()
 
     opt.zero_grad()
     loss.backward()
     opt.step()
-    sch.step()
+    # sch.step()
 
     losses.append(loss.item())
-
-# gims = neural_mcgims(UV)
-# print('gims shape', gims.shape)
 
 import matplotlib.pyplot as plt
 import seaborn as sns
 
 sns.set_theme()
+
+plt.rcParams['figure.dpi'] = 600
 
 plt.plot(losses, label='loss')
 plt.yscale('log')
@@ -147,7 +133,6 @@ print('serializing to', filename)
 data = {
     'model': neural_mcgims.eval(),
     'sampling': (N, M, sampling),
-    'features': features.detach(),
 }
 
 torch.save(data, filename)

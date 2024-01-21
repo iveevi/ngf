@@ -176,7 +176,7 @@ def lookat(eye, center, up):
         [0, 0, 0, 1]
     ], dtype=torch.float32, device='cuda')
 
-def arrange_views(simplified: Mesh, cameras: int):
+def arrange_views(simplified: Mesh, cameras: int, radius: float = 1.0):
     import optext
 
     seeds = list(torch.randint(0, simplified.faces.shape[0], (cameras,)).numpy())
@@ -196,8 +196,7 @@ def arrange_views(simplified: Mesh, cameras: int):
         normal = normal.mean(dim=0)
         normal = normal / torch.norm(normal)
 
-        eye = centroid + 0.5 * normal
-        # eye = centroid + normal
+        eye = centroid + radius * normal
         up = torch.tensor([0, 1, 0], dtype=torch.float32, device='cuda')
         look = -normal
 
@@ -211,7 +210,7 @@ def arrange_views(simplified: Mesh, cameras: int):
 
         up = torch.cross(look, right)
         up /= up.norm()
-        
+
         look /= look.norm()
 
         view = torch.tensor([

@@ -71,7 +71,7 @@ combined_template = r'''
 '''
 
 # y label style={at={(1.07, 0.5)}, rotate=180},
-#legend style={fill=none},
+# legend style={draw=none, fill=none, at={(0.5, -0.4)}, anchor=north, font=\large},
 lineplot_template = r'''\begin{tikzpicture}[baseline=(current bounding box.north)]
 \begin{axis}[
     ymode=log,
@@ -84,7 +84,7 @@ lineplot_template = r'''\begin{tikzpicture}[baseline=(current bounding box.north
     ylabel=%s,
     xlabel=%s,
     legend columns=%d,
-    legend style={draw=none, fill=none, at={(0.5, -0.4)}, anchor=north, font=\large},
+    legend style={fill=none, font=\scriptsize},
     xmin=%.3f,
     xmax=%.3f,
     ymin=%.3f,
@@ -103,7 +103,7 @@ def fill_lineplot(**kwargs):
     return lineplot_template % (kwargs['title'], kwargs['codename'],
                                 kwargs['loc'], kwargs['width'],
                                 kwargs['height'], kwargs['ylabel'],
-                                kwargs['xlabel'], 3,
+                                kwargs['xlabel'], 1,
                                 kwargs['x_min'], kwargs['x_max'],
                                 kwargs['y_min'], kwargs['y_max'],
                                 kwargs['tick_step'], kwargs['plots'])
@@ -1072,7 +1072,7 @@ def mutlichart(db):
     for key in data:
         data[key] = sorted(data[key], key=lambda x: x[0])
 
-    _, code = lineplot(data, 'Patch Representations', ylabel='Error', xlabel='Size (KB)', width=12, height=8, xtick_step=50, legend=True)
+    _, code = lineplot(data, 'Patch Representations', ylabel='Chamfer', xlabel='Size (KB)', width=10, height=6, xtick_step=50, legend=True)
 
     combined = document_template % code
     print('code', combined)

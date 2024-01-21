@@ -1,44 +1,58 @@
 import torch
 import torch.nn as nn
 
-# Run an image learning exploration (with several discontinuities and pixel graphics)
-class NeuralMulticharts(nn.Module):
-    LEVELS = 16
-    FEATURE_SIZE = 500
-
+class Sin(torch.nn.Module):
     def __init__(self):
-        super(NeuralMulticharts, self).__init__()
+        super(Sin, self).__init__()
 
-        ffin = 2 * (2 * NeuralMulticharts.LEVELS + 1) + NeuralMulticharts.FEATURE_SIZE
+    def forward(self, x):
+        return torch.sin(x)
+
+class ReLU_Feat_Posenc(nn.Module):
+    def __init__(self, N, M, frequencies=16):
+        super(ReLU_Feat_Posenc, self).__init__()
+
+        self.FEATURE_SIZE = 100
+        self.FEATURE_GRID = (N, M)
+        self.features = nn.Parameter(torch.rand(*self.FEATURE_GRID, self.FEATURE_SIZE))
+        self.frequencies = frequencies
+
+        ffin = self.FEATURE_SIZE + 2 * (2 * self.frequencies + 1)
         self.model = nn.Sequential(
-                nn.Linear(ffin, 64),
-                nn.LeakyReLU(),
-                nn.Linear(64, 64),
-                nn.LeakyReLU(),
-                nn.Linear(64, 64),
-                nn.LeakyReLU(),
-                nn.Linear(64, 3)
+            nn.Linear(ffin, 128),
+            nn.LeakyReLU(),
+            nn.Linear(128, 128),
+            nn.LeakyReLU(),
+            nn.Linear(128, 128),
+            nn.LeakyReLU(),
+            nn.Linear(128, 128),
+            nn.LeakyReLU(),
+            nn.Linear(128, 3)
         )
 
-    def encoding(self, X, F):
-        Xs = [ F, X ]
-        for i in range(NeuralMulticharts.LEVELS):
+    def posenc(self, UV):
+        X = [ UV ]
+        for i in range(self.frequencies):
             k = 2 ** i
-            Xs += [ torch.sin(k * X), torch.cos(k * X) ]
+            X += [ torch.sin(k * UV), torch.cos(k * UV) ]
 
-        return torch.cat(Xs, dim=-1)
+        return torch.cat(X, dim=-1)
 
-    def forward(self, UV, F):
-        return self.model(self.encoding(UV, F))
+    def forward(self, UV):
+        U, V = UV[..., 0], UV[..., 1]
+        iU = ((self.FEATURE_GRID[0] - 1) * U)
+        iV = ((self.FEATURE_GRID[1] - 1) * V)
+        iU0, iU1 = iU.floor().int(), iU.ceil().int()
+        iV0, iV1 = iV.floor().int(), iV.ceil().int()
 
-    def evaluate(self, **kwargs):
-        features = kwargs['features']
-        sampling = kwargs['sampling']
+        iU = (iU - iU0).unsqueeze(-1)
+        iV = (iV - iV0).unsqueeze(-1)
 
-        with torch.no_grad():
-            U = torch.linspace(0, 1, sampling[0] * sampling[2])
-            V = torch.linspace(0, 1, sampling[1] * sampling[2])
-            U, V = torch.meshgrid(U, V, indexing='ij')
-            UV_whole = torch.stack([U, V], dim=-1).cuda()
-            translated = features.repeat((sampling[2], sampling[2], 1))
-            return self.forward(UV_whole, translated)
+        f00 = self.features[iU0, iV0] * (1.0 - iU) * (1.0 - iV)
+        f01 = self.features[iU1, iV0] * iU * (1.0 - iV)
+        f10 = self.features[iU0, iV1] * (1.0 - iU) * iV
+        f11 = self.features[iU1, iV1] * iU * iV
+        features = f00 + f01 + f10 + f11
+
+        return self.model(torch.cat((self.posenc(UV), features), dim=-1))
+
