@@ -9,4 +9,6 @@ opencv-python
 polyscope
 pymeshlab
 seaborn
+torch
+torchvision
 tqdm

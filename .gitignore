@@ -1,3 +1,4 @@
+*.pt
 *.blend
 *.egg-info/
 *.obj

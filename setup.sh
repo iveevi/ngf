@@ -1,5 +1,4 @@
-#/bin/bash
-set -e
+set -e -v
 git submodule update --init
 cmake -B build .
 cmake --build build

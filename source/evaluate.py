@@ -46,9 +46,13 @@ class Evaluator:
 
     def get_view(self, tag):
         predef = {
-                'xyz': torch.tensor([ 2, 0, 1 ], device='cuda').float(),
-                'einstein': torch.tensor([ 0, 0, 3.5 ], device='cuda').float(),
-                'skull': torch.tensor([ -0.5, 0, 2.5 ], device='cuda').float(),
+                'xyz'       : torch.tensor([ 2, 0, 1 ], device='cuda').float(),
+                'einstein'  : torch.tensor([ 0, 0, 3.5 ], device='cuda').float(),
+                'skull'     : torch.tensor([ -0.5, 0, 2.5 ], device='cuda').float(),
+                'armadillo' : torch.tensor([ -1.8, 0, -2.8 ], device='cuda').float(),
+                'nefertiti' : torch.tensor([ 0, 0, -3.5 ], device='cuda').float(),
+                'lucy'      : torch.tensor([ 0, 0, -4.0 ], device='cuda').float(),
+                'dragon'    : torch.tensor([ 0, 0, 3.5 ], device='cuda').float(),
         }
 
         eye    = torch.tensor([ 0, 0, 3 ], device='cuda').float()
@@ -227,20 +231,16 @@ def scene_evaluations(reference, directory, alt=None):
             metrics = evaluator.eval_metrics(ngf_mesh, name)
 
             metrics['count'] = ngf.complexes.shape[0]
-            # count = ngf.complexes.shape[0]
             metrics['size'] = size
             metrics['cratio'] = ref_size/size
 
-            # evaluations.setdefault('Ours', {})
-            # evaluations['Ours'][count] = metrics
             evaluations.setdefault('Ours', []).append(metrics)
             sizes.append(size)
 
-
     # QSlim and nvdiffmodeling at various sizes
-    for size_kb in sizes:
+    for size in sizes:
         # QSlim
-        qslim_search(1024 * size_kb)
+        qslim_search(size)
 
         smashed, _ = load_mesh(qslim_result)
 
@@ -250,6 +250,9 @@ def scene_evaluations(reference, directory, alt=None):
         metrics['cratio'] = ref_size/metrics['size']
 
         evaluations.setdefault('QSlim', []).append(metrics)
+
+        axs[0].imshow(metrics['images']['normal:ref'].cpu().numpy())
+        axs[1].imshow(metrics['images']['normal:mesh'].cpu().numpy())
 
         # nvdiffmodeling
         data = {
@@ -284,9 +287,10 @@ def scene_evaluations(reference, directory, alt=None):
 
         nvdiff, _ = load_mesh(os.path.join('evals', 'nvdiffmodeling', name, 'mesh', 'mesh.obj'))
 
-        metrics = evaluator.eval_metrics(nvdiff)
+        metrics = evaluator.eval_metrics(nvdiff, name)
         metrics['count'] = nvdiff.faces.shape[0]
         metrics['size'] = mesh_size(nvdiff.vertices, nvdiff.faces)
+        metrics['cratio'] = ref_size/metrics['size']
 
         evaluations.setdefault('nvdiffmodeling', []).append(metrics)
 
@@ -313,15 +317,18 @@ def tessellation_evaluation(prefix):
     rdir = os.path.abspath(os.path.join(rdir, os.pardir))
     base = os.path.abspath(os.path.join(rdir, 'results'))
 
-    def eval_tessellations(evaluator, ngf):
+    def eval_tessellations(evaluator, ngf, name):
         rate_metrics = {}
-        for rate in [ 2, 4, 8, 12, 16, 32 ]:
+        # for rate in [ 2, 4, 8, 12, 16, 32 ]:
+        for rate in [ 2, 4, 8, 12, 16 ]:
             mesh = ngf_mesh(ngf, rate)
-            metrics = evaluator.eval_metrics(mesh)
+            metrics = evaluator.eval_metrics(mesh, name)
             rate_metrics[rate] = {
-                'render': metrics['render'],
-                'normal': metrics['normal'],
-                'chamfer': metrics['chamfer']
+                'render'  : metrics['render'],
+                'normal'  : metrics['normal'],
+                'chamfer' : metrics['chamfer'],
+                'ref'     : metrics['images']['render:ref'],
+                'mesh'    : metrics['images']['render:mesh'],
             }
 
         return rate_metrics
@@ -332,6 +339,7 @@ def tessellation_evaluation(prefix):
             if prefix in file and file.endswith('pt'):
                 file = os.path.join(root, file)
                 scene = os.path.basename(root)
+                print('Processing scene', scene)
                 reference = os.path.join(rdir, 'meshes', scene, 'target.obj')
                 reference, _ = load_mesh(reference)
                 evaluator = Evaluator(reference)
@@ -339,14 +347,15 @@ def tessellation_evaluation(prefix):
                 ngf = torch.load(file)
                 ngf = load_ngf(ngf)
 
-                rm = eval_tessellations(evaluator, ngf)
+                rm = eval_tessellations(evaluator, ngf, scene)
                 data[scene] = rm
 
     print(data)
+    torch.save(data, 'tessellation.pt')
 
-    import json
-    with open('tessellation.json', 'w') as f:
-        json.dump(data, f)
+    # import json
+    # with open('tessellation.json', 'w') as f:
+    #     json.dump(data, f)
 
 def feature_evaluation(prefix):
     print('feature prefix:', prefix)
@@ -381,7 +390,7 @@ def feature_evaluation(prefix):
     # Gather metrics
     data = {}
     for scene, components in setup.items():
-        print('Evaluating ', scene)
+        print('Evaluating', scene)
 
         evaluator = components['evaluator']
         for k in components:
@@ -404,17 +413,17 @@ def feature_evaluation(prefix):
             size = sum([ p.numel() * p.element_size() for p in ngf.parameters()])
             size += ngf.complexes.numel() * ngf.complexes.element_size()
 
-            metrics = evaluator.eval_metrics(ngf_mesh)
+            metrics = evaluator.eval_metrics(ngf_mesh, scene)
             data.setdefault(scene, {})[k] = {
-                'render': metrics['render'],
-                'normal': metrics['normal'],
-                'chamfer': metrics['chamfer'],
-                'size': size
+                'render'  : metrics['render'],
+                'normal'  : metrics['normal'],
+                'chamfer' : metrics['chamfer'],
+                'ref'     : metrics['images']['normal:ref'],
+                'mesh'    : metrics['images']['normal:mesh'],
+                'size'    : size
             }
 
-    with open('features.json', 'w') as f:
-        import json
-        json.dump(data, f)
+    torch.save(data, 'features.pt')
 
 def multichart_evaluations():
     import re
@@ -442,7 +451,7 @@ def multichart_evaluations():
     # Find all ngf models
     def ngf_to_mesh(ngf):
         sample = ngf.sample_uniform(16)
-        V = ngf.eval_oo(*sample).detach()
+        V = ngf.eval(*sample).detach()
 
         base = ngf.base(16).detach()
         cmap = make_cmap(ngf.complexes, ngf.points.detach(), base, 16)
