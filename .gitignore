@@ -1,6 +1,5 @@
 *.blend
 *.egg-info/
-*.json
 *.obj
 *.pdf
 *.pt

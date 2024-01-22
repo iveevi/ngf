@@ -36,10 +36,8 @@ def construct_ngf(path: str, config: dict, normalizer) -> NGF:
     points, complexes = load_patches(path, normalizer)
     features          = torch.zeros((points.shape[0], config['features']), device='cuda')
     # features          = torch.randn((points.shape[0], config['features']), device='cuda')
-
     points.requires_grad   = True
     features.requires_grad = True
-
     return NGF(points, complexes, features, config)
 
 def vertex_normals(V, F):
@@ -51,18 +49,10 @@ def train(target, generator, opt, sch, viewset, iterations):
     import torch
 
     # Laplacian?
-    from kornia.filters import laplacian
     from kaolin.metrics.pointcloud import chamfer_distance
 
     def lift(I):
-        return I
-        # return torch.concat((I, I.sin(), (2 * I).sin(), (4 * I).sin(), (8 * I).sin()), dim=-1)
-        # return torch.concat((I.sin(), (2 * I).sin(), (4 * I).sin()), dim=-1)
-
-    def lap(I):
-        I = I.permute(0, 3, 2, 1)
-        I = laplacian(I, kernel_size=7)
-        return I.permute(0, 3, 2, 1)
+        return torch.cat((I, I.sin(), I.cos()), dim=-1)
 
     views, batch_size = viewset
 
@@ -74,8 +64,6 @@ def train(target, generator, opt, sch, viewset, iterations):
         V, N, F, additional = generator()
 
         opt_imgs = renderer.render_attributes(V, N, F, view_mats)
-        # opt_laps = lap(lift(opt_imgs))
-        # ref_laps = lap(ref_data)
 
         # import matplotlib.pyplot as plt
         # import seaborn as sns
@@ -101,8 +89,7 @@ def train(target, generator, opt, sch, viewset, iterations):
 
         # Compute losses
         render_loss = (lift(opt_imgs) - ref_data).abs().mean()
-        # laplacian_loss = (lift(opt_laps) - ref_laps).square().mean()
-        loss = render_loss # + laplacian_loss
+        loss = render_loss
         if additional is not None:
             loss += additional
 
@@ -218,27 +205,21 @@ def refine(target, ngf, rate, views, opt, sch, iterations):
     vgraph = optext.vertex_graph(remap.remap(quads))
     delta  = 1/rate
 
-    # TODO: jittering radius
-    # TODO: add depth layers?
     def generator():
         nonlocal vgraph, delta
 
-        # torch.cuda.empty_cache()
         for p in ngf.parameters():
             p.grad = None
 
         uvs = ngf.sampler(rate)
         V = ngf.eval(*uvs)
-        # assert not torch.isnan(V).any()
 
         indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
         F = remap.remap_device(indices)
         N = vertex_normals(V, F)
-        # N = ngf.eval_normals(*uvs, delta)
 
         V_smoothed = vgraph.smooth_device(V, 1.0)
         laplacian_loss = (V - V_smoothed).abs().mean()
-        # laplacian_loss = (V - V_smoothed).square().mean()
 
         return V, N, F, laplacian_loss
 
@@ -291,8 +272,6 @@ if __name__ == '__main__':
     # all_views = arrange_camera_views(target)
     # add_views = arrange_views(target, 100)
     # all_views = torch.concat([all_views, add_views])
-
-    # TODO: combine with chamfer
     all_views = arrange_views(target, 200)
     visualize_views(all_views)
 
@@ -356,15 +335,7 @@ if __name__ == '__main__':
 
         for rate in [ 4, 8, 16 ]:
             torch.cuda.empty_cache()
-            # for group in opt.param_groups:
-            #     group['lr'] = 1e-3
-
             opt = torch.optim.Adam(list(ngf.mlp.parameters()) + [ ngf.points, ngf.features ], 1e-3)
-            # opt = torch.optim.Adam([
-            #     { 'params': ngf.mlp.parameters() },
-            #     { 'params': ngf.features, 'lr': 1e-3 }
-            # ], 1e-3)
-
             sch = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.999)
 
             print('Refining with rate {}'.format(rate))
