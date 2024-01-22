@@ -1,17 +1,17 @@
 {
-	"target": "meshes/lucy/target.obj",
-	"directory": "results/lucy",
+	"target": "meshes/assembly/target.obj",
+	"directory": "results/assembly",
 	"clusters": 200,
 	"batch_size": 20,
 	"resolution": 16,
 	"experiments": [
 		{
 			"name": "experimental",
-			"source": "meshes/lucy/source-lod2.obj",
+			"source": "meshes/assembly/source-lod1.obj",
 			"encoder": "sincos",
 			"encoding_levels": 8,
 			"features": 20,
-			"jittering": false,
+			"jittering": true,
 			"normals": "numerical"
 		}
 	]

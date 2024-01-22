@@ -2,7 +2,7 @@
 	"target": "meshes/dragon/target.obj",
 	"directory": "results/dragon",
 	"clusters": 200,
-	"batch_size": 10,
+	"batch_size": 20,
 	"resolution": 16,
 	"experiments": [
 		{

@@ -1,0 +1,68 @@
+{
+	"target": "meshes/armadillo/target.obj",
+	"directory": "results/frequencies",
+	"clusters": 200,
+	"batch_size": 10,
+	"resolution": 16,
+	"experiments": [
+		{
+			"name": "f16",
+			"source": "meshes/armadillo/source-lod2.obj",
+			"encoder": "sincos",
+			"encoding_levels": 16,
+			"features": 20,
+			"jittering": true,
+			"normals": "numerical"
+		},
+
+		{
+			"name": "f8",
+			"source": "meshes/armadillo/source-lod2.obj",
+			"encoder": "sincos",
+			"encoding_levels": 8,
+			"features": 20,
+			"jittering": true,
+			"normals": "numerical"
+		},
+
+		{
+			"name": "f4",
+			"source": "meshes/armadillo/source-lod2.obj",
+			"encoder": "sincos",
+			"encoding_levels": 4,
+			"features": 20,
+			"jittering": true,
+			"normals": "numerical"
+		},
+
+		{
+			"name": "f2",
+			"source": "meshes/armadillo/source-lod2.obj",
+			"encoder": "sincos",
+			"encoding_levels": 2,
+			"features": 20,
+			"jittering": true,
+			"normals": "numerical"
+		},
+
+		{
+			"name": "f1",
+			"source": "meshes/armadillo/source-lod2.obj",
+			"encoder": "sincos",
+			"encoding_levels": 1,
+			"features": 20,
+			"jittering": true,
+			"normals": "numerical"
+		},
+
+		{
+			"name": "f0",
+			"source": "meshes/armadillo/source-lod2.obj",
+			"encoder": "sincos",
+			"encoding_levels": 0,
+			"features": 20,
+			"jittering": true,
+			"normals": "numerical"
+		}
+	]
+}
