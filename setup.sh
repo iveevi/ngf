@@ -1,7 +1,7 @@
-set -e -v
+set -v
 git submodule update --init
 cmake -B build .
 cmake --build build
-gdown --id 10qhu9uPgxtvnObGamTVCB0y_yQ_29ps0
+gdown 1mkhPkMe73NNK-TfmtJELgpO9UjCnO5UR
 tar -xzvf meshes.tar.gz
 rm meshes.tar.gz

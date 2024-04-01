@@ -2,7 +2,6 @@ import os
 import torch
 import numpy as np
 
-from configurations import *
 from util import *
 
 if __name__ == '__main__':
@@ -27,13 +26,8 @@ if __name__ == '__main__':
             mlp = model['model']
 
             make = mlp.__class__.__name__
-            if not 'LeakyReLU' in make:
-                print('Model is not leaky relu based, skipping...')
-                continue
-
-            kernel = model['kernel']
-            if not kernel == 'linear':
-                print('Kernel is not linear, skipping...')
+            if make != 'MLP':
+                print('Incorrect model, skipping...')
                 continue
 
             # Destination path
@@ -42,12 +36,15 @@ if __name__ == '__main__':
 
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, 'wb') as f:
-                # s0, s1, s2 = mlp.s0.item(), mlp.s1.item(), mlp.s2.item()
-                # ss = np.array([ s0, s1, s2 ], dtype='float32')
-                # print('Scales: {}, {}, {}'.format(s0, s1, s2))
+                if 'seq' not in mlp.__dict__['_modules']:
+                    print('Not the sequential version, skipping...')
+                    continue
 
-                weights = [ L.weight.data for L in mlp.encoding_linears.cpu() ]
-                biases  = [ L.bias.data   for L in mlp.encoding_linears.cpu() ]
+                seq = mlp.seq.cpu()
+                layers = [ seq[0], seq[2], seq[4], seq[6] ]
+
+                weights = [ L.weight.data for L in layers  ]
+                biases  = [ L.bias.data   for L in layers ]
 
                 print('Weights: {}'.format([ w.shape for w in weights ]))
                 print('Biases:  {}'.format([ b.shape for b in biases ]))
@@ -90,10 +87,3 @@ if __name__ == '__main__':
                     f.write(b.numpy().astype('float32').tobytes())
 
                 f.close()
-
-                # Evaluate for reference
-                kernel = model['kernel']
-                kernel = lerps[ kernel ]
-
-                lp, lf = sample(model['complexes'], model['points'], model['features'], 3, kernel)
-                vs = model['model'].cuda()(points=lp, features=lf)

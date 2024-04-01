@@ -6,9 +6,10 @@ import polyscope as ps
 import re
 import torch
 import optext
+import robust_laplacian
 
 from ngf import load_ngf
-from util import quadify, shorted_indices
+from util import quadify, make_cmap
 from mesh import load_mesh
 
 COLOR_WHEEL = [
@@ -139,16 +140,38 @@ def preview_single(ngf, refs):
     ps.set_user_callback(callback)
     ps.show()
 
+def density_metrics(V, F):
+    adj = [ [] for i in range(len(V)) ]
+    for f in F:
+        for i in range(3):
+            a, b = f[i], f[(i + 1) % 3]
+            adj[a].append(b)
+            adj[b].append(a)
+
+    min_distances = [ 0 for i in range(len(adj)) ]
+    for i in range(len(adj)):
+        vs = V[adj[i]]
+        if len(vs) == 0:
+            continue
+        Vi = V[i]
+        md = np.min(np.linalg.norm(Vi - vs, axis=-1))
+        min_distances[i] = md
+
+    return np.array(min_distances)
+
 def preview_many(many, refs):
     current = list(refs.keys())[0] if (len(refs) > 0) else None
     if current is None:
         list(many.keys())[0]
+
     def draw(rate):
         ps.remove_all_structures()
+        ps.set_ground_plane_mode('shadow_only')
 
         if current in refs:
             V, F = refs[current]
-            m = ps.register_surface_mesh('reference', V, F)
+            m = ps.register_surface_mesh('reference', V.cpu().numpy(), F.cpu().numpy())
+            # m.set_smooth_shade(True)
             m.set_color([0.5, 0.5, 1.0])
             m.set_material('wax')
             return
@@ -158,20 +181,26 @@ def preview_many(many, refs):
                 continue
 
             uvs = ngf.sample_uniform(rate)
+            base = ngf.base(rate)
+            cmap = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
+            remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
             V = ngf.eval(*uvs).detach()
-            F = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
-
-            # Q = quadify(ngf.complexes.shape[0], rate)
-            # F = shorted_indices(V, ngf.complexes, rate)
-
-            m = ps.register_surface_mesh(f, V.cpu().numpy(), F.cpu().numpy())
+            indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
+            F = remap.remap_device(indices)
+            V, F = V.cpu().numpy(), F.cpu().numpy()
+            m = ps.register_surface_mesh(f, V, F)
+            # m.set_smooth_shade(True)
             m.set_color([0.5, 0.5, 1.0])
             m.set_material('wax')
+            # D = density_metrics(V, F)
+            # print('Distance metrics', np.sum(D), np.var(D))
+            # D = 1/(0.1 + D)
+            # m.add_scalar_quantity('area', D, defined_on='vertices', cmap='jet', enabled=True)
             return
 
     ps.init()
 
-    ps.set_ground_plane_mode('none')
+    # ps.set_ground_plane_mode('none')
 
     rate = 4
     def callback():
@@ -191,7 +220,7 @@ def preview_many(many, refs):
         imgui.Separator()
 
         for ref in refs:
-            if imgui.RadioButton('Reference', current == ref):
+            if imgui.RadioButton(ref, current == ref):
                 current = ref
                 draw(rate)
                 return
@@ -328,7 +357,7 @@ if __name__ == '__main__':
             # refs.append(mesh)
             f = os.path.basename(file)
             f = os.path.dirname(file) + '-' + f
-            refs[f] = mesh
+            refs[f] = (mesh.vertices, mesh.faces)
 
     lods = {}
     if args.lods is not None:

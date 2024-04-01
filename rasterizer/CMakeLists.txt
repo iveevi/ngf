@@ -14,6 +14,7 @@ set(CMAKE_CUDA_ARCHITECTURES 80)
 find_package(OpenMP REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(glslang REQUIRED)
+find_package(OpenCV REQUIRED)
 
 # ImGui object library
 add_library(imgui OBJECT
@@ -41,6 +42,13 @@ target_link_libraries(testbed
 	glslang::glslang
 	glslang::glslang-default-resource-limits
 	OpenMP::OpenMP_CXX
-	Vulkan::Vulkan)
+	Vulkan::Vulkan
+	avcodec
+	swscale
+	avdevice
+	avformat
+	avfilter
+	avutil
+	${OpenCV_LIBS})
 
-include_directories(. ../thirdparty/glm imgui implot)
+include_directories(. ../thirdparty/glm imgui implot ${OpenCV_INCLUDE_DIRS})

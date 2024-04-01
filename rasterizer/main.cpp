@@ -13,11 +13,13 @@
 
 #include <implot.h>
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb/stb_image_write.h>
+
 #include "mesh.hpp"
 #include "microlog.h"
 #include "pipeline.hpp"
 #include "util.hpp"
-#include "video.hpp"
 
 struct Engine;
 
@@ -526,11 +528,6 @@ int main(int argc, char *argv[])
 			w.vec.resize(sizes[0] * sizes[1]);
 			fin.read(reinterpret_cast <char *> (w.vec.data()), w.vec.size() * sizeof(float));
 
-			// printf("\nWEIGHT %d: ", i);
-			// for (float f : w.vec)
-			// 	printf("%f ", f);
-			// printf("\n");
-
 			weights[i] = w;
 		}
 
@@ -546,11 +543,6 @@ int main(int argc, char *argv[])
 			w.vec.resize(size);
 			fin.read(reinterpret_cast <char *> (w.vec.data()), w.vec.size() * sizeof(float));
 
-			// printf("\nBIAS %d: ", i);
-			// for (float f : w.vec)
-			// 	printf("%f ", f);
-			// printf("\n");
-
 			biases[i] = w;
 		}
 
@@ -559,7 +551,6 @@ int main(int argc, char *argv[])
 		ngf.weights = weights;
 		ngf.biases = biases;
 
-		// ngf.vertices = vertices;
 		// Need special care for vertices to align them properly
 		ngf.vertices.resize(vertices.size());
 		for (int32_t i = 0; i < vertices.size(); i++)
@@ -609,7 +600,7 @@ int main(int argc, char *argv[])
 	// Initialization
 	Engine engine = Engine::from(phdev);
 
-	engine.camera_transform.position = glm::vec3 { 0, 0, -2 };
+	engine.camera_transform.position = glm::vec3 { 0, 0, -2.3 };
 	VulkanMesh vk_ref = VulkanMesh::from(engine, reference);
 	VulkanMesh vk_ngf = VulkanMesh::from(engine, ngf_base);
 
@@ -623,14 +614,16 @@ int main(int argc, char *argv[])
 	} vk_ngf_buffers;
 
 	{
-		vk_ngf_buffers.points = littlevk::buffer(
+		vk_ngf_buffers.points = littlevk::buffer
+		(
 			engine.device,
 			ngf.vertices,
 			vk::BufferUsageFlagBits::eStorageBuffer,
 			engine.memory_properties
 		).unwrap(engine.dal);
 
-		vk_ngf_buffers.patches = littlevk::buffer(
+		vk_ngf_buffers.patches = littlevk::buffer
+		(
 			engine.device,
 			ngf.patches,
 			vk::BufferUsageFlagBits::eStorageBuffer,
@@ -641,7 +634,8 @@ int main(int argc, char *argv[])
 
 		float casted = *reinterpret_cast <float *> (&ngf.feature_size);
 		features.insert(features.begin(), casted);
-		vk_ngf_buffers.features = littlevk::buffer(
+		vk_ngf_buffers.features = littlevk::buffer
+		(
 			engine.device,
 			features,
 			vk::BufferUsageFlagBits::eStorageBuffer,
@@ -654,11 +648,6 @@ int main(int argc, char *argv[])
 			network.insert(network.begin(), ngf.weights[i].vec.begin(), ngf.weights[i].vec.end());
 			network.insert(network.begin(), ngf.biases[i].vec.begin(), ngf.biases[i].vec.end());
 		}
-
-		printf("first 64 network terms: ");
-		for (int32_t i = 0; i < 64; i++)
-			printf("%f ", network[i]);
-		printf("\n");
 
 		vk_ngf_buffers.network = littlevk::buffer(
 			engine.device,
@@ -681,19 +670,37 @@ int main(int argc, char *argv[])
 		littlevk::bind(engine.device, vk_ngf_buffers.dset, vk_ngf_buffers.network,  3);
 	}
 
-	// for (int i = 0; i < 1000; i++)
-	// 	ulog_progress("bar", i/1000.0f);
+	// Storing framebuffer information
+	littlevk::Buffer staging;
+
+	{
+		staging = littlevk::buffer
+		(
+			engine.device,
+			1920 * 1080 * sizeof(glm::ivec4),
+			vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst,
+			engine.memory_properties
+		).unwrap(engine.dal);
+	}
 
 	// Plotting data
-	constexpr uint32_t SAMPLES = 100;
+	constexpr uint32_t SAMPLES = 10;
 
 	std::deque <float> frametimes;
 	uint32_t mode = 0;
 
 	size_t frame = 0;
 
-	constexpr size_t mode_duration = 5 * 120;
-	size_t duration = 0;
+	constexpr int DURATION = 90;
+	// constexpr int DURATION = 180;
+	int iteration = 0;
+
+	// Setup directory for storing files
+	std::filesystem::remove_all("video");
+	std::filesystem::create_directory("video");
+
+	std::vector <uint32_t> fb_vec(1920 * 1080);
+	std::vector <uint8_t>  translated(1920 * 1080 * 3);
 
 	while (valid_window(engine)) {
 		// Get events
@@ -709,14 +716,26 @@ int main(int argc, char *argv[])
 		render_pass_begin(engine, cmd, op);
 
 		// const auto &ppl = activate_pipeline(engine, cmd);
-
+		//
+		// // Regular rendering push constants
+		// BasePushConstants base_pc {
+		// 	engine.push_constants.model,
+		// 	engine.push_constants.view,
+		// 	engine.push_constants.proj,
+		// };
+		//
+		// Transform tf_base;
+		// tf_base.rotation.y = fmod(2.0f * iteration, 360.0f);
+		// tf_base.position.x = -0.5f;
+		// base_pc.model = tf_base.matrix();
+		//
 		// cmd.pushConstants <BasePushConstants>
 		// (
 		// 	ppl.layout,
 		// 	vk::ShaderStageFlagBits::eVertex,
-		// 	0, push_constants
+		// 	0, base_pc
 		// );
-
+		//
 		// cmd.bindVertexBuffers(0, { vk_ref.vertices.buffer }, { 0 });
 		// cmd.bindIndexBuffer(vk_ref.triangles.buffer, 0, vk::IndexType::eUint32);
 		// cmd.drawIndexed(vk_ref.indices, 1, 0, 0, 0);
@@ -741,9 +760,10 @@ int main(int argc, char *argv[])
 			time
 		};
 
-		Transform tf;
-		// tf.rotation.y = fmod(50.0f * time, 360.0f);
-		ngf_pc.model = tf.matrix();
+		Transform tf_ngf;
+		tf_ngf.rotation.y = fmod(2.0f * iteration, 360.0f);
+		// tf_ngf.position.x = 0.5f;
+		ngf_pc.model = tf_ngf.matrix();
 
 		cmd.pushConstants <NGFPushConstants>
 		(
@@ -770,70 +790,108 @@ int main(int argc, char *argv[])
 		cmd.drawMeshTasksEXT(ngf.patch_count, 1, 1);
 
 		// ImGui pass
-		{
-			ImGui_ImplVulkan_NewFrame();
-			ImGui_ImplGlfw_NewFrame();
-			ImGui::NewFrame();
-
-			ImGui::Begin("Info");
-
-			float ft = ImGui::GetIO().DeltaTime;
-			ImGui::Text("Frame time: %f ms / %d fps", ft * 1000.0f, int32_t(1.0f/ft));
-			ImGui::Text("Number of active patches: %d\n", ngf.patch_count);
-			ImGui::Separator();
-
-			static const std::unordered_map <uint32_t, std::string> mode_descriptions {
-				{ 0, "Patches" },
-				{ 1, "Normal" },
-				{ 2, "Shaded" }
-			};
-
-			ImGui::Text("Render mode");
-			for (const auto &[m, desc] : mode_descriptions) {
-				if (ImGui::RadioButton(desc.c_str(), mode == m))
-					mode = m;
-			}
-
-			// ImGui::Separator();
-			//
-			// frametimes.push_back(1000.0f * ft);
-			// if (frametimes.size() > SAMPLES)
-			// 	frametimes.pop_front();
-			//
-			// if (ImPlot::BeginPlot("Frametime")) {
-			// 	std::vector <float> flat(frametimes.begin(), frametimes.end());
-			// 	float max = 0.0f;
-			// 	for (float f : flat)
-			// 		max = std::max(max, f);
-			//
-			// 	ImPlot::SetupAxesLimits(0, 100, 0, max);
-			// 	ImPlot::SetNextAxisLimits(0, 100, 0, max);
-			// 	ImPlot::PlotLine("Frametimes", flat.data(), flat.size());
-			// 	ImPlot::EndPlot();
-			// }
-
-			ImGui::End();
-
-			ImGui::Render();
-			ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
-		}
+		// {
+		// 	ImGui_ImplVulkan_NewFrame();
+		// 	ImGui_ImplGlfw_NewFrame();
+		// 	ImGui::NewFrame();
+		//
+		// 	ImGui::Begin("Info");
+		//
+		// 	float ft = ImGui::GetIO().DeltaTime;
+		// 	ImGui::Text("Frame time: %f ms / %d fps", ft * 1000.0f, int32_t(1.0f/ft));
+		// 	ImGui::Text("Number of active patches: %d\n", ngf.patch_count);
+		// 	ImGui::Separator();
+		//
+		// 	static const std::unordered_map <uint32_t, std::string> mode_descriptions {
+		// 		{ 0, "Patches" },
+		// 		{ 1, "Normal" },
+		// 		{ 2, "Shaded" }
+		// 	};
+		//
+		// 	ImGui::Text("Render mode");
+		// 	for (const auto &[m, desc] : mode_descriptions) {
+		// 		if (ImGui::RadioButton(desc.c_str(), mode == m))
+		// 			mode = m;
+		// 	}
+		//
+		// 	// ImGui::Separator();
+		// 	//
+		// 	// frametimes.push_back(1000.0f * ft);
+		// 	// if (frametimes.size() > SAMPLES)
+		// 	// 	frametimes.pop_front();
+		// 	//
+		// 	// if (ImPlot::BeginPlot("Frametime")) {
+		// 	// 	std::vector <float> flat(frametimes.begin(), frametimes.end());
+		// 	// 	float max = 0.0f;
+		// 	// 	for (float f : flat)
+		// 	// 		max = std::max(max, f);
+		// 	//
+		// 	// 	ImPlot::SetupAxesLimits(0, 100, 0, max);
+		// 	// 	ImPlot::SetNextAxisLimits(0, 100, 0, max);
+		// 	// 	ImPlot::PlotLine("Frametimes", flat.data(), flat.size());
+		// 	// 	ImPlot::EndPlot();
+		// 	// }
+		//
+		// 	ImGui::End();
+		//
+		// 	ImGui::Render();
+		// 	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+		// }
 
 		render_pass_end(engine, cmd);
 
+		// Download the frame into the staging buffer
+		const vk::Image &fb = engine.swapchain.images[op.index];
+		littlevk::transition(cmd, fb, vk::ImageLayout::ePresentSrcKHR, vk::ImageLayout::eTransferSrcOptimal);
+
+		littlevk::copy_image_to_buffer
+		(
+			cmd, fb,
+			staging, engine.window->extent,
+			vk::ImageLayout::eTransferSrcOptimal
+		);
+
+		littlevk::transition(cmd, fb, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::ePresentSrcKHR);
+
 		end_frame(engine, cmd, frame);
+
+		// Present the frame and submit
 		present_frame(engine, op, frame);
+
+		// Save frame as an image
+		engine.device.waitIdle();
+		littlevk::download(engine.device, staging, fb_vec);
+
+		// TODO: openmp parallel
+		for (int32_t i = 0; i < 1920 * 1080; i++) {
+			uint32_t p = fb_vec[i];
+
+			uint8_t a = (p & 0xff000000) >> 24;
+			uint8_t r = (p & 0x00ff0000) >> 16;
+			uint8_t g = (p & 0x0000ff00) >> 8;
+			uint8_t b = (p & 0x000000ff);
+
+			translated[3 * i] = r;
+			translated[3 * i + 1] = g;
+			translated[3 * i + 2] = b;
+		}
+
+		char buf[1024];
+		sprintf(buf, "video/frame%03d.png", iteration);
+		stbi_write_png(buf, 1920, 1080, 3, translated.data(), 1920 * 3 * sizeof(uint8_t));
 
 		// Post frame
 		frame = 1 - frame;
 
-		// Mode incrementing
-		// duration++;
-		// if (duration > mode_duration) {
-		// 	duration = 0;
-		// 	mode++;
-		// }
-		//
-		// if (mode > 2)
+		iteration++;
+		printf("iter %d, mode %d\n", iteration, (mode + 1) * DURATION);
+		// if (iteration > DURATION)
 		// 	break;
+
+		if (iteration > (mode + 1) * DURATION)
+			mode++;
+
+		if (mode > 2)
+			break;
 	}
 }

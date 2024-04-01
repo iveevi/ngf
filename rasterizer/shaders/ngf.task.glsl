@@ -64,8 +64,8 @@ void main()
 	float a1 = cross(p1 - p2, p1 - p3);
 	float area = sqrt(a0 + a1)/16;
 
-	payload.resolution = max(2, min(15, uint(area)));
-	// payload.resolution = 15;
+	// payload.resolution = max(2, min(15, uint(area)));
+	payload.resolution = 15;
 
 	debugPrintfEXT("Area %.2f  --> resolution: %d\n", area, payload.resolution);
 

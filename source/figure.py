@@ -10,72 +10,53 @@ import torch
 from figuregen.util.image import Cropbox, relative_mse
 from figuregen.util.templates import CropComparison
 
-# LaTeX lineplot preset
-# TODO: modularize this
-document_template = r'''
-\documentclass[varwidth=500cm, border=0pt]{standalone}
+# TeX presents
+preamble = r'''
+\documentclass[varwidth=100cm, border=0pt]{standalone}
 
 \renewcommand{\familydefault}{\sfdefault}
 
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
-\usepackage{libertine}
-\usepackage{pgfplots}
-\usepackage{tikz}
-\usepackage{siunitx}
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{bm}
+\usepackage{caption}
+\usepackage{graphicx}
+\usepackage{libertine}
+\usepackage{multirow}
+\usepackage{pgfplots}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usepackage{array}
+\usepackage{tabularray}
+\usepackage{multirow}
 
 \usetikzlibrary{calc}
 
-\definecolor{color0}{HTML}{ea7aa5}
-\definecolor{color1}{HTML}{65d59e}
-\definecolor{color2}{HTML}{ab92e6}
-\definecolor{color3}{HTML}{b2c65d}
-\definecolor{color4}{HTML}{e19354}
+\definecolor{color0}{HTML}{619cce}
+\definecolor{color1}{HTML}{bb903e}
+\definecolor{color2}{HTML}{8767c9}
+\definecolor{color3}{HTML}{69a657}
+\definecolor{color4}{HTML}{c75d9e}
+\definecolor{color5}{HTML}{cb584d}
 
 \pgfplotsset{compat=1.18}
 \pgfplotsset{
     yticklabel style={
         /pgf/number format/fixed,
-        /pgf/number format/precision=5
+        /pgf/number format/precision=8
     },
     scaled y ticks=false
 }
-
-\begin{document}
-\begin{center}
-%s
-\end{center}
-\end{document}
 '''
 
-combined_template = r'''
-\documentclass[varwidth=500cm, border=0pt]{standalone}
-\usepackage[utf8]{inputenc}
-\usepackage[T1]{fontenc}
-\usepackage{libertine}measure
-\usepackage{graphicx}
-
-\begin{document}
-\begin{center}
-\begin{figure}
-    \centering
-    \includegraphics[width=15cm]{%s}
-
-    \includegraphics[width=15cm]{%s}
-\end{figure}
-\end{center}
-\end{document}
-'''
-
-# y label style={at={(1.07, 0.5)}, rotate=180},
-# legend style={draw=none, fill=none, at={(0.5, -0.4)}, anchor=north, font=\large},
+# legend style={draw=none, fill=none, at={(0.5, -0.4)}, anchor=north},
+# legend style={fill=none},
+# title style={font=\large},
 lineplot_template = r'''\begin{tikzpicture}[baseline=(current bounding box.north)]
 \begin{axis}[
     ymode=log,
-    title style={font=\large},
     title=%s,
     name=%s, %s
     xshift=2cm,
@@ -84,7 +65,7 @@ lineplot_template = r'''\begin{tikzpicture}[baseline=(current bounding box.north
     ylabel=%s,
     xlabel=%s,
     legend columns=%d,
-    legend style={fill=none, font=\scriptsize},
+    legend style={draw=none, fill=none, at={(0.5, -0.4)}, anchor=north},
     xmin=%.3f,
     xmax=%.3f,
     ymin=%.3f,
@@ -103,7 +84,7 @@ def fill_lineplot(**kwargs):
     return lineplot_template % (kwargs['title'], kwargs['codename'],
                                 kwargs['loc'], kwargs['width'],
                                 kwargs['height'], kwargs['ylabel'],
-                                kwargs['xlabel'], 1,
+                                kwargs['xlabel'], 3,
                                 kwargs['x_min'], kwargs['x_max'],
                                 kwargs['y_min'], kwargs['y_max'],
                                 kwargs['tick_step'], kwargs['plots'])
@@ -121,27 +102,25 @@ def plot_marked(key, d, color, legend):
     return line
 
 def plot_transparent_end(key, d, color, legend):
-    line = '\\addplot [line width=1pt, color=%s, opacity=0.65] coordinates {' % color
+    line = r'\addplot [line width=1pt, color=%s, opacity=0.65] coordinates {' % color
 
     for v in d:
-        line += '(%.4f, %.4f) ' % v
+        line += '(%f, %f) ' % v
     line += '};\n'
-    line += '\\label{' + key + '}'
     if legend:
-        line += r'\addlegendentry{\large \textsc{' + key.capitalize() + '}}\n'
+        line += r'\label{plot:' + key + '}'
+        line += r'\addlegendentry{\textsc{' + key + '}}'
 
-    # Add coordinate at the end
     line += '\\addplot [mark=*, color=%s, forget plot] coordinates { (%f, %f) };' % (color, d[-1][0], d[-1][1])
 
     return line
 
-def lineplot(data, name, xlabel='X', ylabel='', xtick_step=10, width=8, height=6, mode='marked', at=None, legend=False):
+def lineplot(data, name, xlabel='X', ylabel='', width=8, height=6, mode='marked', at=None, legend=False):
     codename = name.lower().replace(' ', '-')
-    title = '\\textsc{%s}' % name #.capitalize()
-    print('Codename', codename, 'at', at)
+    title = '\\textsc{%s}' % name
 
     # Generate LaTeX code
-    colors = [ 'color0', 'color1', 'color2', 'color3', 'color4' ]
+    colors = [ 'color0', 'color1', 'color2', 'color3', 'color4', 'color5' ]
 
     lines = []
     for color, (key, d) in zip(colors, data.items()):
@@ -168,13 +147,6 @@ def lineplot(data, name, xlabel='X', ylabel='', xtick_step=10, width=8, height=6
 
     print('--> yrange:', y_min, y_max)
 
-    # Find best tick step (5, 10, 25, etc.)
-    # tick_step = (x_max - x_min)
-    # tick_step_10 = 10 ** np.floor(np.log10(tick_step))
-    # tick_step_5 = tick_step_10 / 2
-    # tick_step = tick_step_10 if tick_step / tick_step_10 > 25 else tick_step_5
-    # tick_step = int(tick_step)
-
     loc = '' if at is None else 'at={(%s)},' % at
     addplot = '\n'.join(lines)
 
@@ -186,7 +158,7 @@ def lineplot(data, name, xlabel='X', ylabel='', xtick_step=10, width=8, height=6
 
     return codename, tex
 
-def synthesize_tex(code, filename):
+def synthesize_tex(code, filename, log=True):
     import tempfile
     import subprocess
 
@@ -197,8 +169,13 @@ def synthesize_tex(code, filename):
         fp.seek(0)
 
         os.makedirs(os.path.dirname('media/figures/generated/'), exist_ok=True)
-        subprocess.check_call(['xelatex', '-interaction=nonstopmode', fp.name],
-            cwd=os.path.dirname('media/figures/generated/')) #, stdout=subprocess.DEVNULL)
+
+        if log:
+            subprocess.check_call(['xelatex', '-interaction=nonstopmode', fp.name],
+                cwd=os.path.dirname('media/figures/generated/'))
+        else:
+            subprocess.check_call(['xelatex', '-interaction=nonstopmode', fp.name],
+                cwd=os.path.dirname('media/figures/generated/'), stdout=subprocess.DEVNULL)
 
         # Copy resulting PDF to destination
         result = os.path.join('media/figures/generated/', os.path.basename(fp.name) + '.pdf')
@@ -237,8 +214,8 @@ def results_plot(name, db):
     # primary = counts[index]
     primary, mind = 0, 1e10
     for i, entry in enumerate(db['Ours']):
-        if mind > abs(entry['count'] - 2500):
-            mind = abs(entry['count'] - 2500)
+        if mind > abs(entry['count'] - 1000):
+            mind = abs(entry['count'] - 1000)
             primary = i
 
     directory = os.path.join('media', 'figures', 'generated')
@@ -297,7 +274,7 @@ def results_plot(name, db):
     # Inset cropboxes for all scenes
     #   ( left, right, top, bottom )
     inset_cropboxes = {
-        'armadillo' : (350, 450, 100, 200),
+        'armadillo' : (240, 340, 120, 220),
         'dragon'    : (0, 150, 500, 650),
         'metatron'  : (300, 500, 50, 250),
         'nefertiti' : (150, 250, 300, 500),
@@ -337,8 +314,11 @@ def results_plot(name, db):
         box = torch.tensor([ incbox[0], incbox[2], incbox[1], incbox[3] ]).unsqueeze(0)
         img = torchvision.io.read_image(pimg)
         rgb = img[:3]
-        rgb = torchvision.utils.draw_bounding_boxes(rgb, boxes=box, colors="red", width=8) / 255
-        img = torch.concat([ rgb, img[None, 3] ], dim=0)
+        rgb = torchvision.utils.draw_bounding_boxes(rgb, boxes=box, colors="red", width=8)
+        rgb = rgb / 255
+
+        alpha = (rgb.sum(dim=0) > 0).unsqueeze(0)
+        img = torch.concat([ rgb, alpha ], dim=0)
         torchvision.utils.save_image(img, pimg)
 
     # Collect lineplot data
@@ -366,55 +346,19 @@ def results_plot(name, db):
         normal_data[key] = sorted(normal_data[key], key=lambda x: x[0])
         chamfer_data[key] = sorted(chamfer_data[key], key=lambda x: x[0])
 
+    print('render data', render_data)
+    print('render data', chamfer_data)
+
     # # Generate lineplots
-    _, code0 = lineplot(render_data, '', ylabel=r'\textsc{Render}', xlabel='{}', width=6, height=4)
-    _, code2 = lineplot(chamfer_data, '', ylabel=r'\textsc{Chamfer}', xlabel='Compression ratio', width=6, height=4, legend=True)
+    _, code0 = lineplot(render_data, '', ylabel=r'\large \textsc{Render}', xlabel='{}', width=6, height=4)
+    _, code2 = lineplot(chamfer_data, '', ylabel=r'\large \textsc{Chamfer}', xlabel='Compression ratio', width=6, height=4, legend=True)
 
     combined = code0 + '\n' + code2
 
     # Create the code
     round_ten = lambda x: 5 * ((x + 4) // 5)
 
-    code = r'''
-    \documentclass[varwidth=100cm, border=0pt]{standalone}
-
-    \renewcommand{\familydefault}{\sfdefault}
-
-    \usepackage[utf8]{inputenc}
-    \usepackage[T1]{fontenc}
-    \usepackage{amsmath}
-    \usepackage{amssymb}
-    \usepackage{bm}
-    \usepackage{caption}
-    \usepackage{graphicx}
-    \usepackage{libertine}
-    \usepackage{multirow}
-    \usepackage{pgfplots}
-    \usepackage{subcaption}
-    \usepackage{tikz}
-    \usepackage{array}
-    \usepackage{tabularray}
-    \usepackage{multirow}
-
-    \usetikzlibrary{calc}
-
-    \definecolor{color0}{HTML}{ea7aa5}
-    \definecolor{color1}{HTML}{65d59e}
-    \definecolor{color2}{HTML}{ab92e6}
-    \definecolor{color3}{HTML}{b2c65d}
-    \definecolor{color4}{HTML}{e19354}
-
-    \pgfplotsset{compat=1.18}
-    \pgfplotsset{
-        yticklabel style={
-            /pgf/number format/fixed,
-            /pgf/number format/precision=5
-        },
-        scaled y ticks=false
-    }
-
-    %%\newcolumntype{b}{>{\columncolor{blue!25}}c}
-
+    code = preamble + r'''
     \begin{document}
         \setlength{\fboxsep}{0pt}
         \setlength{\fboxrule}{1pt}
@@ -630,6 +574,8 @@ def table(dbs):
         # if not t[0] == 'Ours':
         #     continue
 
+        print('t', t)
+
         data = converted[t]
 
         sizem = [ d['size'] for d in list(data.values()) ]
@@ -637,6 +583,8 @@ def table(dbs):
 
         row = []
         for f in field_names:
+            # ref_sizem = converted['size'][f]
+            # cratio = ref_sizem/sizem
             if f == '':
                 row.append('Ours')
                 continue
@@ -787,50 +735,13 @@ def tessellation(db):
 
     print(args.primary, primary.keys())
 
-    _, render_code = lineplot(render, '', xlabel='Tessellation', ylabel='Render', width=6, height=5)
-    _, normal_code = lineplot(normal, '', xlabel='Tessellation', ylabel='Normal', width=6, height=5)
-    _, chamfer_code = lineplot(chamfer, '', xlabel='Tessellation', ylabel='Chamfer', width=10, height=5, legend=True)
+    _, render_code = lineplot(render, 'Render', xlabel='Tessellation', ylabel='{}', width=6, height=5)
+    _, normal_code = lineplot(normal, 'Normal', xlabel='Tessellation', ylabel='{}', width=6, height=5)
+    _, chamfer_code = lineplot(chamfer, '', xlabel='Tessellation', ylabel=r'\textsc{Chamfer}', width=11, height=5, legend=True)
 
     combined = render_code + '\n' + normal_code + '\n\n' + chamfer_code
 
-    code = r'''
-    \documentclass[varwidth=100cm, border=0pt]{standalone}
-
-    \renewcommand{\familydefault}{\sfdefault}
-
-    \usepackage[utf8]{inputenc}
-    \usepackage[T1]{fontenc}
-    \usepackage{amsmath}
-    \usepackage{amssymb}
-    \usepackage{bm}
-    \usepackage{caption}
-    \usepackage{graphicx}
-    \usepackage{libertine}
-    \usepackage{multirow}
-    \usepackage{pgfplots}
-    \usepackage{subcaption}
-    \usepackage{tikz}
-    \usepackage{array}
-    \usepackage{tabularray}
-    \usepackage{multirow}
-
-    \usetikzlibrary{calc}
-
-    \definecolor{color0}{HTML}{ea7aa5}
-    \definecolor{color1}{HTML}{65d59e}
-    \definecolor{color2}{HTML}{ab92e6}
-    \definecolor{color3}{HTML}{b2c65d}
-    \definecolor{color4}{HTML}{e19354}
-
-    \pgfplotsset{compat=1.18}
-    \pgfplotsset{
-        yticklabel style={
-            /pgf/number format/fixed,
-            /pgf/number format/precision=5
-        },
-        scaled y ticks=false
-    }
-
+    code = preamble + r'''
     \captionsetup[subfigure]{justification=centering}
 
     \begin{document}
@@ -840,7 +751,7 @@ def tessellation(db):
         \begin{tblr}{ colspec={cccc}, cells={valign=t, halign=c} }
             \begin{minipage}{3cm}
                 \centering
-                \textsc{Reference}\vspace{1mm}
+                \textsc{Resolution %d}\vspace{1mm}
                 \includegraphics[width=\textwidth]{%s}
             \end{minipage}
             & \begin{minipage}{3cm}
@@ -866,19 +777,19 @@ def tessellation(db):
             \end{minipage}
             & \begin{minipage}{3cm}
                 \centering
-                \textsc{Resolution %d}\vspace{1mm}
+                \textsc{Reference}\vspace{1mm}
                 \includegraphics[width=\textwidth]{%s}
             \end{minipage}
             & \\
         \end{tblr}
     \end{document}''' % (
-        abs_directory + '/ref.png',
         2, abs_directory + '/tess2.png',
         4, abs_directory + '/tess4.png',
-        combined,
         8, abs_directory + '/tess8.png',
+        combined,
         12, abs_directory + '/tess12.png',
-        16, abs_directory + '/tess16.png'
+        16, abs_directory + '/tess16.png',
+        abs_directory + '/ref.png'
     )
 
     synthesize_tex(code, 'tessellation.pdf')
@@ -977,49 +888,13 @@ def features(db):
         rgb = torchvision.utils.draw_bounding_boxes(rgb, boxes=box2, colors="blue", width=8)
         rgb = rgb / 255
 
-        img = torch.concat([ rgb, img[None, 3] ], dim=0)
+        alpha = (rgb.sum(dim=0) > 0).unsqueeze(0)
+        img = torch.concat([ rgb, alpha ], dim=0)
         torchvision.utils.save_image(img, pimg)
 
     print(args.primary, primary.keys())
 
-    code = r'''
-    \documentclass[varwidth=100cm, border=0pt]{standalone}
-
-    \renewcommand{\familydefault}{\sfdefault}
-
-    \usepackage[utf8]{inputenc}
-    \usepackage[T1]{fontenc}
-    \usepackage{amsmath}
-    \usepackage{amssymb}
-    \usepackage{bm}
-    \usepackage{caption}
-    \usepackage{graphicx}
-    \usepackage{libertine}
-    \usepackage{multirow}
-    \usepackage{pgfplots}
-    \usepackage{subcaption}
-    \usepackage{tikz}
-    \usepackage{array}
-    \usepackage{tabularray}
-    \usepackage{multirow}
-
-    \usetikzlibrary{calc}
-
-    \definecolor{color0}{HTML}{ea7aa5}
-    \definecolor{color1}{HTML}{65d59e}
-    \definecolor{color2}{HTML}{ab92e6}
-    \definecolor{color3}{HTML}{b2c65d}
-    \definecolor{color4}{HTML}{e19354}
-
-    \pgfplotsset{compat=1.18}
-    \pgfplotsset{
-        yticklabel style={
-            /pgf/number format/fixed,
-            /pgf/number format/precision=5
-        },
-        scaled y ticks=false
-    }
-
+    code = preamble + r'''
     \captionsetup[subfigure]{justification=centering}
 
     \begin{document}
@@ -1072,11 +947,629 @@ def mutlichart(db):
     for key in data:
         data[key] = sorted(data[key], key=lambda x: x[0])
 
-    _, code = lineplot(data, 'Patch Representations', ylabel='Chamfer', xlabel='Size (KB)', width=10, height=6, xtick_step=50, legend=True)
+    _, combined = lineplot(data, 'Patch Representations', ylabel='Chamfer', xlabel='Size (KB)', width=8, height=6, legend=True)
 
-    combined = document_template % code
-    print('code', combined)
-    synthesize_tex(combined, 'geometry-images.pdf')
+    code = preamble + r'''
+    \begin{document}
+    %s
+    \end{document}
+    ''' % combined
+
+    # combined = document_template % code
+    # print('code', combined)
+    synthesize_tex(code, 'geometry-images.pdf')
+
+def frequencies(db):
+    import torchvision
+
+    from scipy.signal import savgol_filter
+
+    losses_k4 = {}
+    losses_k8 = {}
+    losses_k16 = {}
+
+    for k, d in db.items():
+        k = 'L = ' + str(k)
+        print('k = ', k)
+
+        losses_k4[k] = []
+        losses_k8[k] = []
+        losses_k16[k] = []
+
+        d0 = d['loss'][:250]
+        d1 = d['loss'][250:500]
+        d2 = d['loss'][500:]
+
+        y0 = savgol_filter(d0, 25, 4)
+        y1 = savgol_filter(d1, 25, 4)
+        y2 = savgol_filter(d2, 25, 4)
+
+        for i, l in enumerate(y0):
+            losses_k4[k].append((i, l))
+
+        for i, l in enumerate(y1):
+            losses_k8[k].append((i, l))
+
+        for i, l in enumerate(y2):
+            losses_k16[k].append((i, l))
+
+    print('losses_k4', losses_k4.keys())
+
+    _, c0 = lineplot(losses_k4, 'Optimization Pt. 1 $(k = 4)$', ylabel=r'\textsc{Render}', xlabel='Iteration', width=7, height=6, mode='transparent')
+    _, c1 = lineplot(losses_k8, 'Optimization Pt. 2 $(k = 8)$', ylabel='{}', xlabel='Iteration', width=7, height=6, mode='transparent')
+    _, c2 = lineplot(losses_k16, 'Optimization Pt. 3 $(k = 16)$', ylabel='{}', xlabel='Iteration', width=7, height=6, mode='transparent', legend=True)
+
+    # Load the images
+    images = {
+            'ref' : db[0]['images']['ref'],
+            'f0'  : db[0]['images']['mesh'],
+            'f1'  : db[1]['images']['mesh'],
+            'f2'  : db[2]['images']['mesh'],
+            'f4'  : db[4]['images']['mesh'],
+            'f8'  : db[8]['images']['mesh'],
+            'f16' : db[16]['images']['mesh'],
+    }
+
+    # Whitespace removal cropbox
+    cbox = cropbox(images)
+
+    cbox1 = 130, 230, 70, 170
+    cbox2 = 30, 130, 470, 570
+
+    # Extract and export the images
+    directory = os.path.join('media', 'figures', 'generated')
+    abs_directory = os.path.abspath(directory)
+    os.makedirs(abs_directory, exist_ok=True)
+    for k, img in images.items():
+        pimg = os.path.join(directory, k.replace(':', '-') + '.png')
+
+        img = img.permute(2, 0, 1)
+        img = img[ :, cbox[2] : cbox[3] + 1, cbox[0] : cbox[1] + 1]
+        alpha = (img.sum(dim=0) > 0).unsqueeze(0)
+        img = torch.concat([ img, alpha ], dim=0)
+
+        # And the insets as well
+        inset1 = img[ :, cbox1[2] : cbox1[3] + 1, cbox1[0] : cbox1[1] + 1]
+        inset2 = img[ :, cbox2[2] : cbox2[3] + 1, cbox2[0] : cbox2[1] + 1]
+
+        pimg = os.path.join(directory, k + '.png')
+        pinset1 = os.path.join(directory, k.replace(':', '-') + '-inset1.png')
+        pinset2 = os.path.join(directory, k.replace(':', '-') + '-inset2.png')
+
+        torchvision.utils.save_image(inset1, pinset1)
+        torchvision.utils.save_image(inset2, pinset2)
+        torchvision.utils.save_image(img, pimg)
+
+        box1 = torch.tensor([ cbox1[0], cbox1[2], cbox1[1], cbox1[3] ]).unsqueeze(0)
+        box2 = torch.tensor([ cbox2[0], cbox2[2], cbox2[1], cbox2[3] ]).unsqueeze(0)
+
+        img = torchvision.io.read_image(pimg)
+        rgb = img[:3]
+        rgb = torchvision.utils.draw_bounding_boxes(rgb, boxes=box1, colors="red", width=8)
+        rgb = torchvision.utils.draw_bounding_boxes(rgb, boxes=box2, colors="blue", width=8)
+        rgb = rgb / 255
+
+        alpha = (rgb.sum(dim=0) > 0).unsqueeze(0)
+        img = torch.concat([ rgb, alpha ], dim=0)
+        torchvision.utils.save_image(img, pimg)
+
+    combined = c0 + '\n' + c1 + '\n' + c2
+
+    # TODO: preamble somewhere here
+    code = preamble + r'''
+    \begin{document}
+        \setlength{\fboxsep}{0pt}
+        \setlength{\fboxrule}{1pt}
+
+        \centering
+
+        \begin{minipage}{5cm}
+            \centering
+            \large
+            \textsc{0 Fourier features}
+            \vspace{1mm}
+            \includegraphics[width=\textwidth]{%s}
+        \end{minipage}
+        \begin{minipage}{5cm}
+            \centering
+            \large
+            \textsc{\textbf{8 Fourier features}}
+            \vspace{1mm}
+            \includegraphics[width=\textwidth]{%s}
+        \end{minipage}
+        \begin{minipage}{5cm}
+            \centering
+            \large
+            \textsc{16 Fourier features}
+            \vspace{1mm}
+            \includegraphics[width=\textwidth]{%s}
+        \end{minipage}
+        \begin{minipage}{5cm}
+            \centering
+            \large
+            \textsc{Reference}
+            \vspace{1mm}
+            \includegraphics[width=\textwidth]{%s}
+        \end{minipage}
+
+        \begin{tblr}{ colspec={ccccccc}, cells={valign=t, halign=c} }
+                \sffamily
+                0 FF & 1 FF & 2 FF & 4 FF & 8 FF & 16 FF & \textsc{Reference} \\
+                \fbox{\includegraphics[width=2cm]{%s}}
+                & \fbox{\includegraphics[width=2cm]{%s}}
+                & \fbox{\includegraphics[width=2cm]{%s}}
+                & \fbox{\includegraphics[width=2cm]{%s}}
+                & \fbox{\includegraphics[width=2cm]{%s}}
+                & \fbox{\includegraphics[width=2cm]{%s}}
+                & \fbox{\includegraphics[width=2cm]{%s}} \\
+                \fbox{\includegraphics[width=2cm]{%s}}
+                & \fbox{\includegraphics[width=2cm]{%s}}
+                & \fbox{\includegraphics[width=2cm]{%s}}
+                & \fbox{\includegraphics[width=2cm]{%s}}
+                & \fbox{\includegraphics[width=2cm]{%s}}
+                & \fbox{\includegraphics[width=2cm]{%s}}
+                & \fbox{\includegraphics[width=2cm]{%s}} \\
+        \end{tblr}
+
+        %s
+    \end{document}''' % (
+            abs_directory + '/f0.png',
+            abs_directory + '/f8.png',
+            abs_directory + '/f16.png',
+            abs_directory + '/ref.png',
+
+            abs_directory + '/f0-inset1.png',
+            abs_directory + '/f1-inset1.png',
+            abs_directory + '/f2-inset1.png',
+            abs_directory + '/f4-inset1.png',
+            abs_directory + '/f8-inset1.png',
+            abs_directory + '/f16-inset1.png',
+            abs_directory + '/ref-inset1.png',
+
+            abs_directory + '/f0-inset2.png',
+            abs_directory + '/f1-inset2.png',
+            abs_directory + '/f2-inset2.png',
+            abs_directory + '/f4-inset2.png',
+            abs_directory + '/f8-inset2.png',
+            abs_directory + '/f16-inset2.png',
+            abs_directory + '/ref-inset2.png',
+
+            combined
+    )
+
+    synthesize_tex(code, 'frequencies.pdf', log=True)
+
+def losses(db):
+    import torchvision
+
+    from scipy.signal import savgol_filter
+
+    data = {
+            'Inverse Rendering': [],
+            'Chamfer': []
+    }
+
+    for i, c in zip(db['time:ord'], db['loss:ord']):
+        data['Inverse Rendering'].append((i, 1e6 * c))
+
+    for i, c in zip(db['time:chm'], db['loss:chm']):
+        data['Chamfer'].append((i, 1e6 * c))
+
+    _, code = lineplot(data, '{}', ylabel=r'\textsc{Chamfer} $(\times 10^6)$', xlabel='Time (seconds)', width=8, height=8, mode='transparent', legend=True)
+
+    # Load the images
+    images = {
+            'ref' : db['render:ref'],
+            'ord' : db['render:ord'],
+            'chm' : db['render:chm']
+    }
+
+    # Whitespace removal cropbox
+    cbox = cropbox(images)
+
+    # Extract and export the images
+    directory = os.path.join('media', 'figures', 'generated')
+    abs_directory = os.path.abspath(directory)
+    os.makedirs(abs_directory, exist_ok=True)
+    for k, img in images.items():
+        pimg = os.path.join(directory, k.replace(':', '-') + '.png')
+
+        # img = (img/800).pow(1/2.2)
+        img = img.permute(2, 0, 1)
+        img = img[ :, cbox[2] : cbox[3] + 1, cbox[0] : cbox[1] + 1]
+        alpha = (img.sum(dim=0) > 0).unsqueeze(0)
+        img = torch.concat([ img, alpha ], dim=0)
+
+        torchvision.utils.save_image(img, pimg)
+
+    # TODO: preamble somewhere here
+    code = preamble + r'''
+    \begin{document}
+        \setlength{\fboxsep}{0pt}
+        \setlength{\fboxrule}{1pt}
+
+        \centering
+
+        \begin{minipage}{8cm}
+            \centering
+            %s
+        \end{minipage}
+        \begin{minipage}{5cm}
+            \centering
+            \large
+            \textsc{Chamfer}
+            \vspace{2mm}
+
+            \includegraphics[width=\textwidth]{%s}
+        \end{minipage}
+        \begin{minipage}{5cm}
+            \centering
+            \large
+            \textsc{\textbf{Inverse rendering}}
+            \vspace{2mm}
+
+            \includegraphics[width=\textwidth]{%s}
+        \end{minipage}
+        \begin{minipage}{5cm}
+            \centering
+            \large
+            \textsc{Reference}
+            \vspace{2mm}
+
+            \includegraphics[width=\textwidth]{%s}
+        \end{minipage}
+    \end{document}''' % (
+            code,
+            abs_directory + '/chm.png',
+            abs_directory + '/ord.png',
+            abs_directory + '/ref.png'
+    )
+
+    synthesize_tex(code, 'loss-evaluation.pdf', log=True)
+
+def ingp(db):
+    import torchvision
+
+    # Load the images
+    images = {
+        'ref': db['ref'],
+        'ngf': db['ngf']['image'],
+        'ngp11': db['ngp11']['image'],
+        'ngp12': db['ngp12']['image'],
+        'ngp13': db['ngp13']['image']
+    }
+
+    # Whitespace removal cropbox
+    cbox = cropbox(images)
+
+    # Extract and export the images
+    directory = os.path.join('media', 'figures', 'generated')
+    abs_directory = os.path.abspath(directory)
+    os.makedirs(abs_directory, exist_ok=True)
+
+    cbox1 = 300, 400, 400, 550
+    for k, img in images.items():
+        img = img.permute(2, 0, 1)
+        img = img[ :, cbox[2] : cbox[3] + 1, cbox[0] : cbox[1] + 1]
+        alpha = (img.sum(dim=0) > 0).unsqueeze(0)
+        img = torch.concat([ img, alpha ], dim=0)
+
+        # And the insets as well
+        inset1 = img[ :, cbox1[2] : cbox1[3] + 1, cbox1[0] : cbox1[1] + 1]
+
+        pimg = os.path.join(directory, k + '.png')
+        pinset1 = os.path.join(directory, k.replace(':', '-') + '-inset1.png')
+
+        torchvision.utils.save_image(inset1, pinset1)
+        torchvision.utils.save_image(img, pimg)
+
+        box1 = torch.tensor([ cbox1[0], cbox1[2], cbox1[1], cbox1[3] ]).unsqueeze(0)
+
+        img = torchvision.io.read_image(pimg)
+        rgb = img[:3]
+        rgb = torchvision.utils.draw_bounding_boxes(rgb, boxes=box1, colors="red", width=8)
+        rgb = rgb / 255
+
+        alpha = (rgb.sum(dim=0) > 0).unsqueeze(0)
+        img = torch.concat([ rgb, alpha ], dim=0)
+        torchvision.utils.save_image(img, pimg)
+
+    # TODO: preamble somewhere here
+    code = preamble + r'''
+    \begin{document}
+        \setlength{\fboxsep}{0pt}
+        \setlength{\fboxrule}{1pt}
+
+        \centering
+
+        \begin{minipage}{20cm}
+            \centering
+            \begin{tblr}{ colspec={cc}, cells={valign=t, halign=c} }
+                \textsc{Reference}
+                & \textsc{NGF (Ours)} \\
+                \fbox{\includegraphics[width=6cm]{%s}}
+                & \fbox{\includegraphics[width=6cm]{%s}} \\
+                Chamfer distance $\left(\times 10^6\right)$ & %.2f \\
+            \end{tblr}
+            \vspace{5mm}
+
+            \begin{tblr}{ colspec={ccc}, cells={valign=t, halign=c} }
+                \textsc{INGP \# 1}
+                & \textsc{INGP \# 2}
+                & \textsc{INGP \# 3} \\
+                $(T = 2^{11}, F = 8)$
+                & $(T = 2^{12}, F = 4)$
+                & $(T = 2^{13}, F = 2)$ \\
+                \fbox{\includegraphics[width=6cm]{%s}}
+                & \fbox{\includegraphics[width=6cm]{%s}}
+                & \fbox{\includegraphics[width=6cm]{%s}} \\
+                %.2f & %.2f & %.2f \\
+            \end{tblr}
+        \end{minipage}
+        \begin{minipage}{6cm}
+            \begin{tblr}{ colspec={cc}, cells={valign=t, halign=c} }
+                \textsc{NGF (Ours)} & \textsc{INGP \# 1} \\
+                \fbox{\includegraphics[width=2.5cm]{%s}}
+                & \fbox{\includegraphics[width=2.5cm]{%s}} \\
+                \textsc{INGP \# 2} & \textsc{INGP \# 3} \\
+                \fbox{\includegraphics[width=2.5cm]{%s}}
+                & \fbox{\includegraphics[width=2.5cm]{%s}}
+            \end{tblr}
+        \end{minipage}
+    \end{document}''' % (
+            abs_directory + '/ref.png',
+            abs_directory + '/ngf.png',
+            1e6 * db['ngf']['error'],
+            abs_directory + '/ngp11.png',
+            abs_directory + '/ngp12.png',
+            abs_directory + '/ngp13.png',
+            1e6 * db['ngp11']['error'],
+            1e6 * db['ngp12']['error'],
+            1e6 * db['ngp13']['error'],
+            abs_directory + '/ngf-inset1.png',
+            abs_directory + '/ngp11-inset1.png',
+            abs_directory + '/ngp12-inset1.png',
+            abs_directory + '/ngp13-inset1.png',
+    )
+
+    synthesize_tex(code, 'ingp.pdf', log=True)
+
+# def teaser(db):
+#     import torchvision
+#
+#     # Load the images
+#     images = db
+#
+#     # Whitespace removal cropbox
+#     cbox = cropbox(images)
+#
+#     # Extract and export the images
+#     directory = os.path.join('media', 'figures', 'generated')
+#     abs_directory = os.path.abspath(directory)
+#     os.makedirs(abs_directory, exist_ok=True)
+#
+#     # cbox1 = 300, 400, 400, 550
+#     for k, img in images.items():
+#         img = img.permute(2, 0, 1)
+#         img = img[ :, cbox[2] : cbox[3] + 1, cbox[0] : cbox[1] + 1]
+#         alpha = (img.sum(dim=0) > 0).unsqueeze(0)
+#         img = torch.concat([ img, alpha ], dim=0)
+#
+#         # And the insets as well
+#         # inset1 = img[ :, cbox1[2] : cbox1[3] + 1, cbox1[0] : cbox1[1] + 1]
+#
+#         pimg = os.path.join(directory, k.replace(':', '-') + '.png')
+#         pinset1 = os.path.join(directory, k.replace(':', '-') + '-inset1.png')
+#
+#         # torchvision.utils.save_image(inset1, pinset1)
+#         torchvision.utils.save_image(img, pimg)
+#
+#         # box1 = torch.tensor([ cbox1[0], cbox1[2], cbox1[1], cbox1[3] ]).unsqueeze(0)
+#
+#         # img = torchvision.io.read_image(pimg)
+#         # rgb = img[:3]
+#         # rgb = torchvision.utils.draw_bounding_boxes(rgb, boxes=box1, colors="red", width=8)
+#         # rgb = rgb / 255
+#         #
+#         # img = torch.concat([ rgb, img[None, 3] ], dim=0)
+#         # torchvision.utils.save_image(img, pimg)
+#
+#     # TODO: preamble somewhere here
+#     code = preamble + r'''
+#     \begin{document}
+#         \setlength{\fboxsep}{0pt}
+#         \setlength{\fboxrule}{1pt}
+#
+#         \centering
+#
+#         \includegraphics[width=5cm]{%s}
+#         \includegraphics[width=5cm]{%s}
+#         \includegraphics[width=5cm]{%s}
+#         \includegraphics[width=5cm]{%s}
+#         \includegraphics[width=5cm]{%s}
+#     \end{document}''' % (
+#             abs_directory + '/nrm-ref.png',
+#             abs_directory + '/nrm-ngf.png',
+#             abs_directory + '/nrm-qslim.png',
+#             abs_directory + '/nrm-nvdiff.png',
+#             abs_directory + '/nrm-ingp.png',
+#     )
+#
+#     synthesize_tex(code, 'teaser.pdf', log=True)
+
+def teaser(db):
+    import torchvision
+
+    # Load the images
+    images = {
+        'ref': db['nrm:ref'],
+        'ngf': db['nrm:ngf'],
+        'qslim': db['nrm:qslim'],
+        'nvdiff': db['nrm:nvdiff'],
+        'ingp': db['nrm:ingp'],
+        'patches': db['patches'],
+    }
+
+    # Whitespace removal cropbox
+    cbox = cropbox(images)
+
+    # Extract and export the images
+    directory = os.path.join('media', 'figures', 'generated')
+    abs_directory = os.path.abspath(directory)
+    os.makedirs(abs_directory, exist_ok=True)
+
+    cbox1 = 100, 200, 000, 100
+    cbox2 = 200, 300, 420, 520
+
+    for k, img in images.items():
+        img = img.permute(2, 0, 1)
+        img = img[ :, cbox[2] : cbox[3] + 1, cbox[0] : cbox[1] + 1]
+        alpha = (img.sum(dim=0) > 0).unsqueeze(0)
+        img = torch.concat([ img, alpha ], dim=0)
+        if k == 'patches':
+            pimg = os.path.join(directory, k.replace(':', '-') + '.png')
+            torchvision.utils.save_image(img, pimg)
+            continue
+
+        # And the insets as well
+        inset1 = img[ :, cbox1[2] : cbox1[3] + 1, cbox1[0] : cbox1[1] + 1]
+        inset2 = img[ :, cbox2[2] : cbox2[3] + 1, cbox2[0] : cbox2[1] + 1]
+
+        pimg = os.path.join(directory, k.replace(':', '-') + '.png')
+        pinset1 = os.path.join(directory, k.replace(':', '-') + '-inset1.png')
+        pinset2 = os.path.join(directory, k.replace(':', '-') + '-inset2.png')
+
+        torchvision.utils.save_image(inset1, pinset1)
+        torchvision.utils.save_image(inset2, pinset2)
+        torchvision.utils.save_image(img, pimg)
+
+        box1 = torch.tensor([ cbox1[0], cbox1[2], cbox1[1], cbox1[3] ]).unsqueeze(0)
+        box2 = torch.tensor([ cbox2[0], cbox2[2], cbox2[1], cbox2[3] ]).unsqueeze(0)
+
+        img = torchvision.io.read_image(pimg)
+        rgb = img[:3]
+        rgb = torchvision.utils.draw_bounding_boxes(rgb, boxes=box1, colors="red", width=8)
+        rgb = torchvision.utils.draw_bounding_boxes(rgb, boxes=box2, colors="blue", width=8)
+        rgb = rgb / 255
+
+        alpha = (rgb.sum(dim=0) > 0).unsqueeze(0)
+        img = torch.concat([ rgb, alpha ], dim=0)
+        torchvision.utils.save_image(img, pimg)
+
+    # TODO: preamble somewhere here
+    code = preamble + r'''
+    \begin{document}
+        \setlength{\fboxsep}{0pt}
+        \setlength{\fboxrule}{2pt}
+
+        \centering
+
+        \begin{minipage}{10cm}
+            \centering
+            \includegraphics[width=\textwidth]{%s}
+            \Large
+            \textsc{Reference}
+
+            15.5 MB
+        \end{minipage}
+        \begin{minipage}{5cm}
+            \centering
+            \includegraphics[width=\textwidth]{%s}
+
+            \Large
+            \textsc{NGF} (Patches)
+        \end{minipage}
+        \begin{minipage}{10cm}
+            \centering
+            \includegraphics[width=\textwidth]{%s}
+            \Large
+            \textsc{NGF (Ours)}
+
+            324 KB
+            \Large
+
+            $50\times$ Compression
+        \end{minipage}
+        \begin{tblr}{ colspec={ccc}, cells={valign=t, halign=c} }
+            \rotatebox{90}{\parbox{3cm}{\large \centering \textsc{QSlim} \\ %.2f}}
+            &
+            \renewcommand\fbox{\fcolorbox{red}{white}}
+            \fbox{\includegraphics[width=3cm]{%s}}
+            &
+            \renewcommand\fbox{\fcolorbox{blue}{white}}
+            \fbox{\includegraphics[width=3cm]{%s}} \\
+            \rotatebox{90}{\parbox{3cm}{\large \centering \textsc{Nvdiffmodeling} \\ %.2f}}
+            &
+            \renewcommand\fbox{\fcolorbox{red}{white}}
+            \fbox{\includegraphics[width=3cm]{%s}}
+            &
+            \renewcommand\fbox{\fcolorbox{blue}{white}}
+            \fbox{\includegraphics[width=3cm]{%s}} \\
+            \rotatebox{90}{\parbox{3cm}{\large \centering \textsc{Instant NGP} \\ %.2f}}
+            &
+            \renewcommand\fbox{\fcolorbox{red}{white}}
+            \fbox{\includegraphics[width=3cm]{%s}}
+            &
+            \renewcommand\fbox{\fcolorbox{blue}{white}}
+            \fbox{\includegraphics[width=3cm]{%s}} \\
+            \rotatebox{90}{\parbox{3cm}{\large \centering \textsc{\textbf{NGF}} \\ \textbf{%.2f}}}
+            &
+            \renewcommand\fbox{\fcolorbox{red}{white}}
+            \fbox{\includegraphics[width=3cm]{%s}}
+            &
+            \renewcommand\fbox{\fcolorbox{blue}{white}}
+            \fbox{\includegraphics[width=3cm]{%s}} \\
+            \rotatebox{90}{\parbox{3cm}{\large \centering \textsc{Reference} \\ Chamfer $\left(\times 10^6\right)$}}
+            &
+            \renewcommand\fbox{\fcolorbox{red}{white}}
+            \fbox{\includegraphics[width=3cm]{%s}}
+            &
+            \renewcommand\fbox{\fcolorbox{blue}{white}}
+            \fbox{\includegraphics[width=3cm]{%s}} \\
+        \end{tblr}
+    \end{document}''' % (
+            abs_directory + '/ref.png',
+            abs_directory + '/patches.png',
+            abs_directory + '/ngf.png',
+
+            1e6 * db['chamfer:qslim'],
+            abs_directory + '/qslim-inset1.png',
+            abs_directory + '/qslim-inset2.png',
+
+            1e6 * db['chamfer:nvdiff'],
+            abs_directory + '/nvdiff-inset1.png',
+            abs_directory + '/nvdiff-inset2.png',
+
+            1e6 * db['chamfer:ingp'],
+            abs_directory + '/ingp-inset1.png',
+            abs_directory + '/ingp-inset2.png',
+
+            1e6 * db['chamfer:ngf'],
+            abs_directory + '/ngf-inset1.png',
+            abs_directory + '/ngf-inset2.png',
+
+            abs_directory + '/ref-inset1.png',
+            abs_directory + '/ref-inset2.png',
+
+            # 1e6 * db['chamfer:ngf'],
+            # 1e6 * db['chamfer:ingp'],
+            # 1e6 * db['chamfer:nvdiff'],
+            # 1e6 * db['chamfer:qslim'],
+            #
+            # abs_directory + '/ref-inset1.png',
+            # abs_directory + '/ngf-inset1.png',
+            # abs_directory + '/ingp-inset1.png',
+            # abs_directory + '/nvdiff-inset1.png',
+            # abs_directory + '/qslim-inset1.png',
+            #
+            # abs_directory + '/ref-inset2.png',
+            # abs_directory + '/ngf-inset2.png',
+            # abs_directory + '/ingp-inset2.png',
+            # abs_directory + '/nvdiff-inset2.png',
+            # abs_directory + '/qslim-inset2.png',
+    )
+
+    synthesize_tex(code, 'teaser.pdf', log=True)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -1118,5 +1611,20 @@ if __name__ == '__main__':
     elif args.type == 'multichart':
         db = json.load(open(args.db))
         mutlichart(db)
+    elif args.type == 'frequencies':
+        db = torch.load(args.db)
+        frequencies(db)
+    elif args.type == 'losses':
+        db = torch.load(args.db)
+        losses(db)
+    elif args.type == 'ingp':
+        db = torch.load(args.db)
+        ingp(db)
+    elif args.type == 'display':
+        db = torch.load(args.db)
+        display(db)
+    elif args.type == 'teaser':
+        db = torch.load(args.db)
+        teaser(db)
     else:
         raise NotImplementedError

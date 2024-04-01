@@ -9,7 +9,8 @@ layout (push_constant) uniform PushConstants {
 	mat4 proj;
 };
 
-layout (location = 0) out vec3 out_normal;
+layout (location = 0) out vec3 out_position;
+layout (location = 1) out vec3 out_normal;
 
 void main()
 {
@@ -18,5 +19,6 @@ void main()
 	gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
 
 	// TODO: transform normals
-	out_normal = normal;
+	// out_normal = vec3(model * vec4(normal, 0));
+	out_position = position;
 }

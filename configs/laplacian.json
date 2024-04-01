@@ -1,0 +1,28 @@
+{
+	"target": "meshes/indonesian/target.obj",
+	"directory": "results/laplacian",
+	"clusters": 200,
+	"batch_size": 20,
+	"resolution": 16,
+	"experiments": [
+		{
+			"name": "with_laplacian",
+			"source": "meshes/indonesian/source-lod2.obj",
+			"laplacian": true,
+			"encoding_levels": 16,
+			"features": 20,
+			"jittering": false,
+			"normals": "numerical"
+		},
+
+		{
+			"name": "without_laplacian",
+			"source": "meshes/indonesian/source-lod2.obj",
+			"laplacian": false,
+			"encoding_levels": 16,
+			"features": 20,
+			"jittering": false,
+			"normals": "numerical"
+		}
+	]
+}

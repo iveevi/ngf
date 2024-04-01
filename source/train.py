@@ -7,11 +7,12 @@ import torch
 import json
 import optext
 import tqdm
+import time
 
 from torch.utils.tensorboard import SummaryWriter
 
 from util import *
-from geometry import compute_vertex_normals, compute_face_normals, vertex_density
+from geometry import compute_vertex_normals, compute_face_normals
 from mesh import Mesh, load_mesh, simplify_mesh
 from ngf import NGF
 from render import Renderer, arrange_camera_views
@@ -104,7 +105,7 @@ def train(target, generator, opt, sch, viewset, iterations):
     all_ref_data = torch.concat(cache, dim=0)
     all_ref_data.pin_memory()
 
-    losses = { 'render': [], 'chamfer': [] }
+    losses = { 'render': [], 'chamfer': [], 'time': [] }
     import torch.nn.utils
     for _ in tqdm.trange(iterations):
         loss_average = 0
@@ -131,8 +132,12 @@ def train(target, generator, opt, sch, viewset, iterations):
             T = target.vertices.unsqueeze(0)
             chamfer = chamfer_distance(V, T)
 
+        time_now = time.time()
+        time_elapsed = time_now - TIME_START
+
         losses['render'].append(loss_average)
         losses['chamfer'].append(chamfer.item())
+        losses['time'].append(time_elapsed)
 
         writer.add_scalar('Render', loss_average, step)
         writer.add_scalar('Chamfer', chamfer, step)
@@ -196,7 +201,7 @@ def kickoff(target, ngf, views, batch_size):
 
         bar.set_description('Overfitting, loss: {:.4f}'.format(loss.item()))
 
-def refine(target, ngf, rate, views, opt, sch, iterations):
+def refine(target, ngf, rate, views, opt, sch, iterations, laplacian=False):
     base = ngf.base(rate).detach()
 
     cmap   = make_cmap(ngf.complexes, ngf.points.float().detach(), base.float(), rate)
@@ -220,6 +225,8 @@ def refine(target, ngf, rate, views, opt, sch, iterations):
 
         V_smoothed = vgraph.smooth_device(V, 1.0)
         laplacian_loss = (V - V_smoothed).abs().mean()
+        if not laplacian:
+            laplacian_loss = None
 
         return V, N, F, laplacian_loss
 
@@ -273,7 +280,7 @@ if __name__ == '__main__':
     # add_views = arrange_views(target, 100)
     # all_views = torch.concat([all_views, add_views])
     all_views = arrange_views(target, 200)
-    visualize_views(all_views)
+    # visualize_views(all_views)
 
     # Iterate over experiments
     for experiment in experiments:
@@ -299,17 +306,20 @@ if __name__ == '__main__':
         local_config = dict(config)
         local_config.update(experiment)
 
-        print('Starting experiment ', name)
-        print(local_config)
+        print('Starting experiment', name)
+        print('  > laplacian', local_config['laplacian'])
+        print('  > batch size', batch_size)
+        print('  > camera count', views.shape[0])
+
+        # print(local_config)
 
         ngf = construct_ngf(source_path, local_config, normalizer)
-        print('# of complexes', ngf.complexes.shape[0])
-        print('# of cut views', cut_size)
+        # print('# of complexes', ngf.complexes.shape[0])
+        # print('# of cut views', cut_size)
 
+        TIME_START = time.time()
         renderer = construct_renderer()
         kickoff(target, ngf, views, batch_size)
-
-        laplacian_strength = 1.0
 
         def display(rate):
             import polyscope as ps
@@ -331,21 +341,24 @@ if __name__ == '__main__':
             ps.register_surface_mesh('base', base.cpu().numpy(), F.cpu().numpy())
             ps.show()
 
-        losses = { 'render': [], 'chamfer': [] }
+        losses = { 'render': [], 'chamfer': [], 'time': [] }
 
+        TIME_START = time.time()
         for rate in [ 4, 8, 16 ]:
             torch.cuda.empty_cache()
             opt = torch.optim.Adam(list(ngf.mlp.parameters()) + [ ngf.points, ngf.features ], 1e-3)
             sch = torch.optim.lr_scheduler.ExponentialLR(opt, gamma=0.999)
 
             print('Refining with rate {}'.format(rate))
-            new_losses = refine(target, ngf, rate, views, opt, None, iterations=250)
+            # new_losses = refine(target, ngf, rate, views, opt, None, iterations=250, laplacian=local_config['laplacian'])
+            new_losses = refine(target, ngf, rate, views, opt, None, iterations=150, laplacian=local_config['laplacian'])
             # display(rate)
 
             losses['render'] += new_losses['render']
             losses['chamfer'] += new_losses['chamfer']
+            losses['time'] += new_losses['time']
 
-        display(16)
+        # display(16)
 
         # Saving data
         os.makedirs(result_path, exist_ok=True)

@@ -8,11 +8,8 @@ class NGF:
         self.features = features
         self.complexes = complexes
 
-        # TODO: put features and points here
-
         self.encoding_levels = config['encoding_levels']
         self.jittering = config['jittering']
-        self.encoder = config['encoder']
         self.normals = config['normals']
 
         features = config['features']

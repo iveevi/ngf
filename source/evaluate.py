@@ -17,14 +17,12 @@ def mesh_size(V, F):
 # TODO: also util function...
 def construct_renderer():
     import imageio.v2 as imageio
-
     path = os.path.join(os.path.dirname(__file__), '../images/environment.hdr')
     path = os.path.abspath(path)
     environment = imageio.imread(path, format='HDR')
     environment = torch.tensor(environment, dtype=torch.float32, device='cuda')
     alpha       = torch.ones((*environment.shape[:2], 1), dtype=torch.float32, device='cuda')
     environment = torch.cat((environment, alpha), dim=-1)
-
     return Renderer(width=1280, height=720, fov=45.0, near=0.1, far=1000.0, envmap=environment)
 
 class Evaluator:
@@ -48,11 +46,14 @@ class Evaluator:
         predef = {
                 'xyz'       : torch.tensor([ 2, 0, 1 ], device='cuda').float(),
                 'einstein'  : torch.tensor([ 0, 0, 3.5 ], device='cuda').float(),
-                'skull'     : torch.tensor([ -0.5, 0, 2.5 ], device='cuda').float(),
+                'skull'     : torch.tensor([ 0.5, 0, 2.5 ], device='cuda').float(),
+                # 'skull'     : torch.tensor([ -0.5, 0, 2.5 ], device='cuda').float(),
+                # 'skull'     : torch.tensor([ 2, 0, 2.5 ], device='cuda').float(),
+                'wreck'     : torch.tensor([ 0, 0, 2 ], device='cuda').float(),
                 'armadillo' : torch.tensor([ -1.8, 0, -2.8 ], device='cuda').float(),
                 'nefertiti' : torch.tensor([ 0, 0, -3.5 ], device='cuda').float(),
                 'lucy'      : torch.tensor([ 0, 0, -4.0 ], device='cuda').float(),
-                'dragon'    : torch.tensor([ 0, 0, 3.5 ], device='cuda').float(),
+                'dragon'    : torch.tensor([ 0, 0, 3.6 ], device='cuda').float(),
         }
 
         eye    = torch.tensor([ 0, 0, 3 ], device='cuda').float()
@@ -101,27 +102,21 @@ class Evaluator:
 
         return { 'error': np.mean(errors), 'ref': ref_img, 'mesh': mesh_img }
 
-    def eval_normals(self, mesh, tag):
+    def eval_normals(self, mesh, tag, invert=False):
         batch = 10
         views = torch.split(self.views, batch)
 
         errors = []
         for batch_views in views:
             ref_imgs = self.renderer.render_normals(self.reference.vertices, self.reference.normals, self.reference.faces, batch_views)
-            mesh_imgs = self.renderer.render_normals(mesh.vertices, mesh.normals, mesh.faces, batch_views)
+            mesh_imgs = self.renderer.render_normals(mesh.vertices, mesh.normals, mesh.faces, batch_views, invert=invert)
 
             error = torch.mean(torch.abs(ref_imgs - mesh_imgs))
             errors.append(error.item())
 
         camera = self.get_view(tag).unsqueeze(0)
         ref_img = self.renderer.render_normals(self.reference.vertices, self.reference.normals, self.reference.faces, camera)[0]
-        mesh_img = self.renderer.render_normals(mesh.vertices, mesh.normals, mesh.faces, camera)[0]
-
-        # if self.preview:
-        #     self.preview = False
-        #     import matplotlib.pyplot as plt
-        #     plt.imshow(ref_img.cpu().numpy())
-        #     plt.show()
+        mesh_img = self.renderer.render_normals(mesh.vertices, mesh.normals, mesh.faces, camera, invert=invert)[0]
 
         return { 'error': np.mean(errors), 'ref': ref_img, 'mesh': mesh_img }
 
@@ -130,9 +125,9 @@ class Evaluator:
         error = chamfer_distance(mesh.vertices.unsqueeze(0), self.reference.vertices.unsqueeze(0))
         return { 'error': error.item() }
 
-    def eval_metrics(self, mesh, tag=None):
+    def eval_metrics(self, mesh, tag=None, invert=False):
         render = self.eval_render(mesh, tag)
-        normals = self.eval_normals(mesh, tag)
+        normals = self.eval_normals(mesh, tag, invert)
         chamfer = self.eval_chamfer(mesh)
         return {
             'render': render['error'],
@@ -144,6 +139,34 @@ class Evaluator:
                 'normal:ref': normals['ref'],
                 'normal:mesh': normals['mesh']
             }
+        }
+
+    def render_everything(self, mesh, tag=None, invert=False):
+        camera = self.get_view(tag).unsqueeze(0)
+
+        nrm_ref_img = self.renderer.render_normals(self.reference.vertices, self.reference.normals, self.reference.faces, camera)[0]
+        nrm_mesh_img = self.renderer.render_normals(mesh.vertices, mesh.normals, mesh.faces, camera, invert=invert)[0]
+
+        sph_ref_img = self.renderer.render_spherical_harmonics(self.reference.vertices, self.reference.normals, self.reference.faces, camera)[0]
+        sph_mesh_img = self.renderer.render_spherical_harmonics(mesh.vertices, mesh.normals, mesh.faces, camera)[0]
+
+        # if self.preview:
+        #     self.preview = False
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        sns.set_theme()
+        fig, axs = plt.subplots(1, 2)
+        axs[0].imshow(nrm_ref_img.cpu().numpy())
+        axs[0].axis('off')
+        axs[1].imshow(sph_ref_img.cpu().numpy())
+        axs[1].axis('off')
+        plt.show()
+
+        return {
+            'sph:ref'  :  sph_ref_img,
+            'sph:mesh' :  sph_mesh_img,
+            'nrm:ref'  :  nrm_ref_img,
+            'nrm:mesh' :  nrm_mesh_img,
         }
 
 def ngf_size(ngf):
@@ -163,7 +186,8 @@ def scene_evaluations(reference, directory, alt=None):
     ref, _ = load_mesh(reference)
     ref_size = mesh_size(ref.vertices, ref.faces)
     key = os.path.basename(directory)
-    pattern = re.compile('lod[1-4].pt$')
+    # pattern = re.compile('lod[1-4].pt$')
+    pattern = re.compile('lod1.pt$')
 
     evaluator = Evaluator(ref)
 
@@ -251,9 +275,6 @@ def scene_evaluations(reference, directory, alt=None):
 
         evaluations.setdefault('QSlim', []).append(metrics)
 
-        axs[0].imshow(metrics['images']['normal:ref'].cpu().numpy())
-        axs[1].imshow(metrics['images']['normal:mesh'].cpu().numpy())
-
         # nvdiffmodeling
         data = {
                 'base_mesh': qslim_result,
@@ -297,7 +318,7 @@ def scene_evaluations(reference, directory, alt=None):
     os.makedirs('evals', exist_ok=True)
     torch.save(evaluations, os.path.join('evals', name + '.pt'))
 
-def ngf_mesh(ngf, rate=16) -> Mesh:
+def ngf_mesh(ngf, rate=16, reduce=True) -> Mesh:
     with torch.no_grad():
         uvs = ngf.sample_uniform(rate)
         V = ngf.eval(*uvs)
@@ -305,9 +326,9 @@ def ngf_mesh(ngf, rate=16) -> Mesh:
 
     cmap = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
     remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
-    indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
-    F = remap.remap_device(indices)
 
+    indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
+    F = remap.remap_device(indices) if reduce else indices
     return mesh_from(V, F)
 
 def tessellation_evaluation(prefix):
@@ -520,15 +541,6 @@ def multichart_evaluations():
         total_vertices = torch.cat(total_vertices)
         total_indices = torch.cat(total_indices)
 
-        # print('total_vertices', total_vertices.shape)
-        # print('total_indices', total_indices.shape)
-        #
-        # import polyscope as ps
-        #
-        # ps.init()
-        # ps.register_surface_mesh('m', total_vertices.cpu().numpy(), total_indices.cpu().numpy())
-        # ps.show()
-
         return mesh_from(total_vertices, total_indices)
 
     pattern = re.compile(r'^mcgim-\d+-\d+.pt$')
@@ -642,6 +654,248 @@ def multichart_evaluations():
 
     plt.savefig('gims.png')
 
+def frequency_evaluation():
+    import glob
+    import json
+    import re
+
+    ref = load_mesh('meshes/armadillo/target.obj')[0]
+    evl = Evaluator(ref)
+
+    data = {}
+
+    pattern = re.compile(r'.*f(\d+)-losses.json')
+    for file in glob.glob('results/frequencies/*.json'):
+        freqs = int(pattern.match(file).group(1))
+        db = json.load(open(file, 'r'))
+        data[freqs] = { 'loss': db['render'] }
+
+    redata = {}
+    for k in sorted(list(data.keys())):
+        redata[k] = data[k]
+    data = redata
+
+    rate = 16
+    pattern = re.compile(r'.*f(\d+).pt')
+    for file in glob.glob('results/frequencies/*.pt'):
+        freqs = int(pattern.match(file).group(1))
+        ngf = torch.load(file)
+        ngf = load_ngf(ngf)
+        print('ngf', ngf)
+
+        # TODO: method
+        with torch.no_grad():
+            uvs = ngf.sample_uniform(rate)
+            V = ngf.eval(*uvs)
+            base = ngf.base(16)
+
+        cmap = make_cmap(ngf.complexes, ngf.points.detach(), base, 16)
+        remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], 16)
+        indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], 16)
+        F = remap.remap_device(indices)
+
+        ngf_mesh = mesh_from(V, F)
+
+        metrics = evl.eval_metrics(ngf_mesh, 'armadillo')
+        images = metrics['images']
+
+        data[freqs]['images'] = {
+                'ref': images['normal:ref'],
+                'mesh': images['normal:mesh']
+        }
+
+        # print('metrics', metrics.keys())
+
+    torch.save(data, 'frequencies.pt')
+
+def ngf_to_mesh(ngf, rate=16):
+    with torch.no_grad():
+        uvs = ngf.sample_uniform(rate)
+        V = ngf.eval(*uvs)
+        base = ngf.base(rate)
+    cmap = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
+    remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
+    indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
+    F = remap.remap_device(indices)
+    return mesh_from(V, F)
+
+def losses_evaluation(directory):
+    import json
+
+    # Evaluator
+    ref = load_mesh('meshes/igea/target.obj')[0]
+    evl = Evaluator(ref)
+
+    # Looking for ordindary and chamfer
+    ordinary = os.path.join(directory, 'experimental.pt')
+    chamfer = os.path.join(directory, 'experimental-chamfer.pt')
+    print('ordinary', ordinary)
+    print('chamfer', chamfer)
+
+    ngf_ord = load_ngf(torch.load(ordinary))
+    ngf_chm = load_ngf(torch.load(chamfer))
+
+    metrics_ord = evl.eval_metrics(ngf_to_mesh(ngf_ord))
+    metrics_chm = evl.eval_metrics(ngf_to_mesh(ngf_chm))
+
+    ordinary = os.path.join(directory, 'experimental-losses.json')
+    chamfer = os.path.join(directory, 'experimental-chamfer-losses.json')
+
+    chm_ord = json.load(open(ordinary, 'r'))['chamfer']
+    chm_chm = json.load(open(chamfer, 'r'))['chamfer']
+
+    time_ord = json.load(open(ordinary, 'r'))['time']
+    time_chm = json.load(open(chamfer, 'r'))['time']
+
+    # Conglomerate all the data
+    data = {
+            'loss:ord': chm_ord,
+            'time:ord': time_ord,
+            'loss:chm': chm_chm,
+            'time:chm': time_chm,
+            'render:ref': metrics_ord['images']['normal:ref'],
+            'render:ord': metrics_ord['images']['normal:mesh'],
+            'render:chm': metrics_chm['images']['normal:mesh'],
+    }
+
+    torch.save(data, 'loss-eval.pt')
+
+def ingp_evaluation():
+    # Load all the files
+    directory = os.path.abspath('evals/ingp')
+
+    ref, normalizer = load_mesh(os.path.join(directory, 'target.obj'))
+    ingp_t11 = load_mesh(os.path.join(directory, 'ingp-t11-f8.obj'))[0]
+    ingp_t12 = load_mesh(os.path.join(directory, 'ingp-t12-f4.obj'))[0]
+    ingp_t13 = load_mesh(os.path.join(directory, 'ingp-t13-f2.obj'))[0]
+
+    ngf = load_ngf(torch.load(os.path.join(directory, 'primary.pt')))
+    ngf_mesh = ngf_to_mesh(ngf)
+
+    print('ref minmax', ref.vertices.min(0)[0], ref.vertices.max(0)[0])
+    print('ngf minmax', ngf_mesh.vertices.min(0)[0], ngf_mesh.vertices.max(0)[0])
+    print('ingp minmax', ingp_t11.vertices.min(0)[0], ingp_t11.vertices.max(0)[0])
+
+    evl = Evaluator(ref)
+
+    data_ngf = evl.render_everything(ngf_mesh, 'skull')
+    data_t11 = evl.render_everything(ingp_t11, 'skull', invert=True)
+    data_t12 = evl.render_everything(ingp_t12, 'skull', invert=True)
+    data_t13 = evl.render_everything(ingp_t13, 'skull', invert=True)
+
+    chm_ngf = evl.eval_chamfer(ngf_mesh)['error']
+    chm_t11 = evl.eval_chamfer(ingp_t11)['error']
+    chm_t12 = evl.eval_chamfer(ingp_t12)['error']
+    chm_t13 = evl.eval_chamfer(ingp_t12)['error']
+
+    data = {
+            'ref': data_ngf['normal:ref'],
+            'ngf': {
+                'image': data_ngf['normal:mesh'],
+                'error': chm_ngf
+            },
+            'ngp11': {
+                'image': data_t11['normal:mesh'],
+                'error': chm_t11
+            },
+            'ngp12': {
+                'image': data_t12['normal:mesh'],
+                'error': chm_t12
+            },
+            'ngp13': {
+                'image': data_t13['normal:mesh'],
+                'error': chm_t13
+            }
+    }
+
+    torch.save(data, 'ingp.pt')
+
+def scroller_evaluation():
+    ref = load_mesh('meshes/wreck/target.obj')[0]
+    ngf = load_ngf(torch.load('results/wreck/experimental.pt'))
+    ngf_mesh = ngf_to_mesh(ngf)
+
+    evl = Evaluator(ref)
+    print('ref, ngf', ref.vertices.shape[0], ngf_mesh.vertices.shape[0])
+
+    return torch.save(evl.render_everything(ngf_mesh, 'wreck'), 'wreck-all.pt')
+
+def teaser_evaluation():
+    ref    = load_mesh('evals/teaser/target.obj')[0]
+    qslim  = load_mesh('evals/teaser/qslim.obj')[0]
+    nvdiff = load_mesh('evals/teaser/nvdiff.obj')[0]
+    ingp   = load_mesh('evals/teaser/ingp.obj')[0]
+    ngf    = load_ngf(torch.load('evals/teaser/primary.pt'))
+
+    def ngf_to_mesh(ngf, rate=16, reduce=True) -> Mesh:
+        with torch.no_grad():
+            uvs = ngf.sample_uniform(rate)
+            V = ngf.eval(*uvs)
+            base = ngf.base(rate)
+
+        cmap = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
+        remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
+
+        indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
+        F = remap.remap_device(indices) if reduce else indices
+        return mesh_from(V, F)
+
+    ngf_mesh = ngf_to_mesh(ngf, reduce=False)
+
+    evl = Evaluator(ref)
+
+    COLOR_WHEEL = np.array([
+        [0.880, 0.320, 0.320],
+        [0.880, 0.530, 0.320],
+        [0.880, 0.740, 0.320],
+        [0.810, 0.880, 0.320],
+        [0.600, 0.880, 0.320],
+        [0.390, 0.880, 0.320],
+        [0.320, 0.880, 0.460],
+        [0.320, 0.880, 0.670],
+        [0.320, 0.880, 0.880],
+        [0.320, 0.670, 0.880],
+        [0.320, 0.460, 0.880],
+        [0.390, 0.320, 0.880],
+        [0.600, 0.320, 0.880],
+        [0.810, 0.320, 0.880],
+        [0.880, 0.320, 0.740],
+        [0.880, 0.320, 0.530]
+    ])
+
+    COLOR_WHEEL = torch.from_numpy(COLOR_WHEEL).cuda().float()
+
+    import nvdiffrast.torch as dr
+    camera = evl.get_view('dragon').unsqueeze(0)
+    pindex = torch.arange(ngf.complexes.shape[0]).repeat_interleave(450)
+    colors = COLOR_WHEEL[pindex % COLOR_WHEEL.shape[0]]
+    patches = evl.renderer.render_false_coloring(ngf_mesh.vertices, ngf_mesh.normals, ngf_mesh.faces, colors, camera)[0]
+
+    import matplotlib.pyplot as plt
+    plt.imshow(patches.cpu().numpy())
+    plt.show()
+
+    qslim_data  = evl.eval_metrics(qslim, 'dragon')
+    nvdiff_data = evl.eval_metrics(nvdiff, 'dragon')
+    ingp_data   = evl.eval_metrics(ingp, 'dragon', invert=True)
+    ngf_data    = evl.eval_metrics(ngf_mesh, 'dragon')
+
+    return torch.save({
+        'nrm:ref'    : ngf_data['images']['normal:ref'],
+        'nrm:ngf'    : ngf_data['images']['normal:mesh'],
+        'nrm:qslim'  : qslim_data['images']['normal:mesh'],
+        'nrm:nvdiff' : nvdiff_data['images']['normal:mesh'],
+        'nrm:ingp'   : ingp_data['images']['normal:mesh'],
+        'patches'    : patches,
+
+        'chamfer:ngf'    : ngf_data['chamfer'],
+        'chamfer:qslim'  : qslim_data['chamfer'],
+        'chamfer:nvdiff' : nvdiff_data['chamfer'],
+        'chamfer:ingp'   : ingp_data['chamfer'],
+    }, 'teaser.pt')
+
+    # return torch.save(evl.render_everything(ngf_mesh, 'dragon'), 'teaser.pt')
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--reference', type=str, help='path to reference mesh')
@@ -650,6 +904,11 @@ if __name__ == '__main__':
     parser.add_argument('--tess-prefix', type=str, help='prefix for tessellation evaluations')
     parser.add_argument('--feat-prefix', type=str, help='prefix for feature size evaluations')
     parser.add_argument('--multichart', action='store_true', help='perform multichart geometry images ablations')
+    parser.add_argument('--freq', action='store_true', help='perform frequency ablations')
+    parser.add_argument('--losses', type=str, help='perform loss ablations')
+    parser.add_argument('--ingp', action='store_true', help='perform INGP comparisons')
+    parser.add_argument('--scroller', action='store_true', help='evaluating scoller images')
+    parser.add_argument('--teaser', action='store_true', help='evaluating scoller images')
     args = parser.parse_args()
 
     if args.results:
@@ -660,5 +919,15 @@ if __name__ == '__main__':
         feature_evaluation(args.feat_prefix)
     elif args.multichart:
         multichart_evaluations()
+    elif args.freq:
+        frequency_evaluation()
+    elif args.losses:
+        losses_evaluation(args.losses)
+    elif args.ingp:
+        ingp_evaluation()
+    elif args.scroller:
+        scroller_evaluation()
+    elif args.teaser:
+        teaser_evaluation()
     else:
         raise NotImplementedError

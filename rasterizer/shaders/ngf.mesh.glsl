@@ -46,7 +46,7 @@ layout (binding = 2) readonly buffer Patches
 // TODO: enable arbitrary feature size
 //   there was some bug when passing
 //   feature size through PC or RD SSBO
-const uint ENCODING_LEVELS = 10;
+const uint ENCODING_LEVELS = 8;
 const uint FEATURE_SIZE    = 20;
 const uint FFIN            = FEATURE_SIZE + 3 * (2 * ENCODING_LEVELS + 1);
 
@@ -240,6 +240,7 @@ void main()
 
 	// Send position to fragment shader for normal vector calculations
 	position[gl_LocalInvocationIndex] = vec3(model * vec4(v, 1.0f));
+	// position[gl_LocalInvocationIndex] = v;
 	pindex[gl_LocalInvocationIndex] = payload.pindex;
 
 	// barrier();

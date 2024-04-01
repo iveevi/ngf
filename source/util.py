@@ -180,7 +180,8 @@ def arrange_views(simplified: Mesh, cameras: int, radius: float = 1.0):
     import optext
 
     seeds = list(torch.randint(0, simplified.faces.shape[0], (cameras,)).numpy())
-    clusters = optext.cluster_geometry(simplified.optg, seeds, 3, 'uniform')
+    # clusters = optext.cluster_geometry(simplified.optg, seeds, 3, 'uniform')
+    clusters = optext.cluster_geometry(simplified.optg, seeds, 1, 'uniform')
 
     views = []
     for cluster in clusters:

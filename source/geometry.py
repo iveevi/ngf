@@ -42,23 +42,3 @@ def compute_vertex_normals(verts, faces, face_normals):
     lengths = torch.linalg.norm(normals, dim=0)
     lengths = torch.where(lengths == 0, torch.ones_like(lengths), lengths)
     return (normals / lengths).transpose(0, 1)
-
-# Vertex density measures
-def vertex_density(V, F):
-    V0 = V[F[..., 0]]
-    V1 = V[F[..., 1]]
-    V2 = V[F[..., 2]]
-
-    E0 = V0 - V1
-    E1 = V0 - V2
-    areas = torch.cross(E0, E1).norm(dim=-1)
-    total = areas.sum()/F.shape[0]
-
-    A = torch.zeros(V.shape[0], device=V.device, dtype=V.dtype)
-
-    # TODO: does this scatter add?
-    A[F[..., 0]] += areas/3
-    A[F[..., 1]] += areas/3
-    A[F[..., 2]] += areas/3
-
-    return total/A

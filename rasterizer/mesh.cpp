@@ -130,6 +130,10 @@ std::vector <Mesh> Mesh::load(const std::filesystem::path &path)
 	return assimp_process_node(scene->mRootNode, scene, path.parent_path());
 }
 
+// #include <iostream>
+// #include <glm/glm.hpp>
+// #include <glm/gtx/string_cast.hpp>
+
 Mesh Mesh::normalize(const Mesh &m)
 {
 	glm::vec3 min(FLT_MAX);
@@ -141,12 +145,19 @@ Mesh Mesh::normalize(const Mesh &m)
 	}
 
 	glm::vec3 d = max - min;
+	glm::vec3 center = (max + min)/2.0f;
 
 	Mesh nm = m;
 
-	float scale = std::max(d.x, std::max(d.y, d.z));
+	float scale = glm::length(d)/2.0f;
 	for (glm::vec3 &v : nm.vertices)
-		v = (v - min) / scale;
+		v = (v - center)/scale;
+
+	// std::cout << "min, max, scale and center:"
+	// 	<< glm::to_string(min) << "  "
+	// 	<< glm::to_string(max) << "  "
+	// 	<< scale << "  "
+	// 	<< glm::to_string(center) << "\n";
 
 	return nm;
 }

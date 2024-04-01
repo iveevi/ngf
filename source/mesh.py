@@ -40,6 +40,7 @@ def load_mesh(path, normalizer=None) -> Tuple[Mesh, Callable[[torch.Tensor], tor
         max = v.max(0)[0]
         center = (min + max) / 2
         scale = (max - min).square().sum().sqrt() / 2.0
+        print('min, max, scale and center', min, max, scale, center)
         normalizer = lambda x: (x - center) / scale
 
     v = normalizer(v)

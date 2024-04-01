@@ -2,8 +2,6 @@ import torch
 import numpy as np
 import nvdiffrast.torch as dr
 
-from geometry import vertex_density
-
 def persp_proj(fov_x=45, ar=1, near=0.1, far=100):
     fov_rad = np.deg2rad(fov_x)
     proj_mat = np.array([
@@ -95,14 +93,15 @@ class Renderer:
         self.ctx  = dr.RasterizeCudaContext()
         self.sh   = SphericalHarmonics(config['envmap'])
 
-    def render(self, v, n, f, lights, view_mats):
+    def render_false_coloring(self, v, n, f, colors, view_mats):
         mvps = self.proj @ view_mats
         v_hom = torch.nn.functional.pad(v, (0, 1), 'constant', 1.0)
         v_ndc = torch.matmul(v_hom, mvps.transpose(1, 2))
         rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
-        color = n @ lights.t()
-        color = dr.interpolate(color, rast, f)[0]
-        return dr.antialias(color, rast, v_ndc, f)
+        # color = dr.interpolate(colors, rast, f)[0]
+        # return torch.where(rast[..., -1].unsqueeze(-1) == 0, torch.zeros_like(color), color)
+        color = colors[rast[..., -1].int()]
+        return torch.where(rast[..., -1].unsqueeze(-1) == 0, torch.zeros_like(color), color)
 
     def render_attributes(self, v, n, f, view_mats):
         mvps = self.proj @ view_mats
@@ -129,11 +128,13 @@ class Renderer:
         color = dr.interpolate(color, rast, f)[0]
         return dr.antialias(color, rast, v_ndc, f)
 
-    def render_normals(self, v, n, f, view_mats):
+    def render_normals(self, v, n, f, view_mats, invert=False):
         mvps = self.proj @ view_mats
         v_hom = torch.nn.functional.pad(v, (0,1), 'constant', 1.0)
         v_ndc = torch.matmul(v_hom, mvps.transpose(1,2))
         rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
+        if invert:
+            n = -n
         col = dr.interpolate(n * 0.5 + 0.5, rast, f)[0]
         # bgs = torch.ones_like(col)
         # return dr.antialias(torch.where(rast[..., -1:] != 0, col, bgs), rast, v_ndc, f)

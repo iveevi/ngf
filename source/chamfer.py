@@ -1,11 +1,10 @@
 # Packages for training
-import imageio.v2 as imageio
 import meshio
 import sys
 import torch
 import json
 import optext
-import tqdm
+import time
 
 from typing import Callable
 
@@ -58,6 +57,7 @@ if __name__ == '__main__':
     print('target: {} vertices, {} faces'.format(target.vertices.shape[0], target.faces.shape[0]))
 
     # Iterate over experiments
+    TIME_START = time.time()
     for experiment in experiments:
         name = experiment['name']
         source_path = experiment['source']
@@ -116,7 +116,7 @@ if __name__ == '__main__':
         # TODO: parameters() method for ngf
         opt = torch.optim.Adam(list(ngf.mlp.parameters()) + [ ngf.points, ngf.features ], lr=1e-3)
 
-        losses = { 'chamfer': [] }
+        losses = { 'chamfer': [], 'time': [] }
 
         target_face_vertices = target.vertices[target.faces]
 
@@ -151,7 +151,12 @@ if __name__ == '__main__':
                 loss.backward()
                 opt.step()
 
+                time_now = time.time()
+                time_elapsed = time_now - TIME_START
+
                 losses['chamfer'].append(loss.item())
+                losses['time'].append(time_elapsed)
+
                 # losses.setdefault('smooth', []).append(laplacian_loss.item())
 
             display(rate)

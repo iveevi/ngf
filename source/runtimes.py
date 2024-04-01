@@ -1,6 +1,7 @@
 import os
 import re
 import torch
+import time
 import prettytable
 
 from ngf import load_ngf
@@ -18,6 +19,8 @@ if __name__ == '__main__':
                 ngf = torch.load(file)
                 ngf = load_ngf(ngf)
 
+                ngf.mlp.eval()
+
                 count = ngf.complexes.shape[0]
                 count = 10 * ((count + 9) // 10)
                 lods[count] = ngf
@@ -28,32 +31,40 @@ if __name__ == '__main__':
     # timings = { 'grad', 'no_grad' }
     timings = {}
 
+    import time
+
     for lod in lods:
         ngf = lods[lod]
 
         # With gradients
         for tessellation in [ 4, 8, 16 ]:
-            print('Profiling lod %d with gradient pass at resolution %d' % (lod, tessellation))
-            with torch.profiler.profile(schedule=torch.profiler.schedule(wait=1, warmup=1, active=10)) as prof:
-                for i in range(100):
-                    with torch.profiler.record_function('evaluation'):
-                        with torch.no_grad():
-                            uvs = ngf.sample_uniform(tessellation)
-                        V = ngf.eval(*uvs).detach()
-                        prof.step()
+            START = time.time()
+            uvs = ngf.sample_uniform(tessellation)
+            V = ngf.eval(*uvs).detach()
+            END = time.time()
+            print('Time for tessellation %d is %f' % (tessellation, 1000 * (END - START)))
 
-            # print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
-
-            data = None
-            for entry in prof.key_averages():
-                if entry.key == 'evaluation':
-                    data = entry
-                    break
-
-            cuda_time = data.cuda_time_total / (data.count * 1e3)
-            # print('  > time (CPU %.2f ms, %.2f CUDA ms)' %(data.cpu_time_total / (data.count * 1000), data.cuda_time_total / (data.count * 1000)))
-
-            timings.setdefault(lod, {})[tessellation] = cuda_time
+        #     print('Profiling lod %d with gradient pass at resolution %d' % (lod, tessellation))
+        #     with torch.profiler.profile(schedule=torch.profiler.schedule(wait=1, warmup=1, active=10)) as prof:
+        #         for i in range(100):
+        #             with torch.profiler.record_function('evaluation'):
+        #                 with torch.no_grad():
+        #                     uvs = ngf.sample_uniform(tessellation)
+        #                 V = ngf.eval(*uvs).detach()
+        #                 prof.step()
+        #
+        #     # print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+        #
+        #     data = None
+        #     for entry in prof.key_averages():
+        #         if entry.key == 'evaluation':
+        #             data = entry
+        #             break
+        #
+        #     cuda_time = data.cuda_time_total / (data.count * 1e3)
+        #     # print('  > time (CPU %.2f ms, %.2f CUDA ms)' %(data.cpu_time_total / (data.count * 1000), data.cuda_time_total / (data.count * 1000)))
+        #
+        #     timings.setdefault(lod, {})[tessellation] = cuda_time
 
         # Without gradients
         # print('Profiling lod %d with gradient pass' % lod)
