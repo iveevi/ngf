@@ -8,12 +8,17 @@ from ngf import load_ngf
 
 if __name__ == '__main__':
     # Use XYZ model as the benchmark
+    directory = os.path.dirname(__file__)
+    results = os.path.join(directory, os.path.pardir, 'results', 'xyz')
+    print(results)
+
     lods = {}
 
     pattern = re.compile('^lod\d.pt$')
-    for root, _, files in os.walk('results/xyz'):
+    for root, _, files in os.walk(results):
         for file in files:
             if pattern.match(file):
+                print('ngf', file)
                 file = os.path.join(root, file)
 
                 ngf = torch.load(file)

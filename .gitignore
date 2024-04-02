@@ -5,6 +5,7 @@
 *.pt
 *.tar.gz
 .cache/
+.idea/
 .nsc
 .polyscope.ini
 .venv/

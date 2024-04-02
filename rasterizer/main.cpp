@@ -159,25 +159,18 @@ struct Engine : littlevk::Skeleton {
 		init_info.MinImageCount = 2;
 		init_info.ImageCount = 2;
 		init_info.CheckVkResultFn = nullptr;
+		init_info.RenderPass = engine.render_pass;
 
-		ImGui_ImplVulkan_Init(&init_info, engine.render_pass);
+		ImGui_ImplVulkan_Init(&init_info);
 
 		// Upload fonts
-		littlevk::submit_now
-		(
-		 	engine.device,
-			engine.command_pool,
-			engine.graphics_queue,
-			[&](const vk::CommandBuffer &cmd) {
-				ImGui_ImplVulkan_CreateFontsTexture(cmd);
-			}
-		);
+		ImGui_ImplVulkan_CreateFontsTexture();
 
 		// Configure ImPlot as well
 		ImPlot::CreateContext();
 	}
 
-	static Engine from(const vk::PhysicalDevice &phdev) {
+	static Engine from(const vk::PhysicalDevice &phdev, const std::vector <const char *> &extensions) {
 		Engine engine;
 
 		engine.phdev = phdev;
@@ -215,10 +208,14 @@ struct Engine : littlevk::Skeleton {
 		printf("features:\n");
 		printf("  task shaders: %s\n", ms_ft.taskShader ? "true" : "false");
 		printf("  mesh shaders: %s\n", ms_ft.meshShader ? "true" : "false");
+		printf("  multiview: %s\n", ms_ft.multiviewMeshShader ? "true" : "false");
 		printf("  m4: %s\n", m4_ft.maintenance4 ? "true" : "false");
 
+		ms_ft.multiviewMeshShader = vk::False;
+		ms_ft.primitiveFragmentShadingRateMeshShader = vk::False;
+
 		// Initialize the device and surface
-		engine.skeletonize(phdev, { 1920, 1080 }, "Neural Geometry Fields Testbed", ft, vk::PresentModeKHR::eImmediate);
+		engine.skeletonize(phdev, { 1920, 1080 }, "Neural Geometry Fields Testbed", extensions, ft, vk::PresentModeKHR::eImmediate);
 
 		// Create the render pass
 		engine.render_pass = littlevk::default_color_depth_render_pass
@@ -239,11 +236,12 @@ struct Engine : littlevk::Skeleton {
 		).unwrap(engine.dal);
 
 		// Create framebuffers from the swapchain
-		littlevk::FramebufferSetInfo fb_info;
-		fb_info.swapchain = &engine.swapchain;
-		fb_info.render_pass = engine.render_pass;
-		fb_info.extent = engine.window->extent;
-		fb_info.depth_buffer = &depth_buffer.view;
+		littlevk::FramebufferSetInfo fb_info {
+			.swapchain = engine.swapchain,
+			.render_pass = engine.render_pass,
+			.extent = engine.window->extent,
+			.depth_buffer = depth_buffer.view
+		};
 
 		engine.framebuffers = littlevk::framebuffers
 			(engine.device, fb_info).unwrap(engine.dal);
@@ -586,19 +584,21 @@ int main(int argc, char *argv[])
 	}
 
 	// Configure renderer
-	auto predicate = [](vk::PhysicalDevice phdev) {
-		return littlevk::physical_device_able(phdev, {
-			VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-			VK_EXT_MESH_SHADER_EXTENSION_NAME,
-			VK_KHR_MAINTENANCE_4_EXTENSION_NAME,
-			VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,
-		});
+	static const std::vector <const char *> extensions {
+		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+		VK_EXT_MESH_SHADER_EXTENSION_NAME,
+		VK_KHR_MAINTENANCE_4_EXTENSION_NAME,
+		VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,
+	};
+
+	auto predicate = [](const vk::PhysicalDevice &phdev) {
+		return littlevk::physical_device_able(phdev, extensions);
 	};
 
 	vk::PhysicalDevice phdev = littlevk::pick_physical_device(predicate);
 
 	// Initialization
-	Engine engine = Engine::from(phdev);
+	Engine engine = Engine::from(phdev, extensions);
 
 	engine.camera_transform.position = glm::vec3 { 0, 0, -2.3 };
 	VulkanMesh vk_ref = VulkanMesh::from(engine, reference);
@@ -715,34 +715,6 @@ int main(int argc, char *argv[])
 
 		render_pass_begin(engine, cmd, op);
 
-		// const auto &ppl = activate_pipeline(engine, cmd);
-		//
-		// // Regular rendering push constants
-		// BasePushConstants base_pc {
-		// 	engine.push_constants.model,
-		// 	engine.push_constants.view,
-		// 	engine.push_constants.proj,
-		// };
-		//
-		// Transform tf_base;
-		// tf_base.rotation.y = fmod(2.0f * iteration, 360.0f);
-		// tf_base.position.x = -0.5f;
-		// base_pc.model = tf_base.matrix();
-		//
-		// cmd.pushConstants <BasePushConstants>
-		// (
-		// 	ppl.layout,
-		// 	vk::ShaderStageFlagBits::eVertex,
-		// 	0, base_pc
-		// );
-		//
-		// cmd.bindVertexBuffers(0, { vk_ref.vertices.buffer }, { 0 });
-		// cmd.bindIndexBuffer(vk_ref.triangles.buffer, 0, vk::IndexType::eUint32);
-		// cmd.drawIndexed(vk_ref.indices, 1, 0, 0, 0);
-
-		// const auto &ppl = activate_pipeline(engine, cmd);
-		// TODO: active pipeline by key
-
 		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.ngf_meshlet.pipeline);
 		cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, engine.ngf_meshlet.layout, 0, { vk_ngf_buffers.dset }, nullptr);
 
@@ -790,53 +762,53 @@ int main(int argc, char *argv[])
 		cmd.drawMeshTasksEXT(ngf.patch_count, 1, 1);
 
 		// ImGui pass
-		// {
-		// 	ImGui_ImplVulkan_NewFrame();
-		// 	ImGui_ImplGlfw_NewFrame();
-		// 	ImGui::NewFrame();
-		//
-		// 	ImGui::Begin("Info");
-		//
-		// 	float ft = ImGui::GetIO().DeltaTime;
-		// 	ImGui::Text("Frame time: %f ms / %d fps", ft * 1000.0f, int32_t(1.0f/ft));
-		// 	ImGui::Text("Number of active patches: %d\n", ngf.patch_count);
-		// 	ImGui::Separator();
-		//
-		// 	static const std::unordered_map <uint32_t, std::string> mode_descriptions {
-		// 		{ 0, "Patches" },
-		// 		{ 1, "Normal" },
-		// 		{ 2, "Shaded" }
-		// 	};
-		//
-		// 	ImGui::Text("Render mode");
-		// 	for (const auto &[m, desc] : mode_descriptions) {
-		// 		if (ImGui::RadioButton(desc.c_str(), mode == m))
-		// 			mode = m;
-		// 	}
-		//
-		// 	// ImGui::Separator();
-		// 	//
-		// 	// frametimes.push_back(1000.0f * ft);
-		// 	// if (frametimes.size() > SAMPLES)
-		// 	// 	frametimes.pop_front();
-		// 	//
-		// 	// if (ImPlot::BeginPlot("Frametime")) {
-		// 	// 	std::vector <float> flat(frametimes.begin(), frametimes.end());
-		// 	// 	float max = 0.0f;
-		// 	// 	for (float f : flat)
-		// 	// 		max = std::max(max, f);
-		// 	//
-		// 	// 	ImPlot::SetupAxesLimits(0, 100, 0, max);
-		// 	// 	ImPlot::SetNextAxisLimits(0, 100, 0, max);
-		// 	// 	ImPlot::PlotLine("Frametimes", flat.data(), flat.size());
-		// 	// 	ImPlot::EndPlot();
-		// 	// }
-		//
-		// 	ImGui::End();
-		//
-		// 	ImGui::Render();
-		// 	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
-		// }
+		{
+			ImGui_ImplVulkan_NewFrame();
+			ImGui_ImplGlfw_NewFrame();
+			ImGui::NewFrame();
+
+			ImGui::Begin("Info");
+
+			float ft = ImGui::GetIO().DeltaTime;
+			ImGui::Text("Frame time: %f ms / %d fps", ft * 1000.0f, int32_t(1.0f/ft));
+			ImGui::Text("Number of active patches: %d\n", ngf.patch_count);
+			ImGui::Separator();
+
+			static const std::unordered_map <uint32_t, std::string> mode_descriptions {
+				{ 0, "Patches" },
+				{ 1, "Normal" },
+				{ 2, "Shaded" }
+			};
+
+			ImGui::Text("Render mode");
+			for (const auto &[m, desc] : mode_descriptions) {
+				if (ImGui::RadioButton(desc.c_str(), mode == m))
+					mode = m;
+			}
+
+			// ImGui::Separator();
+			//
+			// frametimes.push_back(1000.0f * ft);
+			// if (frametimes.size() > SAMPLES)
+			// 	frametimes.pop_front();
+			//
+			// if (ImPlot::BeginPlot("Frametime")) {
+			// 	std::vector <float> flat(frametimes.begin(), frametimes.end());
+			// 	float max = 0.0f;
+			// 	for (float f : flat)
+			// 		max = std::max(max, f);
+			//
+			// 	ImPlot::SetupAxesLimits(0, 100, 0, max);
+			// 	ImPlot::SetNextAxisLimits(0, 100, 0, max);
+			// 	ImPlot::PlotLine("Frametimes", flat.data(), flat.size());
+			// 	ImPlot::EndPlot();
+			// }
+
+			ImGui::End();
+
+			ImGui::Render();
+			ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+		 }
 
 		render_pass_end(engine, cmd);
 
@@ -860,38 +832,8 @@ int main(int argc, char *argv[])
 
 		// Save frame as an image
 		engine.device.waitIdle();
-		littlevk::download(engine.device, staging, fb_vec);
-
-		// TODO: openmp parallel
-		for (int32_t i = 0; i < 1920 * 1080; i++) {
-			uint32_t p = fb_vec[i];
-
-			uint8_t a = (p & 0xff000000) >> 24;
-			uint8_t r = (p & 0x00ff0000) >> 16;
-			uint8_t g = (p & 0x0000ff00) >> 8;
-			uint8_t b = (p & 0x000000ff);
-
-			translated[3 * i] = r;
-			translated[3 * i + 1] = g;
-			translated[3 * i + 2] = b;
-		}
-
-		char buf[1024];
-		sprintf(buf, "video/frame%03d.png", iteration);
-		stbi_write_png(buf, 1920, 1080, 3, translated.data(), 1920 * 3 * sizeof(uint8_t));
 
 		// Post frame
 		frame = 1 - frame;
-
-		iteration++;
-		printf("iter %d, mode %d\n", iteration, (mode + 1) * DURATION);
-		// if (iteration > DURATION)
-		// 	break;
-
-		if (iteration > (mode + 1) * DURATION)
-			mode++;
-
-		if (mode > 2)
-			break;
 	}
 }

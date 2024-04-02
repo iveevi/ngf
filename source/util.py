@@ -1,7 +1,6 @@
 import torch
 import numpy as np
 
-from mlp import *
 from mesh import Mesh
 
 def lerp(X, U, V):

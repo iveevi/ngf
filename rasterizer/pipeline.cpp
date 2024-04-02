@@ -1,6 +1,10 @@
 #include "pipeline.hpp"
 #include "util.hpp"
 
+#ifndef SHADERS_DIRECTORY
+#define SHADERS_DIRECTORY ""
+#endif
+
 static constexpr vk::VertexInputBindingDescription vertex_binding {
 	0, sizeof(Vertex), vk::VertexInputRate::eVertex,
 };
@@ -26,18 +30,20 @@ Pipeline ppl_normals
 	Pipeline ppl;
 
 	// Read shader source
-	std::string vertex_source = readfile("../shaders/mesh.vert.glsl");
-	std::string fragment_source = readfile("../shaders/normals.frag.glsl");
+	std::string vertex_source = readfile(SHADERS_DIRECTORY "/mesh.vert.glsl");
+	std::string fragment_source = readfile(SHADERS_DIRECTORY "/normals.frag.glsl");
 
 	// Compile shader modules
 	vk::ShaderModule vertex_module = littlevk::shader::compile(
 		device, vertex_source,
-		vk::ShaderStageFlagBits::eVertex
+		vk::ShaderStageFlagBits::eVertex,
+		{ SHADERS_DIRECTORY }
 	).unwrap(dal);
 
 	vk::ShaderModule fragment_module = littlevk::shader::compile(
 		device, fragment_source,
-		vk::ShaderStageFlagBits::eFragment
+		vk::ShaderStageFlagBits::eFragment,
+		{ SHADERS_DIRECTORY }
 	).unwrap(dal);
 
 	std::vector <vk::PipelineShaderStageCreateInfo> shader_stages {
@@ -89,25 +95,27 @@ Pipeline ppl_ngf
 	Pipeline ppl;
 
 	// Read shader source
-	// TODO: shaders dir
-	std::string task_source = readfile("../shaders/ngf.task.glsl");
-	std::string mesh_source = readfile("../shaders/ngf.mesh.glsl");
-	std::string fragment_source = readfile("../shaders/ngf.frag.glsl");
+	std::string task_source = readfile(SHADERS_DIRECTORY "/ngf.task.glsl");
+	std::string mesh_source = readfile(SHADERS_DIRECTORY "/ngf.mesh.glsl");
+	std::string fragment_source = readfile(SHADERS_DIRECTORY "/ngf.frag.glsl");
 
 	// Compile shader modules
 	vk::ShaderModule task_module = littlevk::shader::compile(
 		device, task_source,
-		vk::ShaderStageFlagBits::eTaskEXT
+		vk::ShaderStageFlagBits::eTaskEXT,
+		{ SHADERS_DIRECTORY }
 	).unwrap(dal);
 
 	vk::ShaderModule mesh_module = littlevk::shader::compile(
 		device, mesh_source,
-		vk::ShaderStageFlagBits::eMeshEXT
+		vk::ShaderStageFlagBits::eMeshEXT,
+		{ SHADERS_DIRECTORY }
 	).unwrap(dal);
 
 	vk::ShaderModule fragment_module = littlevk::shader::compile(
 		device, fragment_source,
-		vk::ShaderStageFlagBits::eFragment
+		vk::ShaderStageFlagBits::eFragment,
+		{ SHADERS_DIRECTORY }
 	).unwrap(dal);
 
 	printf("task module: %p\n", task_module);
@@ -186,8 +194,6 @@ Pipeline ppl_ngf
 
 	littlevk::pipeline::GraphicsCreateInfo pipeline_info;
 	pipeline_info.shader_stages = shader_stages;
-	// pipeline_info.vertex_binding = vertex_binding;
-	// pipeline_info.vertex_attributes = vertex_attributes;
 	pipeline_info.extent = extent;
 	pipeline_info.pipeline_layout = ppl.layout;
 	pipeline_info.render_pass = rp;

@@ -1,15 +1,18 @@
 [submodule "glm"]
 	path = thirdparty/glm
 	url = https://github.com/g-truc/glm
-[submodule "littlevk"]
-	path = rasterizer/littlevk
-	url = https://github.com/vedavamadathil/littlevk.git
-[submodule "imgui"]
-	path = rasterizer/imgui
-	url = https://github.com/ocornut/imgui.git
-[submodule "rasterizer/stb"]
-	path = rasterizer/stb
-	url = https://github.com/nothings/stb
-[submodule "rasterizer/implot"]
-	path = rasterizer/implot
+[submodule "thirdparty/draco"]
+	path = thirdparty/draco
+	url = https://github.com/google/draco.git
+[submodule "thirdparty/littlevk"]
+	path = thirdparty/littlevk
+	url = https://github.com/iveevi/littlevk.git
+[submodule "thirdparty/stb"]
+	path = thirdparty/stb
+	url = https://github.com/nothings/stb.git
+[submodule "thirdparty/imgui"]
+	path = thirdparty/imgui
+	url = https://github.com/ocornut/imgui
+[submodule "thirdparty/implot"]
+	path = thirdparty/implot
 	url = https://github.com/epezent/implot
