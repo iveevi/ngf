@@ -6,7 +6,8 @@ import torch
 
 from dataclasses import dataclass
 from typing import Tuple, Callable
-from geometry import compute_vertex_normals, compute_face_normals
+
+from .geometry import compute_vertex_normals, compute_face_normals
 
 @dataclass
 class Mesh:
@@ -16,6 +17,7 @@ class Mesh:
     path:     str = ''
     optg:     optext.geometry = None
 
+
 def mesh_from(V, F) -> Mesh:
     Fn = compute_face_normals(V, F)
     Vn = compute_vertex_normals(V, F, Fn)
@@ -23,6 +25,7 @@ def mesh_from(V, F) -> Mesh:
     optg = optext.geometry(V.cpu(), F.cpu())
 
     return Mesh(V, F, Vn, 'raw', optg)
+
 
 def load_mesh(path, normalizer=None) -> Tuple[Mesh, Callable[[torch.Tensor], torch.Tensor]]:
     mesh = meshio.read(path)
@@ -40,7 +43,6 @@ def load_mesh(path, normalizer=None) -> Tuple[Mesh, Callable[[torch.Tensor], tor
         max = v.max(0)[0]
         center = (min + max) / 2
         scale = (max - min).square().sum().sqrt() / 2.0
-        print('min, max, scale and center', min, max, scale, center)
         normalizer = lambda x: (x - center) / scale
 
     v = normalizer(v)
@@ -53,12 +55,13 @@ def load_mesh(path, normalizer=None) -> Tuple[Mesh, Callable[[torch.Tensor], tor
         optg = optext.geometry(v.cpu(), f.cpu())
         return Mesh(v, f, vn, os.path.abspath(path), optg), normalizer
 
-def simplify_mesh(mesh, faces, normalizer) -> Mesh:
-    BINARY = os.path.join(os.path.dirname(__file__), '..', 'build', 'simplify')
 
-    reduction = faces/mesh.faces.shape[0]
-    result = os.path.join(os.path.dirname(mesh.path), 'simplified.obj')
-
-    subprocess.run([BINARY, mesh.path, result, str(reduction)])
-
-    return load_mesh(result, normalizer)[0]
+# def simplify_mesh(mesh, faces, normalizer) -> Mesh:
+#     BINARY = os.path.join(os.path.dirname(__file__), '..', 'build', 'simplify')
+#
+#     reduction = faces/mesh.faces.shape[0]
+#     result = os.path.join(os.path.dirname(mesh.path), 'simplified.obj')
+#
+#     subprocess.run([BINARY, mesh.path, result, str(reduction)])
+#
+#     return load_mesh(result, normalizer)[0]

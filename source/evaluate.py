@@ -865,7 +865,6 @@ def teaser_evaluation():
 
     COLOR_WHEEL = torch.from_numpy(COLOR_WHEEL).cuda().float()
 
-    import nvdiffrast.torch as dr
     camera = evl.get_view('dragon').unsqueeze(0)
     pindex = torch.arange(ngf.complexes.shape[0]).repeat_interleave(450)
     colors = COLOR_WHEEL[pindex % COLOR_WHEEL.shape[0]]

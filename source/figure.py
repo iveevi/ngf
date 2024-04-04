@@ -1334,68 +1334,6 @@ def ingp(db):
 
     synthesize_tex(code, 'ingp.pdf', log=True)
 
-# def teaser(db):
-#     import torchvision
-#
-#     # Load the images
-#     images = db
-#
-#     # Whitespace removal cropbox
-#     cbox = cropbox(images)
-#
-#     # Extract and export the images
-#     directory = os.path.join('media', 'figures', 'generated')
-#     abs_directory = os.path.abspath(directory)
-#     os.makedirs(abs_directory, exist_ok=True)
-#
-#     # cbox1 = 300, 400, 400, 550
-#     for k, img in images.items():
-#         img = img.permute(2, 0, 1)
-#         img = img[ :, cbox[2] : cbox[3] + 1, cbox[0] : cbox[1] + 1]
-#         alpha = (img.sum(dim=0) > 0).unsqueeze(0)
-#         img = torch.concat([ img, alpha ], dim=0)
-#
-#         # And the insets as well
-#         # inset1 = img[ :, cbox1[2] : cbox1[3] + 1, cbox1[0] : cbox1[1] + 1]
-#
-#         pimg = os.path.join(directory, k.replace(':', '-') + '.png')
-#         pinset1 = os.path.join(directory, k.replace(':', '-') + '-inset1.png')
-#
-#         # torchvision.utils.save_image(inset1, pinset1)
-#         torchvision.utils.save_image(img, pimg)
-#
-#         # box1 = torch.tensor([ cbox1[0], cbox1[2], cbox1[1], cbox1[3] ]).unsqueeze(0)
-#
-#         # img = torchvision.io.read_image(pimg)
-#         # rgb = img[:3]
-#         # rgb = torchvision.utils.draw_bounding_boxes(rgb, boxes=box1, colors="red", width=8)
-#         # rgb = rgb / 255
-#         #
-#         # img = torch.concat([ rgb, img[None, 3] ], dim=0)
-#         # torchvision.utils.save_image(img, pimg)
-#
-#     # TODO: preamble somewhere here
-#     code = preamble + r'''
-#     \begin{document}
-#         \setlength{\fboxsep}{0pt}
-#         \setlength{\fboxrule}{1pt}
-#
-#         \centering
-#
-#         \includegraphics[width=5cm]{%s}
-#         \includegraphics[width=5cm]{%s}
-#         \includegraphics[width=5cm]{%s}
-#         \includegraphics[width=5cm]{%s}
-#         \includegraphics[width=5cm]{%s}
-#     \end{document}''' % (
-#             abs_directory + '/nrm-ref.png',
-#             abs_directory + '/nrm-ngf.png',
-#             abs_directory + '/nrm-qslim.png',
-#             abs_directory + '/nrm-nvdiff.png',
-#             abs_directory + '/nrm-ingp.png',
-#     )
-#
-#     synthesize_tex(code, 'teaser.pdf', log=True)
 
 def teaser(db):
     import torchvision
@@ -1550,23 +1488,6 @@ def teaser(db):
 
             abs_directory + '/ref-inset1.png',
             abs_directory + '/ref-inset2.png',
-
-            # 1e6 * db['chamfer:ngf'],
-            # 1e6 * db['chamfer:ingp'],
-            # 1e6 * db['chamfer:nvdiff'],
-            # 1e6 * db['chamfer:qslim'],
-            #
-            # abs_directory + '/ref-inset1.png',
-            # abs_directory + '/ngf-inset1.png',
-            # abs_directory + '/ingp-inset1.png',
-            # abs_directory + '/nvdiff-inset1.png',
-            # abs_directory + '/qslim-inset1.png',
-            #
-            # abs_directory + '/ref-inset2.png',
-            # abs_directory + '/ngf-inset2.png',
-            # abs_directory + '/ingp-inset2.png',
-            # abs_directory + '/nvdiff-inset2.png',
-            # abs_directory + '/qslim-inset2.png',
     )
 
     synthesize_tex(code, 'teaser.pdf', log=True)
@@ -1574,7 +1495,7 @@ def teaser(db):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--type', type=str, default='loss', help='Type of plot to generate')
-    parser.add_argument('--db', type=str, default='results.json', help='Database to plot from')
+    parser.add_argument('--db', type=str, default='', help='Database to plot from')
     parser.add_argument('--key', type=str, default='dpm', help='Key to plot from')
     parser.add_argument('--dir', type=str, default='.', help='Directory to plot from')
     parser.add_argument('--tick', type=int, default=5, help='Tick step for plots')

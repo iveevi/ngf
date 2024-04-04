@@ -12,6 +12,7 @@
 			"encoding_levels": 8,
 			"features": 16,
 			"jittering": true,
+			"laplacian": true,
 			"normals": "numerical"
 		}
 	]

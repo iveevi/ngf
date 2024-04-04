@@ -1,11 +1,19 @@
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 
+from typing import Callable
+
+from util import SIREN
+
+
+# TODO: try a SIREN network...
 class MLP(nn.Module):
     def __init__(self, ffin: int) -> None:
         super(MLP, self).__init__()
 
-        self.seq = nn.Sequential(
+        self.layers = nn.Sequential(
             nn.Linear(ffin, 64),
             nn.LeakyReLU(),
             nn.Linear(64, 64),
@@ -15,34 +23,38 @@ class MLP(nn.Module):
             nn.Linear(64, 3)
         )
 
-    def forward(self, X):
-        return self.seq(X)
+    def forward(self, x):
+        return self.layers(x)
+
 
 class NGF:
-    def __init__(self, points: torch.Tensor, complexes: torch.Tensor, features: torch.Tensor, config: dict, mlp=None):
+    def __init__(self,
+                 points: torch.Tensor,
+                 features: torch.Tensor,
+                 complexes: torch.Tensor,
+                 fflevels: int,
+                 jittering: bool,
+                 normals: bool,
+                 mlp=None) -> None:
         self.points = points
         self.features = features
         self.complexes = complexes
+        self.fflevels = fflevels
+        self.jittering = jittering
+        self.normals = normals
 
-        self.encoding_levels = config['encoding_levels']
-        self.jittering = config['jittering']
-        self.normals = config['normals']
-
-        features = config['features']
-
-        self.ffin = features + 3 * (2 * self.encoding_levels + 1)
+        # TODO: reduce 2 * fflevels
+        self.ffin = self.features.shape[-1] + 3 * (2 * self.fflevels + 1)
+        # self.ffin = self.features.shape[-1] + 3
 
         self.mlp = MLP(self.ffin).cuda()
+        # self.mlp = SIREN(self.ffin).cuda()
         if mlp is not None:
             self.mlp.load_state_dict(mlp.state_dict())
 
         self.sampler = self.sample_uniform
         if self.jittering:
             self.sampler = self.sample_jittered
-
-        self.config = config
-
-        torch.set_float32_matmul_precision('high')
 
         # Caches
         self.uv_cache = {}
@@ -55,7 +67,7 @@ class NGF:
     # Positional encoding
     def posenc(self, I):
         X = [ I ]
-        for i in range(self.encoding_levels):
+        for i in range(self.fflevels):
             k = 2 ** i
             X += [ torch.sin(k * I), torch.cos(k * I) ]
 
@@ -85,6 +97,7 @@ class NGF:
         lf = (lf00 + lf01 + lf10 + lf11).reshape(-1, feature_size)
 
         I = torch.cat((lf, self.posenc(lp)), dim=-1)
+        # I = torch.cat((lf, lp), dim=-1)
         return lp + self.mlp(I)
 
     def base(self, rate):
@@ -151,21 +164,41 @@ class NGF:
         delta = 0.45/(rate - 1)
 
         # TODO: use a normal distribution with decreasing jittering...
-        rand_UV = (2 * torch.rand((2, U.shape[0], U.shape[1]), device='cuda') - 1)
-        rand_UV *= delta * UV_interior
+        rand_uv = (2 * torch.rand((2, U.shape[0], U.shape[1]), device='cuda') - 1)
+        rand_uv *= delta * UV_interior
 
-        return U + rand_UV[0], V + rand_UV[1]
+        return U + rand_uv[0], V + rand_uv[1]
 
     def save(self, filename):
         model = {
-            'model'     : self.mlp,
-            'features'  : self.features,
-            'complexes' : self.complexes,
-            'points'    : self.points,
-            'config'    : self.config
+            'model': self.mlp,
+            'features': self.features,
+            'complexes': self.complexes,
+            'points': self.points,
+            'config': self.config
         }
 
         torch.save(model, filename)
+
+    @staticmethod
+    def from_base(path: str, normalizer: Callable, features: int, config: dict = dict()) -> NGF:
+        import meshio
+
+        mesh = meshio.read(path)
+        points = torch.from_numpy(mesh.points)
+        complexes = torch.from_numpy(mesh.cells_dict['quad'])
+
+        points = normalizer(points.float().cuda())
+        features = torch.zeros((points.shape[0], features)).cuda()
+        complexes = complexes.int().cuda()
+
+        points.requires_grad = True
+        features.requires_grad = True
+
+        return NGF(points, features, complexes,
+                   config.setdefault('fflevels', 8),
+                   config.setdefault('jittering', True),
+                   config.setdefault('normals', True))
 
 def load_ngf(data):
     return NGF(data['points'], data['complexes'], data['features'], data['config'], mlp=data['model'])

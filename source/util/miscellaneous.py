@@ -1,7 +1,8 @@
 import torch
 import numpy as np
 
-from mesh import Mesh
+from .mesh import Mesh
+
 
 def lerp(X, U, V):
     lp00 = X[:, 0, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * (1.0 - V.unsqueeze(-1))
@@ -10,23 +11,6 @@ def lerp(X, U, V):
     lp11 = X[:, 2, :].unsqueeze(1) * U.unsqueeze(-1) * V.unsqueeze(-1)
     return lp00 + lp01 + lp10 + lp11
 
-def sample(complexes, points, features, sample_rate, kernel=lerp):
-    # TDDO: return a compiled version of this function
-    U = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
-    V = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
-    U, V = torch.meshgrid(U, V, indexing='ij')
-
-    corner_points = points[complexes, :]
-    corner_features = features[complexes, :]
-
-    U, V = U.reshape(-1), V.reshape(-1)
-    U = U.repeat((complexes.shape[0], 1))
-    V = V.repeat((complexes.shape[0], 1))
-
-    lerped_points = lerp(corner_points, U, V).reshape(-1, 3)
-    lerped_features = kernel(corner_features, U, V).reshape(-1, POINT_ENCODING_SIZE)
-
-    return lerped_points, lerped_features
 
 def indices(sample_rate):
     triangles = []
@@ -40,6 +24,7 @@ def indices(sample_rate):
 
     return np.array(triangles)
 
+
 def sample_rate_indices(C, sample_rate):
     tri_indices = []
     for i in range(C.shape[0]):
@@ -50,6 +35,7 @@ def sample_rate_indices(C, sample_rate):
     tri_indices = np.concatenate(tri_indices, axis=0)
     tri_indices_tensor = torch.from_numpy(tri_indices).int().cuda()
     return tri_indices_tensor
+
 
 def shorted_indices(V, C, sample_rate=16):
     triangles = []
@@ -74,6 +60,7 @@ def shorted_indices(V, C, sample_rate=16):
 
     return np.array(triangles)
 
+
 def quadify(count, sample_rate=16):
     quads = []
     for c in range(count):
@@ -86,6 +73,7 @@ def quadify(count, sample_rate=16):
                 quads.append([a, b, d, c])
 
     return np.array(quads)
+
 
 def make_cmap(complexes, points, LP, sample_rate):
     Cs = complexes.cpu().numpy()
@@ -114,6 +102,7 @@ def make_cmap(complexes, points, LP, sample_rate):
 
     return cmap
 
+
 def average_edge_length(V, T):
     v0 = V[T[:, 0], :]
     v1 = V[T[:, 1], :]
@@ -128,6 +117,7 @@ def average_edge_length(V, T):
     l12 = torch.norm(v12, dim=1)
     return (l01 + l02 + l12).mean()/3.0
 
+
 def triangle_areas(v, f):
     v0 = v[f[:, 0], :]
     v1 = v[f[:, 1], :]
@@ -136,25 +126,6 @@ def triangle_areas(v, f):
     v02 = v2 - v0
     return 0.5 * torch.norm(torch.cross(v01, v02), dim=1)
 
-def sampler(kernel=lerp):
-    def ftn(complexes, points, features, sample_rate):
-        U = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
-        V = torch.linspace(0.0, 1.0, steps=sample_rate).cuda()
-        U, V = torch.meshgrid(U, V, indexing='ij')
-
-        corner_points = points[complexes, :]
-        corner_features = features[complexes, :]
-
-        U, V = U.reshape(-1), V.reshape(-1)
-        U = U.repeat((complexes.shape[0], 1))
-        V = V.repeat((complexes.shape[0], 1))
-
-        lerped_points = lerp(corner_points, U, V).reshape(-1, 3)
-        lerped_features = kernel(corner_features, U, V).reshape(-1, POINT_ENCODING_SIZE)
-
-        return lerped_points, lerped_features
-
-    return torch.compile(ftn, mode='reduce-overhead')
 
 def lookat(eye, center, up):
     normalize = lambda x: x / torch.norm(x)
@@ -175,11 +146,11 @@ def lookat(eye, center, up):
         [0, 0, 0, 1]
     ], dtype=torch.float32, device='cuda')
 
+
 def arrange_views(simplified: Mesh, cameras: int, radius: float = 1.0):
     import optext
 
     seeds = list(torch.randint(0, simplified.faces.shape[0], (cameras,)).numpy())
-    # clusters = optext.cluster_geometry(simplified.optg, seeds, 3, 'uniform')
     clusters = optext.cluster_geometry(simplified.optg, seeds, 1, 'uniform')
 
     views = []
