@@ -18,7 +18,7 @@ static std::vector <std::unordered_set <int32_t>> cluster_once(const geometry &g
 		assert(s < g.triangles.size());
 
 		face_to_cluster[s] = clusters.size();
-		clusters.push_back(std::unordered_set <int32_t>{ s });
+		clusters.push_back(std::unordered_set <int32_t> { s });
 		cluster_normals.push_back(g.face_normal(s));
 	}
 
