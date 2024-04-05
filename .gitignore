@@ -16,6 +16,7 @@ compile_commands.json
 compiled/
 data/
 db.json
+dist/
 evals/
 experiments/*.png
 experiments/meshes

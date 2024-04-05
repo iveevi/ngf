@@ -1,8 +1,24 @@
 #include "common.hpp"
 
-// TODO: microlog
+__forceinline__ __device__
+float squared_length(const glm::vec3 &a)
+{
+	return a.x * a.x + a.y * a.y + a.z * a.z;
+}
+
+__forceinline__ __device__
+float squared_distance(const glm::vec3 &a, const glm::vec3 &b)
+{
+	return squared_length(a - b);
+}
+
 __global__
-void triangulate_shorted_kernel(const glm::vec3 *__restrict__ vertices, glm::ivec3 *__restrict__ triangles, size_t sample_rate)
+void kernel_triangulate_shorted
+(
+	const glm::vec3 *__restrict__ vertices,
+	glm::ivec3 *__restrict__ triangles,
+	size_t sample_rate
+)
 {
 	size_t i = blockIdx.x;
 	size_t j = threadIdx.x;
@@ -20,8 +36,8 @@ void triangulate_shorted_kernel(const glm::vec3 *__restrict__ vertices, glm::ive
 	const glm::vec3 &vc = vertices[c];
 	const glm::vec3 &vd = vertices[d];
 
-	float d0 = glm::distance(va, vd);
-	float d1 = glm::distance(vb, vc);
+	float d0 = squared_distance(va, vd);
+	float d1 = squared_distance(vb, vc);
 
 	size_t toffset = 2 * i * (sample_rate - 1) * (sample_rate - 1);
 	size_t tindex = toffset + 2 * (j * (sample_rate - 1) + k);
@@ -31,6 +47,7 @@ void triangulate_shorted_kernel(const glm::vec3 *__restrict__ vertices, glm::ive
 	} else {
 		triangles[tindex] = glm::ivec3(a, c, b);
 		triangles[tindex + 1] = glm::ivec3(b, c, d);
+		// TODO: swap?
 	}
 }
 
@@ -54,14 +71,7 @@ torch::Tensor triangulate_shorted(const torch::Tensor &vertices, size_t complex_
 	dim3 block(sample_rate - 1, sample_rate - 1);
 	dim3 grid(complex_count);
 
-	triangulate_shorted_kernel <<< grid, block >>> (vertices_ptr, out_ptr, sample_rate);
-
+	kernel_triangulate_shorted <<< grid, block >>> (vertices_ptr, out_ptr, sample_rate);
 	cudaDeviceSynchronize();
-	cudaError_t err = cudaGetLastError();
-	if (err != cudaSuccess) {
-		std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
-		exit(1);
-	}
-
 	return out;
 }

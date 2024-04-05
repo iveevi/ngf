@@ -221,7 +221,7 @@ struct geometry {
 			egraph[e].insert(f);
 		};
 
-		for (int32_t i = 0; i < triangles.size(); i++) {
+		for (size_t i = 0; i < triangles.size(); i++) {
 			int32_t i0 = triangles[i][0];
 			int32_t i1 = triangles[i][1];
 			int32_t i2 = triangles[i][2];
@@ -250,7 +250,7 @@ struct geometry {
 			set.merge(adj);
 		};
 
-		for (int32_t i = 0; i < triangles.size(); i++) {
+		for (size_t i = 0; i < triangles.size(); i++) {
 			int32_t i0 = triangles[i][0];
 			int32_t i1 = triangles[i][1];
 			int32_t i2 = triangles[i][2];

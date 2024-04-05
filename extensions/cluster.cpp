@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
-#include <limits>
 #include <set>
 #include <unordered_map>
 
@@ -124,9 +123,9 @@ std::vector <std::vector <int32_t>> cluster_geometry(const geometry &g, const st
 
 		// For each cluster, find the closest face
 		next_seeds.clear();
-		for (int32_t i = 0; i < clusters.size(); i++) {
-			const auto &c = clusters[i];
-			const auto &centroid = centroids[i];
+		for (size_t j = 0; j < clusters.size(); j++) {
+			const auto &c = clusters[j];
+			const auto &centroid = centroids[j];
 
 			float min_dist = FLT_MAX;
 			int32_t min_face = -1;

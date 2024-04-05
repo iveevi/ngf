@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -26,6 +27,27 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.layers(x)
 
+    def stream(self):
+        weights = [layer.weight.data.cpu() for layer in self.layers if isinstance(layer, nn.Linear)]
+        biases = [layer.bias.data.cpu() for layer in self.layers if isinstance(layer, nn.Linear)]
+
+        bytestream = b''
+        for w in weights:
+            bytestream += w.shape[0].to_bytes(4, 'little')
+            bytestream += w.shape[1].to_bytes(4, 'little')
+            bytestream += w.numpy().astype('float32').tobytes()
+
+        for b in biases:
+            bytestream += b.shape[0].to_bytes(4, 'little')
+            bytestream += b.numpy().astype('float32').tobytes()
+
+        return bytestream
+
+
+class Sampler:
+    def __init__(self, points: torch.Tensor, features: torch.Tensor, complexes: torch.Tensor):
+        pass
+
 
 class NGF:
     def __init__(self,
@@ -43,12 +65,9 @@ class NGF:
         self.jittering = jittering
         self.normals = normals
 
-        # TODO: reduce 2 * fflevels
-        self.ffin = self.features.shape[-1] + 3 * (2 * self.fflevels + 1)
-        # self.ffin = self.features.shape[-1] + 3
+        self.ffin = self.features.shape[-1] + 3 * (2 * self.fflevels)
 
         self.mlp = MLP(self.ffin).cuda()
-        # self.mlp = SIREN(self.ffin).cuda()
         if mlp is not None:
             self.mlp.load_state_dict(mlp.state_dict())
 
@@ -65,13 +84,13 @@ class NGF:
         return list(self.mlp.parameters()) + [ self.points, self.features ]
 
     # Positional encoding
-    def posenc(self, I):
-        X = [ I ]
-        for i in range(self.fflevels):
+    @staticmethod
+    def positional_encoding(vector, levels):
+        result = []
+        for i in range(levels):
             k = 2 ** i
-            X += [ torch.sin(k * I), torch.cos(k * I) ]
-
-        return torch.cat(X, dim=-1)
+            result += [torch.sin(k * vector), torch.cos(k * vector)]
+        return torch.cat(result, dim=-1)
 
     # Extraction methods
     def eval(self, U, V):
@@ -96,8 +115,8 @@ class NGF:
 
         lf = (lf00 + lf01 + lf10 + lf11).reshape(-1, feature_size)
 
-        I = torch.cat((lf, self.posenc(lp)), dim=-1)
-        # I = torch.cat((lf, lp), dim=-1)
+        encoded_positions = NGF.positional_encoding(lp, self.fflevels)
+        I = torch.cat((lf, encoded_positions), dim=-1)
         return lp + self.mlp(I)
 
     def base(self, rate):
@@ -114,24 +133,6 @@ class NGF:
         lp11 = corner_points[:, 2, :].unsqueeze(1) * Up * Vp
 
         return (lp00 + lp01 + lp10 + lp11).reshape(-1, 3)
-
-    # Functionals
-    def eval_normals(self, U, V, delta):
-        Up, Um = U + delta, U - delta
-        Vp, Vm = V + delta, V - delta
-
-        v_Up, v_Um = self.eval(Up, V), self.eval(Um, V)
-        v_Vp, v_Vm = self.eval(U, Vp), self.eval(U, Vm)
-
-        v_dU = (v_Up - v_Um)/(2 * delta)
-        v_dV = (v_Vp - v_Vm)/(2 * delta)
-
-        N = torch.cross(v_dU.float(), v_dV.float())
-
-        length = torch.linalg.vector_norm(N, axis=1)
-        length = torch.where(length == 0, torch.ones_like(length), length)
-
-        return N/length.unsqueeze(-1)
 
     # Sampling functions
     def sample_uniform(self, rate: int):
@@ -170,15 +171,32 @@ class NGF:
         return U + rand_uv[0], V + rand_uv[1]
 
     def save(self, filename):
-        model = {
-            'model': self.mlp,
+        """Save into a PyTorch (PT) file"""
+        torch.save({
+            'points': self.points,
             'features': self.features,
             'complexes': self.complexes,
-            'points': self.points,
-            'config': self.config
-        }
+            'fflevels': self.fflevels,
+            'jittering': self.jittering,
+            'normals': self.normals,
+            'model': self.mlp,
+        }, filename)
 
-        torch.save(model, filename)
+    def stream(self):
+        """Convert neural geometry field to byte stream"""
+        # TODO: quantization
+
+        sizes = [self.complexes.shape[0], self.points.shape[0], self.features.shape[-1]]
+        size_bytes = np.array(sizes, dtype=np.int32).tobytes()
+
+        with torch.no_grad():
+            points_bytes = self.points.cpu().numpy().tobytes()
+            features_bytes = self.features.cpu().numpy().tobytes()
+            complexes_bytes = self.complexes.cpu().numpy().tobytes()
+
+        mlp_bytes = self.mlp.stream()
+
+        return size_bytes + points_bytes + features_bytes + complexes_bytes + mlp_bytes
 
     @staticmethod
     def from_base(path: str, normalizer: Callable, features: int, config: dict = dict()) -> NGF:
@@ -200,5 +218,8 @@ class NGF:
                    config.setdefault('jittering', True),
                    config.setdefault('normals', True))
 
-def load_ngf(data):
-    return NGF(data['points'], data['complexes'], data['features'], data['config'], mlp=data['model'])
+    @staticmethod
+    def from_pt(path: str) -> NGF:
+        data = torch.load(path)
+        return NGF(data['points'], data['features'], data['complexes'],
+                   data['fflevels'], data['jittering'], data['normals'])

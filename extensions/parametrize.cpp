@@ -17,8 +17,8 @@ struct Connectivity {
 
 	static Connectivity from
 	(
-			const std::vector <glm::vec3>  &vertices,
-			const std::vector <glm::ivec3> &faces
+		const std::vector <glm::vec3> &vertices,
+		const std::vector <glm::ivec3> &faces
 	)
 	{
 		Connectivity conn;
@@ -26,7 +26,7 @@ struct Connectivity {
 		conn.adjacency.resize(vertices.size());
 		conn.neighbors.resize(vertices.size());
 
-		for (int32_t i = 0; i < faces.size(); i++) {
+		for (size_t i = 0; i < faces.size(); i++) {
 			const glm::ivec3 &f = faces[i];
 
 			for (int32_t j = 0; j < 3; j++)
@@ -45,13 +45,13 @@ struct Connectivity {
 
 static void relax_harmonic_parametrization
 (
-		const Connectivity                 &conn,
-		const std::unordered_set <int32_t> &bset,
-		std::vector <glm::vec2>            &uvs
+	const Connectivity &conn,
+	const std::unordered_set <int32_t> &bset,
+	std::vector <glm::vec2> &uvs
 )
 {
 	std::vector <glm::vec2> buffer(uvs.size());
-	for (int32_t i = 0; i < uvs.size(); i++) {
+	for (size_t i = 0; i < uvs.size(); i++) {
 		if (bset.count(i)) {
 			buffer[i] = uvs[i];
 		} else {
@@ -68,22 +68,22 @@ static void relax_harmonic_parametrization
 
 static std::vector <glm::vec2> harmonic_disk_parametrization
 (
-		const VertexList                   &vertices,
-		const Connectivity                 &conn,
-		const std::vector <int32_t>        &boundary,
-		const std::unordered_set <int32_t> &bset
+	const VertexList &vertices,
+	const Connectivity &conn,
+	const std::vector <int32_t> &boundary,
+	const std::unordered_set <int32_t> &bset
 )
 {
 	std::vector <glm::vec2> uvs;
 	uvs.resize(conn.adjacency.size());
 
 	// Random initialization
-	for (int32_t i = 0; i < uvs.size(); i++)
+	for (size_t i = 0; i < uvs.size(); i++)
 		uvs[i] = glm::linearRand(glm::vec2(0.0), glm::vec2(1.0));
 
 	// Compute the boundary length
 	float length = 0.0f;
-	for (int32_t i = 0; i < boundary.size(); i++) {
+	for (size_t i = 0; i < boundary.size(); i++) {
 		int32_t ni = (i + 1) % boundary.size();
 		const glm::vec3 vi = vertices[boundary[i]];
 		const glm::vec3 vni = vertices[boundary[ni]];
@@ -123,18 +123,6 @@ static std::vector <glm::vec2> harmonic_disk_parametrization
 	} while(segment < 0.75f * length);
 	int32_t c3 = index;
 
-	// printf("Boundary corners: %d %d %d %d (%d, %d, %d, %d)\n",
-	// 	c0, c1, c2, c3,
-	// 	boundary[c0], boundary[c1],
-	// 	boundary[c2], boundary[c3]
-	// );
-
-	// Set boundary conditions
-	// for (int32_t i = 0; i < boundary.size(); i++) {
-	// 	float theta = 2 * glm::pi <float> () * i/boundary.size();
-	// 	uvs[boundary[i]] = 0.5f * (glm::vec2(glm::cos(theta), glm::sin(theta)) + 1.0f);
-	// }
-
 	// Set boundary condition
 	segment = 0.0f;
 	for (int32_t i = c0; i < c1; i++) {
@@ -164,7 +152,7 @@ static std::vector <glm::vec2> harmonic_disk_parametrization
 	}
 
 	segment = 0.0f;
-	for (int32_t i = c3; i < boundary.size(); i++) {
+	for (size_t i = c3; i < boundary.size(); i++) {
 		int32_t ni = (i + 1) % boundary.size();
 		const glm::vec3 vi = vertices[boundary[i]];
 		const glm::vec3 vni = vertices[boundary[ni]];
@@ -258,85 +246,15 @@ static glm::vec3 stretch_metric
 	return { stretch, area, A };
 }
 
-static float stretch_metric
-(
-		const VertexList              &vertices,
-		const FaceList                &faces,
-		const std::vector <glm::vec2> &uvs
-)
-{
-	float sum = 0;
-	float weights = 0;
-	for (const glm::ivec3 &f : faces) {
-		glm::vec3 m = stretch_metric
-		(
-			vertices[f.x],
-			vertices[f.y],
-			vertices[f.z],
-			uvs[f.x],
-			uvs[f.y],
-			uvs[f.z]
-		);
-
-		sum += m.x * m.x * m.y;
-		weights += m.y;
-	}
-
-	return glm::sqrt(sum/weights);
-}
-
-static float parametrization_area
-(
-		const VertexList              &vertices,
-		const FaceList                &faces,
-		const std::vector <glm::vec2> &uvs
-)
-{
-	float area = 0.0f;
-	for (const glm::ivec3 &f : faces) {
-		glm::vec3 m = stretch_metric
-		(
-			vertices[f.x],
-			vertices[f.y],
-			vertices[f.z],
-			uvs[f.x],
-			uvs[f.y],
-			uvs[f.z]
-		);
-
-		area += m.z;
-	}
-
-	return area;
-}
-
-static bool segment_segment_intersection
-(
-		const glm::vec2 &a,
-		const glm::vec2 &b,
-		const glm::vec2 &c,
-		const glm::vec2 &d
-)
-{
-	// TODO: reduce to cross products...
-	glm::vec2 delta0 = b - a;
-	glm::vec2 delta1 = d - c;
-
-	float s = (-delta0.y * (a.x - c.x) + delta0.x * (a.y - c.y))/(-delta1.x * delta0.y + delta0.x * delta1.y);
-	float t = (delta1.x * (a.y - c.y) - delta1.y * (a.x - c.x))/(-delta1.x * delta0.y + delta0.x * delta1.y);
-
-	return (s > 0 && s < 1) && (t > 0 && t < 1);
-}
-
 static float vertex_neighbor_stretch
 (
-		const std::unordered_set <int32_t> &neighbor,
-		const VertexList                   &vertices,
-		const FaceList                     &faces,
-		const std::vector <glm::vec2>      &uvs,
-		const std::vector <int32_t>        &boundary,
-		int32_t                            vertex,
-		glm::vec2                          vertex_uv
+	const std::unordered_set <int32_t> &neighbor,
+	const VertexList                   &vertices,
+	const FaceList                     &faces,
+	const std::vector <glm::vec2>      &uvs,
+	const std::vector <int32_t>        &boundary,
+	int32_t                            vertex,
+	glm::vec2                          vertex_uv
 )
 {
 	float sum = 0;
@@ -368,61 +286,22 @@ static float vertex_neighbor_stretch
 		weights += m.y;
 	}
 
-	// Check for boundary intersections
-	// if (boundary.size()) {
-	// 	auto it = std::find(boundary.begin(), boundary.end(), vertex);
-	// 	assert(it != boundary.end());
-	//
-	// 	int32_t vvertex = std::distance(boundary.begin(), it);
-	// 	int32_t pvertex = (vvertex + boundary.size() - 1) % boundary.size();
-	// 	int32_t nvertex = (vvertex + 1) % boundary.size();
-	//
-	// 	pvertex = boundary[pvertex];
-	// 	nvertex = boundary[nvertex];
-	//
-	// 	glm::vec2 puv = uvs[pvertex];
-	// 	glm::vec2 nuv = uvs[nvertex];
-	//
-	// 	for (int32_t i = 0; i < boundary.size(); i++) {
-	// 		int32_t ni = (i + 1) % boundary.size();
-	//
-	// 		int32_t ai = boundary[i];
-	// 		int32_t bi = boundary[ni];
-	//
-	// 		if (ai == vertex || bi == vertex)
-	// 			continue;
-	//
-	// 		if (segment_segment_intersection(puv, vertex_uv, uvs[ai], uvs[bi])) {
-	// 			sum = FLT_MAX;
-	// 			break;
-	// 		}
-	//
-	// 		if (segment_segment_intersection(nuv, vertex_uv, uvs[ai], uvs[bi])) {
-	// 			sum = FLT_MAX;
-	// 			break;
-	// 		}
-	// 	}
-	//
-	// 	// printf("Checking boundary: %f\n", sum);
-	// }
-
-	// return glm::sqrt(sum * (total_area + area_delta)/weights);
 	return glm::sqrt(sum/weights);
 }
 
 static std::tuple <glm::vec2, float> vertex_stretch_linesearch
 (
-		const std::unordered_set <int32_t> &neighbor,
-		const VertexList                   &vertices,
-		const FaceList                     &faces,
-		const std::vector <glm::vec2>      &uvs,
-		const std::vector <int32_t>        &boundary,
-		int32_t                            vertex,
-		glm::vec2                          vuv,
-		glm::vec2                          delta,        // Assume normalized
-		float                              a,
-		float                              b,
-		float                              tolerance
+	const std::unordered_set <int32_t> &neighbor,
+	const VertexList                   &vertices,
+	const FaceList                     &faces,
+	const std::vector <glm::vec2>      &uvs,
+	const std::vector <int32_t>        &boundary,
+	int32_t                            vertex,
+	glm::vec2                          vuv,
+	glm::vec2                          delta,        // Assume normalized
+	float                              a,
+	float                              b,
+	float                              tolerance
 )
 {
 	constexpr float phi = 0.5f * (1 + glm::sqrt(5));
@@ -491,13 +370,13 @@ static std::tuple <float, float> uv_bounds(const glm::vec2 &vuv, const glm::vec2
 
 static void geometric_stretch_optimization_iteration
 (
-		const Connectivity		   &conn,
-		const VertexList		   &vertices,
-		const FaceList			   &faces,
-		std::vector <glm::vec2>		   &uvs,
-		const std::vector <int32_t>        &boundary,
-		const std::unordered_set <int32_t> &bset,
-		float                              tolerance
+	const Connectivity &conn,
+	const VertexList &vertices,
+	const FaceList &faces,
+	std::vector <glm::vec2>	&uvs,
+	const std::vector <int32_t> &boundary,
+	const std::unordered_set <int32_t> &bset,
+	float tolerance
 )
 {
 	std::vector <int32_t> indices;
@@ -506,8 +385,7 @@ static void geometric_stretch_optimization_iteration
 	indices.resize(vertices.size());
 	costs.resize(vertices.size());
 
-	// float area = parametrization_area(vertices, faces, uvs);
-	for (int32_t i = 0; i < vertices.size(); i++) {
+	for (size_t i = 0; i < vertices.size(); i++) {
 		indices[i] = i;
 		costs[i] = vertex_neighbor_stretch
 		(
@@ -547,78 +425,19 @@ static void geometric_stretch_optimization_iteration
 		if (new_cost < costs[vi])
 			uvs[vi] = opt_uv;
 	}
-
-	// std::vector <glm::vec2> bdy_uvs(boundary.size());
-	// for (int32_t i = 0; i < boundary.size(); i++) {
-	// 	int32_t pi = (i + boundary.size() - 1) % boundary.size();
-	// 	int32_t ni = (i + 1) % boundary.size();
-	//
-	// 	glm::vec2 vuv = uvs[boundary[i]];
-	// 	glm::vec2 puv = uvs[boundary[pi]];
-	// 	glm::vec2 nuv = uvs[boundary[ni]];
-	//
-	// 	glm::vec2 uv = (vuv + puv + nuv) / 3.0f;
-	//
-	// 	float a = 0.001f;
-	// 	float b = -0.001f;
-	//
-	// 	int32_t vi = boundary[i];
-	// 	auto [opt_uv, new_cost] = vertex_stretch_linesearch
-	// 	(
-	// 		conn.neighbors[vi],
-	// 		vertices, faces, uvs,
-	// 		(bset.count(vi)) ? boundary : std::vector <int32_t> {},
-	// 		vi, uvs[vi], uv - uvs[vi],
-	// 		a, b, tolerance
-	// 	);
-	//
-	// 	if (new_cost < costs[vi])
-	// 		uvs[vi] = opt_uv;
-	// }
 }
 
-static std::vector <glm::vec2> geometric_stretch_optimization
-(
-		const Connectivity		   &conn,
-		const VertexList		   &vertices,
-		const FaceList			   &faces,
-		const std::vector <glm::vec2>	   &uvs,
-		const std::vector <int32_t>        &boundary,
-		const std::unordered_set <int32_t> &bset
-)
-{
-	FaceList tris = faces;
-	fix_faces(vertices, tris, uvs);
-
-	std::vector <glm::vec2> new_uvs = uvs;
-	for (int32_t i = 0; i < 500; i++) {
-		// printf("\rGeometric stretch optimization: %d", i);
-		geometric_stretch_optimization_iteration(conn, vertices, tris, new_uvs, boundary, bset, 1.0f/(i + 1.0f));
-		// fflush(stdout);
-	}
-	// printf("\n");
-
-	float start_stretch = stretch_metric(vertices, tris, uvs);
-	float end_stretch = stretch_metric(vertices, tris, new_uvs);
-
-	// printf("Stretch metric improvement: %.4f -> %.4f\n", start_stretch, end_stretch);
-
-	return new_uvs;
-}
-
-// std::tuple <torch::Tensor, torch::Tensor> parametrize
 torch::Tensor parametrize
 (
-		const torch::Tensor         &tch_vertices,
-		const torch::Tensor         &tch_faces,
-		const std::vector <int32_t> &boundary
+	const torch::Tensor &tch_vertices,
+	const torch::Tensor &tch_faces,
+	const std::vector <int32_t> &boundary
 )
 {
 	tensor_check <torch::kCPU, torch::kFloat32, 3> (tch_vertices);
 	tensor_check <torch::kCPU, torch::kInt32, 3>   (tch_faces);
 
 	// Localizing buffers
-	// printf("Parametrizing patch with %d vertices and %d faces\n", tch_vertices.size(0), tch_faces.size(0));
 	std::vector <glm::vec3> vertices;
 	std::vector <glm::ivec3> faces;
 
@@ -644,20 +463,18 @@ torch::Tensor parametrize
 	// std::vector <glm::vec2> uvs = geometric_stretch_optimization(conn, vertices, faces, huvs, boundary, bset);
 
 	return vector_to_tensor <glm::vec2, torch::kFloat32, 2> (huvs);
-
-	// TODO: fix this to uvs instead of harmonic only
 	// return vector_to_tensor <glm::vec2, torch::kFloat32, 2> (uvs);
 }
 
 std::vector <torch::Tensor> parametrize_parallel
 (
-		const std::vector <
-			std::tuple <
-				torch::Tensor,
-				torch::Tensor,
-				std::vector <int32_t>
-			>
-		> &patches
+	const std::vector <
+		std::tuple <
+			torch::Tensor,
+			torch::Tensor,
+			std::vector <int32_t>
+		>
+	> &patches
 )
 {
 	int32_t threads = std::thread::hardware_concurrency();
@@ -684,14 +501,8 @@ std::vector <torch::Tensor> parametrize_parallel
 						index = next++;
 					}
 
-					if (index >= patches.size())
+					if (index >= (int32_t) patches.size())
 						break;
-
-					// printf("Thread %d grabbed job %d\n", tid, index);
-					//
-					// torch::Tensor vertices         = std::get <0> (patches[i]);
-					// torch::Tensor faces            = std::get <1> (patches[i]);
-					// std::vector <int32_t> &boundary = std::get <2> (patches[i]);
 
 					parametrizations[index] = parametrize
 					(
@@ -707,8 +518,6 @@ std::vector <torch::Tensor> parametrize_parallel
 	// Wait to finish
 	for (int32_t i = 0; i < threads; i++)
 		workers[i].join();
-
-	printf("Joined all threads\n");
 
 	return parametrizations;
 }

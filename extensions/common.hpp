@@ -8,7 +8,7 @@
 #include "geometry.hpp"
 
 // Surface smoothing utilities
-struct vertex_graph {
+struct Graph {
 	std::unordered_map <int32_t, std::unordered_set <int32_t>> graph;
 
 	int32_t *dev_graph = nullptr;
@@ -16,15 +16,14 @@ struct vertex_graph {
 	int32_t max = 0;
 	int32_t max_adj = 0;
 
-	vertex_graph(const torch::Tensor &primitives);
-	~vertex_graph();
+	Graph(const torch::Tensor &);
+	~Graph();
 
 	void allocate_device_graph();
 	void initialize_from_triangles(const torch::Tensor &);
 	void initialize_from_quadrilaterals(const torch::Tensor &);
 
 	torch::Tensor smooth(const torch::Tensor &, float) const;
-	torch::Tensor smooth_device(const torch::Tensor &, float) const;
 };
 
 std::vector <std::vector <int32_t>> cluster_geometry

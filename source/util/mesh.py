@@ -1,8 +1,8 @@
 import meshio
-import optext
 import os
 import subprocess
 import torch
+import ngfutil
 
 from dataclasses import dataclass
 from typing import Tuple, Callable
@@ -15,14 +15,14 @@ class Mesh:
     faces:    torch.Tensor
     normals:  torch.Tensor
     path:     str = ''
-    optg:     optext.geometry = None
+    optg:     ngfutil.geometry = None
 
 
 def mesh_from(V, F) -> Mesh:
     Fn = compute_face_normals(V, F)
     Vn = compute_vertex_normals(V, F, Fn)
 
-    optg = optext.geometry(V.cpu(), F.cpu())
+    optg = ngfutil.geometry(V.cpu(), F.cpu())
 
     return Mesh(V, F, Vn, 'raw', optg)
 
@@ -52,7 +52,7 @@ def load_mesh(path, normalizer=None) -> Tuple[Mesh, Callable[[torch.Tensor], tor
     if f.shape[1] != 3:
         return Mesh(v, f, vn, os.path.abspath(path), None), normalizer
     else:
-        optg = optext.geometry(v.cpu(), f.cpu())
+        optg = ngfutil.geometry(v.cpu(), f.cpu())
         return Mesh(v, f, vn, os.path.abspath(path), optg), normalizer
 
 

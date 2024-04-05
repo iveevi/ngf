@@ -9,6 +9,9 @@ opencv-python
 polyscope
 pymeshlab
 seaborn
+setuptools
 torch
 torchvision
 tqdm
+wheel
+./extensions

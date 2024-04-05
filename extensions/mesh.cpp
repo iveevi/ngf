@@ -62,15 +62,11 @@ static Mesh assimp_process_mesh(aiMesh *m, const aiScene *scene, const std::stri
 		});
 	}
 
-	printf("MESH PROCESS: %d, %d, %d, %d\n", vertices.size(), normals.size(), uvs.size(), triangles.size());
-
 	return Mesh { vertices, normals, uvs, triangles };
 }
 
 static std::vector <Mesh> assimp_process_node(aiNode *node, const aiScene *scene, const std::string &directory)
 {
-	printf("PROCESS NODE FROM %s (%d, %d)\n", directory.c_str(), node->mNumMeshes, node->mNumChildren);
-
 	std::vector <Mesh> meshes;
 
 	// Process all the node's meshes (if any)
@@ -94,14 +90,13 @@ load_mesh(const std::string &s)
 {
 	Assimp::Importer importer;
 	std::filesystem::path path = s;
-	printf("LOADING MESH FROM %s\n", s.c_str());
 
         // Read scene
 	const aiScene *scene;
 	scene = importer.ReadFile(path, aiProcess_GenNormals | aiProcess_Triangulate);
 
 	// Check if the scene was loaded
-	if ((!scene | scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode) {
+	if ((!scene | (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE)) || !scene->mRootNode) {
 		printf("Assimp error: \"%s\"\n", importer.GetErrorString());
 		return {};
 	}

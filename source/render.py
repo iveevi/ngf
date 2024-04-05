@@ -120,12 +120,12 @@ class Renderer:
 
         layers = []
         with dr.DepthPeeler(self.ctx, v_ndc, f, self.res) as peeler:
-          for i in range(2):
-            rast, rast_db = peeler.rasterize_next_layer()
-            vertices = dr.interpolate(v, rast, f)[0]
-            normals = dr.interpolate(n, rast, f)[0]
-            attrs = torch.cat((vertices, normals), dim=-1)
-            layers.append(dr.antialias(attrs, rast, v_ndc, f))
+            for i in range(2):
+                rast, rast_db = peeler.rasterize_next_layer()
+                vertices = dr.interpolate(v, rast, f)[0]
+                normals = dr.interpolate(n, rast, f)[0]
+                attrs = torch.cat((vertices, normals), dim=-1)
+                layers.append(dr.antialias(attrs, rast, v_ndc, f))
 
         return torch.concat(layers, dim=-1)
 

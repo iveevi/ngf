@@ -1,3 +1,12 @@
+#include <cstdio>
+#include <cstring>
+#include <map>
+#include <set>
+#include <stdio.h>
+#include <unordered_set>
+#include <vector>
+#include <queue>
+
 #include "common.hpp"
 
 __global__
@@ -240,4 +249,91 @@ remapper generate_remapper(const torch::Tensor &complexes,
 	}
 
 	return remapper(remap);
+}
+
+std::tuple <torch::Tensor, torch::Tensor> deduplicate(const torch::Tensor &vertices, const torch::Tensor &triangles)
+{
+	assert(vertices.is_cpu());
+	assert(vertices.dtype() == torch::kFloat32);
+	assert(vertices.dim() == 2 && vertices.size(1) == 3);
+
+	assert(triangles.is_cpu());
+	assert(triangles.dtype() == torch::kInt32);
+	assert(triangles.dim() == 2 && triangles.size(1) == 3);
+
+	const float *vertices_raw = vertices.data_ptr <float> ();
+	const int32_t *indices_raw = triangles.data_ptr <int32_t> ();
+
+	size_t vertex_count = vertices.size(0);
+	size_t index_count = triangles.numel();
+
+	glm::vec3 *vertices_ptr = (glm::vec3 *) vertices_raw;
+
+	std::unordered_map <glm::vec3, int32_t> hashed;
+
+	std::vector <glm::vec3> new_vertices;
+	std::vector <int32_t> new_indices;
+
+	for (size_t i = 0; i < index_count; i++) {
+		int32_t vi = indices_raw[i];
+
+		glm::vec3 vertex = vertices_ptr[vi];
+		if (!hashed.count(vertex)) {
+			int32_t ni = new_vertices.size();
+			new_vertices.push_back(vertex);
+			hashed[vertex] = ni;
+
+		}
+
+		new_indices.push_back(hashed[vertex]);
+	}
+
+	auto options = torch::TensorOptions()
+		.dtype(torch::kFloat32)
+		.device(torch::kCPU, 0);
+
+	torch::Tensor tch_new_vertices = torch::zeros({ (long) new_vertices.size(), 3 }, options);
+	torch::Tensor tch_new_triangles = torch::zeros_like(triangles);
+
+	float *new_vertices_raw = tch_new_vertices.data_ptr <float> ();
+	int32_t *new_indices_raw = tch_new_triangles.data_ptr <int32_t> ();
+
+	std::memcpy(new_vertices_raw, new_vertices.data(), sizeof(glm::vec3) * new_vertices.size());
+	std::memcpy(new_indices_raw, new_indices.data(), sizeof(int32_t) * new_indices.size());
+
+	return { tch_new_vertices, tch_new_triangles };
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
+{
+        py::class_ <geometry> (m, "geometry")
+                .def(py::init <const torch::Tensor &, const torch::Tensor &> ())
+                .def(py::init <const torch::Tensor &, const torch::Tensor &, const torch::Tensor &> ())
+		.def("deduplicate", &geometry::deduplicate)
+		.def("torched", &geometry::torched)
+		.def_readonly("vertices", &geometry::vertices)
+		.def_readonly("normals", &geometry::normals)
+		.def_readonly("triangles", &geometry::triangles)
+		.def("__repr__", [](const geometry &g) {
+			return "geometry(vertices=" + std::to_string(g.vertices.size())
+				+ ", triangles=" + std::to_string(g.triangles.size()) + ")";
+		});
+
+	py::class_ <Graph> (m, "Graph")
+		.def(py::init <const torch::Tensor &> ())
+		.def("smooth", &Graph::smooth);
+
+	py::class_ <remapper> (m, "remapper")
+		.def("remap", &remapper::remap, "Remap indices")
+		.def("remap_device", &remapper::remap_device, "Remap indices")
+		.def("scatter", &remapper::scatter, "Scatter vertex data")
+		.def("scatter_device", &remapper::scatter_device, "Scatter vertex data");
+
+	m.def("cluster_geometry", &cluster_geometry);
+	m.def("triangulate_shorted", &triangulate_shorted);
+	m.def("generate_remapper", &generate_remapper, "Generate remapper");
+	m.def("mesh_deduplicate", &deduplicate, "Deduplicate mesh vertices and reindex the mesh");
+	m.def("parametrize_chart", &parametrize, "Parametrize a chart with disk topology");
+	m.def("parametrize_multicharts", &parametrize_parallel, "Parametrize multiple charts with disk topology in parallel");
+	m.def("load_mesh", &load_mesh);
 }
