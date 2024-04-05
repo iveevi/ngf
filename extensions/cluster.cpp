@@ -54,7 +54,7 @@ static std::vector <std::unordered_set <int32_t>> cluster_once(const geometry &g
 		int32_t ci = face_to_cluster[face];
 		glm::vec3 cn = cluster_normals[ci];
 
-		printf("\033[K\rRemaining: %zu; current is %d with %f (index = %d)", queue.size(), face, costs[face], ci);
+//		printf("\033[K\rRemaining: %zu; current is %d with %f (index = %d)", queue.size(), face, costs[face], ci);
 
 		for (int32_t neighbor : dgraph.at(face)) {
 			glm::vec3 nn = g.face_normal(neighbor);
@@ -83,8 +83,6 @@ static std::vector <std::unordered_set <int32_t>> cluster_once(const geometry &g
 			}
 		}
 	}
-
-	printf("\n");
 
 	return clusters;
 }

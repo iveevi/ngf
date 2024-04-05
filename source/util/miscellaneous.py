@@ -124,7 +124,7 @@ def triangle_areas(v, f):
     v2 = v[f[:, 2], :]
     v01 = v1 - v0
     v02 = v2 - v0
-    return 0.5 * torch.norm(torch.cross(v01, v02), dim=1)
+    return 0.5 * torch.norm(torch.cross(v01, v02, dim=-1), dim=1)
 
 
 def lookat(eye, center, up):
@@ -132,8 +132,8 @@ def lookat(eye, center, up):
 
     f = normalize(eye - center)
     u = normalize(up)
-    s = normalize(torch.cross(f, u))
-    u = torch.cross(s, f)
+    s = normalize(torch.cross(f, u, dim=-1))
+    u = torch.cross(s, f, dim=-1)
 
     dot_f = torch.dot(f, eye)
     dot_u = torch.dot(u, eye)
@@ -163,7 +163,7 @@ def arrange_views(simplified: Mesh, cameras: int, radius: float = 1.0):
         centroid = (v0 + v1 + v2) / 3.0
         centroid = centroid.mean(dim=0)
 
-        normal = torch.cross(v1 - v0, v2 - v0)
+        normal = torch.cross(v1 - v0, v2 - v0, dim=-1)
         normal = normal.mean(dim=0)
         normal = normal / torch.norm(normal)
 
@@ -176,10 +176,10 @@ def arrange_views(simplified: Mesh, cameras: int, radius: float = 1.0):
         if torch.dot(look, up).abs().item() > 1.0 - 1e-6:
             up = torch.tensor([0, 0, 1], dtype=torch.float32, device='cuda')
 
-        right = torch.cross(look, up)
+        right = torch.cross(look, up, dim=-1)
         right /= right.norm()
 
-        up = torch.cross(look, right)
+        up = torch.cross(look, right, dim=-1)
         up /= up.norm()
 
         look /= look.norm()

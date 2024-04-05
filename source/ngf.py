@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import numpy as np
 import torch
 import torch.nn as nn
@@ -78,6 +79,15 @@ class NGF:
         # Caches
         self.uv_cache = {}
         self.uv_mask = {}
+
+        # Log details
+        logging.info('Instantiated neural geometry field with properties:')
+        logging.info(f'     Vertex count: {self.points.shape[0]}')
+        logging.info(f'     Quad count:   {self.complexes.shape[0]}')
+        logging.info(f'     Feature size: {self.features.shape[-1]}')
+        logging.info(f'     FF levels:    {fflevels}')
+        logging.info(f'     Jittering:    {jittering}')
+        logging.info(f'     Normals:      {normals}')
 
     # List of parameters
     def parameters(self):

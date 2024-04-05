@@ -40,7 +40,6 @@ class Trainer:
         logging.info('Cached reference views')
 
         self.ngf = NGF.from_base(self.exporter.quaded(), normalizer, features)
-        logging.info('Instantiated neural geometry field')
 
     def reference_views(self):
         vertices = self.target.vertices
@@ -74,7 +73,7 @@ class Trainer:
             loss.backward()
             opt.step()
 
-        logging.info('Initialized neural geometry field with base')
+        logging.info('Neural geometry field initialization phase done')
 
     def optimize_resolution(self, optimizer: torch.optim.Optimizer, rate: int) -> list[float]:
         losses = []

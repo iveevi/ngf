@@ -15,7 +15,7 @@ def compute_face_normals(vertices, faces):
         vertices.index_select(1, fi[2])
     ]
 
-    c = torch.cross(v[1] - v[0], v[2] - v[0])
+    c = torch.cross(v[1] - v[0], v[2] - v[0], dim=0)
     length = torch.linalg.norm(c, dim=0)
     length = torch.where(length == 0, torch.ones_like(length), length)
     return c / length
