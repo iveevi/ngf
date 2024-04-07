@@ -11,12 +11,11 @@
 struct Graph {
 	std::unordered_map <int32_t, std::unordered_set <int32_t>> graph;
 
-	int32_t *dev_graph = nullptr;
+	int32_t *device = nullptr;
+	int32_t count = 0;
+	int32_t bound = 0;
 
-	int32_t max = 0;
-	int32_t max_adj = 0;
-
-	Graph(const torch::Tensor &);
+	Graph(const torch::Tensor &, size_t);
 	~Graph();
 
 	void allocate_device_graph();

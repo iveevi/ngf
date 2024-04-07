@@ -1,37 +1,48 @@
 #include "common.hpp"
 
+// TODO: can make faster by avoided strided access, e.g. index per vertex per adjancency...
 __global__
 void kernel_smooth
 (
-	const glm::vec3 *__restrict__ vertices,
+	const float3 *__restrict__ vertices,
 	const int32_t *__restrict__ graph,
-	glm::vec3 *__restrict__ result,
+	float3 *__restrict__ result,
 	uint32_t count,
 	uint32_t bound,
 	float factor
 )
 {
 	int32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-	if (tid >= count)
-		return;
+	int32_t stride = blockDim.x * gridDim.x;
+	for (int32_t i = tid; i < count; i += stride) {
+		float3 vertex = vertices[i];
+		float x = 0;
+		float y = 0;
+		float z = 0;
 
-	// TODO: check if this even works...
-	// TODO: fast math...
-	const int32_t *adj = graph + tid * bound + 1; // TODO: suspicious
+		const int32_t *base = graph + i * bound;
+		int32_t k = 0;
+		while (base[k] >= 0) {
+			float3 v = vertices[base[k++]];
+			x += v.x;
+			y += v.y;
+			z += v.z;
+		}
 
-	glm::vec3 sum = glm::vec3(0.0f);
-	int32_t adj_count = graph[tid * bound];
-	for (int32_t i = 0; i < adj_count; i++)
-		sum += vertices[adj[i]];
+		if (k > 0)
+			result[i] = make_float3(x/k, y/k, z/k);
+		else
+			result[i] = vertex;
 
-	sum /= (float) adj_count;
-	if (adj_count == 0)
-		sum = vertices[tid];
-
-	result[tid] = vertices[tid] + (sum - vertices[tid]) * factor;
+//		x = (1 - factor) * vertex.x + factor * x/k;
+//		y = (1 - factor) * vertex.y + factor * y/k;
+//		z = (1 - factor) * vertex.z + factor * z/k;
+//
+//		result[i] = make_float3(x, y, z);
+	}
 }
 
-Graph::Graph(const torch::Tensor &primitives)
+Graph::Graph(const torch::Tensor &primitives, size_t vertices) : count(vertices)
 {
 	assert(primitives.dim() == 2);
 	assert(primitives.dtype() == torch::kInt32);
@@ -47,37 +58,32 @@ Graph::Graph(const torch::Tensor &primitives)
 
 Graph::~Graph()
 {
-	if (dev_graph)
-		cudaFree(dev_graph);
+	if (device)
+		cudaFree(device);
+
+	device = nullptr;
 }
 
 void Graph::allocate_device_graph()
 {
-	max = 0;
-	max_adj = 0;
-
-	for (auto &kv : graph) {
-		max_adj = std::max(max_adj, (int32_t) kv.second.size());
-		max = std::max(max, kv.first);
-	}
+	bound = 0;
+	for (auto &kv : graph)
+		bound = std::max(bound, (int32_t) kv.second.size());
 
 	// Allocate a device graph
-	int32_t graph_size = max * (max_adj + 1);
-	cudaMalloc(&dev_graph, graph_size * sizeof(int32_t));
+	int32_t graph_size = count * bound;
+	cudaMalloc(&device, graph_size * sizeof(int32_t));
 
-	std::vector <uint32_t> host_graph(graph_size, 0);
-	for (auto &kv : graph) {
-		int32_t i = kv.first;
-		int32_t j = 0;
-		assert(i * max_adj + j < graph_size);
-		host_graph[i * max_adj + j++] = kv.second.size();
-		for (auto &adj : kv.second) {
-			assert(i * max_adj + j < graph_size);
-			host_graph[i * max_adj + j++] = adj;
-		}
+	std::vector <int32_t> host_graph(graph_size, -1);
+	for (size_t i = 0; i < count; i++) {
+		int32_t *base = host_graph.data() + i * bound;
+
+		size_t j = 0;
+		for (int32_t v : graph[i])
+			base[j++] = v;
 	}
 
-	cudaMemcpy(dev_graph, host_graph.data(), graph_size * sizeof(int32_t), cudaMemcpyHostToDevice);
+	cudaMemcpy(device, host_graph.data(), graph_size * sizeof(int32_t), cudaMemcpyHostToDevice);
 }
 
 void Graph::initialize_from_triangles(const torch::Tensor &triangles)
@@ -141,17 +147,16 @@ torch::Tensor Graph::smooth(const torch::Tensor &vertices, float factor) const
 	assert(vertices.dim() == 2 && vertices.size(1) == 3);
 	assert(vertices.dtype() == torch::kFloat32);
 	assert(vertices.device().is_cuda());
-	assert(max < vertices.size(0));
+	assert(vertices.size(0) <= count);
 
 	torch::Tensor result = torch::zeros_like(vertices);
+	kernel_smooth <<< 64, 64 >>>
+	(
+		(float3 *) vertices.data_ptr <float> (), device,
+		(float3 *) result.data_ptr <float> (),
+		count, bound, factor
+	);
 
-	glm::vec3 *v = (glm::vec3 *) vertices.data_ptr <float> ();
-	glm::vec3 *r = (glm::vec3 *) result.data_ptr <float> ();
-
-	dim3 block(256);
-	dim3 grid((vertices.size(0) + block.x - 1) / block.x);
-
-	kernel_smooth <<< grid, block >>> (v, dev_graph, r, vertices.size(0), max_adj, factor);
 	cudaDeviceSynchronize();
 	return result;
 }

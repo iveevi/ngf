@@ -427,6 +427,26 @@ static void geometric_stretch_optimization_iteration
 	}
 }
 
+static std::vector <glm::vec2> geometric_stretch_optimization
+(
+		const Connectivity		   &conn,
+		const VertexList		   &vertices,
+		const FaceList			   &faces,
+		const std::vector <glm::vec2>	   &uvs,
+		const std::vector <int32_t>        &boundary,
+		const std::unordered_set <int32_t> &bset
+)
+{
+	FaceList tris = faces;
+	fix_faces(vertices, tris, uvs);
+
+	std::vector <glm::vec2> new_uvs = uvs;
+	for (int32_t i = 0; i < 500; i++)
+		geometric_stretch_optimization_iteration(conn, vertices, tris, new_uvs, boundary, bset, 1.0f/(i + 1.0f));
+
+	return new_uvs;
+}
+
 torch::Tensor parametrize
 (
 	const torch::Tensor &tch_vertices,
@@ -460,10 +480,10 @@ torch::Tensor parametrize
 
 	// Parametrize
 	std::vector <glm::vec2> huvs = harmonic_disk_parametrization(vertices, conn, boundary, bset);
-	// std::vector <glm::vec2> uvs = geometric_stretch_optimization(conn, vertices, faces, huvs, boundary, bset);
+	std::vector <glm::vec2> uvs = geometric_stretch_optimization(conn, vertices, faces, huvs, boundary, bset);
 
-	return vector_to_tensor <glm::vec2, torch::kFloat32, 2> (huvs);
-	// return vector_to_tensor <glm::vec2, torch::kFloat32, 2> (uvs);
+//	return vector_to_tensor <glm::vec2, torch::kFloat32, 2> (huvs);
+	return vector_to_tensor <glm::vec2, torch::kFloat32, 2> (uvs);
 }
 
 std::vector <torch::Tensor> parametrize_parallel

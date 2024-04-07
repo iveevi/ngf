@@ -36,8 +36,8 @@ void kernel_triangulate_shorted
 	const glm::vec3 &vc = vertices[c];
 	const glm::vec3 &vd = vertices[d];
 
-	float d0 = squared_distance(va, vd);
-	float d1 = squared_distance(vb, vc);
+	float d0 = glm::distance(va, vd);
+	float d1 = glm::distance(vb, vc);
 
 	size_t toffset = 2 * i * (sample_rate - 1) * (sample_rate - 1);
 	size_t tindex = toffset + 2 * (j * (sample_rate - 1) + k);

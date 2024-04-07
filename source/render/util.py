@@ -30,4 +30,3 @@ def set_principled_node(principled_node: bpy.types.Node,
     principled_node.inputs['Roughness'].default_value = roughness
     principled_node.inputs['Transmission Weight'].default_value = transmission
     principled_node.inputs['IOR'].default_value = ior
-

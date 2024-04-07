@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import meshio
 import logging
 import numpy as np
 import torch
 import torch.nn as nn
 
 from typing import Callable
-
-from util import SIREN
 
 
 # TODO: try a SIREN network...
@@ -50,6 +49,25 @@ class Sampler:
         pass
 
 
+def spherical_to_cartesian(spherical):
+    radius = spherical[..., 0].square()
+    theta = spherical[..., 1]
+    phi = spherical[..., 2]
+    x = theta.cos() * phi.sin()
+    y = theta.sin() * phi.sin()
+    z = phi.cos()
+    return radius.unsqueeze(-1) * torch.stack((x, y, z), dim=-1)
+
+
+# Positional encoding
+def positional_encoding(vector: torch.Tensor, levels: int) -> list[torch.Tensor]:
+    result = []
+    for i in range(levels):
+        k = 2 ** i
+        result += [torch.sin(k * vector), torch.cos(k * vector)]
+    return result
+
+
 class NGF:
     def __init__(self,
                  points: torch.Tensor,
@@ -67,7 +85,6 @@ class NGF:
         self.normals = normals
 
         self.ffin = self.features.shape[-1] + 3 * (2 * self.fflevels)
-
         self.mlp = MLP(self.ffin).cuda()
         if mlp is not None:
             self.mlp.load_state_dict(mlp.state_dict())
@@ -91,22 +108,14 @@ class NGF:
 
     # List of parameters
     def parameters(self):
-        return list(self.mlp.parameters()) + [ self.points, self.features ]
-
-    # Positional encoding
-    @staticmethod
-    def positional_encoding(vector, levels):
-        result = []
-        for i in range(levels):
-            k = 2 ** i
-            result += [torch.sin(k * vector), torch.cos(k * vector)]
-        return torch.cat(result, dim=-1)
+        return list(self.mlp.parameters()) + [self.points, self.features]
 
     # Extraction methods
+    # TODO: interpolation kernel
     def eval(self, U, V):
-        corner_points = self.points[self.complexes, :]
-        corner_features = self.features[self.complexes, :]
-        feature_size = self.features.shape[1]
+        fsize = self.features.shape[1]
+        corner_points = self.points[self.complexes]
+        corner_features = self.features[self.complexes]
 
         Up, Um = U.unsqueeze(-1), (1.0 - U).unsqueeze(-1)
         Vp, Vm = V.unsqueeze(-1), (1.0 - V).unsqueeze(-1)
@@ -123,11 +132,11 @@ class NGF:
         lf10 = corner_features[:, 3, :].unsqueeze(1) * Um * Vp
         lf11 = corner_features[:, 2, :].unsqueeze(1) * Up * Vp
 
-        lf = (lf00 + lf01 + lf10 + lf11).reshape(-1, feature_size)
+        lf = (lf00 + lf01 + lf10 + lf11).reshape(-1, fsize)
 
-        encoded_positions = NGF.positional_encoding(lp, self.fflevels)
-        I = torch.cat((lf, encoded_positions), dim=-1)
-        return lp + self.mlp(I)
+        lin = positional_encoding(lp, self.fflevels) + [lf]
+        lin = torch.cat(lin, dim=-1)
+        return lp + self.mlp(lin)
 
     def base(self, rate):
         U, V = self.sample_uniform(rate)
@@ -149,8 +158,8 @@ class NGF:
         if rate in self.uv_cache:
             return self.uv_cache[rate]
 
-        U = torch.linspace(0.0, 1.0, steps=rate).cuda()
-        V = torch.linspace(0.0, 1.0, steps=rate).cuda()
+        U = torch.linspace(0.0, 1.0, steps=rate, device='cuda')
+        V = torch.linspace(0.0, 1.0, steps=rate, device='cuda')
         U, V = torch.meshgrid(U, V, indexing='ij')
 
         U, V = U.reshape(-1), V.reshape(-1)
@@ -210,14 +219,13 @@ class NGF:
 
     @staticmethod
     def from_base(path: str, normalizer: Callable, features: int, config: dict = dict()) -> NGF:
-        import meshio
-
         mesh = meshio.read(path)
         points = torch.from_numpy(mesh.points)
         complexes = torch.from_numpy(mesh.cells_dict['quad'])
 
         points = normalizer(points.float().cuda())
-        features = torch.zeros((points.shape[0], features)).cuda()
+        features = torch.randn((points.shape[0], features)).cuda()
+        # features = torch.zeros((points.shape[0], features)).cuda()
         complexes = complexes.int().cuda()
 
         points.requires_grad = True

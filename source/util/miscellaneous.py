@@ -151,9 +151,10 @@ def arrange_views(simplified: Mesh, cameras: int, radius: float = 1.0):
     import ngfutil
 
     seeds = list(torch.randint(0, simplified.faces.shape[0], (cameras,)).numpy())
-    clusters = ngfutil.cluster_geometry(simplified.optg, seeds, 1, 'uniform')
+    clusters = ngfutil.cluster_geometry(simplified.optg, seeds, 10, 'uniform')
 
     views = []
+    eyes = []
     for cluster in clusters:
         faces = simplified.faces[cluster]
 
@@ -192,5 +193,6 @@ def arrange_views(simplified: Mesh, cameras: int, radius: float = 1.0):
         ], dtype=torch.float32, device='cuda').inverse()
 
         views.append(view)
+        eyes.append(eye)
 
-    return torch.stack(views)
+    return torch.stack(views), torch.stack(eyes)

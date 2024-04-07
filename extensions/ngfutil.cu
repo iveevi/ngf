@@ -320,7 +320,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 		});
 
 	py::class_ <Graph> (m, "Graph")
-		.def(py::init <const torch::Tensor &> ())
+		.def(py::init <const torch::Tensor &, size_t> ())
 		.def("smooth", &Graph::smooth);
 
 	py::class_ <remapper> (m, "remapper")
