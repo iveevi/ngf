@@ -27,6 +27,7 @@ def mesh_from(V, F) -> Mesh:
     return Mesh(V, F, Vn, 'raw', optg)
 
 
+# TODO: load triangle mesh
 def load_mesh(path, normalizer=None) -> Tuple[Mesh, Callable[[torch.Tensor], torch.Tensor]]:
     mesh = meshio.read(path)
 
@@ -44,6 +45,10 @@ def load_mesh(path, normalizer=None) -> Tuple[Mesh, Callable[[torch.Tensor], tor
         center = (min + max) / 2
         scale = (max - min).square().sum().sqrt() / 2.0
         normalizer = lambda x: (x - center) / scale
+
+    # print('loaded mesh,', v.shape, f.shape)
+    # v, f = ngfutil.mesh_deduplicate(v.cpu(), f.cpu())
+    # print('loaded mesh,', v.shape, f.shape)
 
     v = normalizer(v)
     fn = compute_face_normals(v, f)

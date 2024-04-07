@@ -304,6 +304,228 @@ std::tuple <torch::Tensor, torch::Tensor> deduplicate(const torch::Tensor &verti
 	return { tch_new_vertices, tch_new_triangles };
 }
 
+__forceinline__ __device__
+float3 operator+(float3 a, float3 b)
+{
+	return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
+}
+
+__forceinline__ __device__
+float3 operator*(float3 v, float k)
+{
+	return make_float3(k * v.x, k * v.y, k * v.z);
+}
+
+__forceinline__ __device__
+float3 operator*(float k, float3 v)
+{
+	return make_float3(k * v.x, k * v.y, k * v.z);
+}
+
+// TODO: pass the complex indices
+__global__
+void kernel_ngf_texture_fetch_forward
+(
+	const float3 *__restrict__ map,
+	const float *__restrict__ u,
+	const float *__restrict__ v,
+	float3 *__restrict__ result,
+	int32_t complexes,
+	int32_t resx,
+	int32_t resy,
+	int32_t rate
+)
+{
+	// NOTE: map is (complexes, res x, res y)
+	// uvs are (complexes, rate * rate)
+
+	int32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+	int32_t stride = blockDim.x * gridDim.x;
+
+	int32_t limit = complexes * rate * rate;
+	for (int32_t i = tid; i < limit; i += stride) {
+		float su = (resx - 1) * u[i];
+		float sv = (resy - 1) * v[i];
+
+		int32_t iu0 = floor(su);
+		int32_t iu1 = floor(su);
+
+		int32_t iv0 = ceil(sv);
+		int32_t iv1 = ceil(sv);
+
+		su -= iu0;
+		sv -= iv0;
+
+		int32_t ci = i / (rate * rate);
+
+		int32_t i0 = ci * resx * resy + iu0 * resx + iv0;
+		int32_t i1 = ci * resx * resy + iu1 * resx + iv0;
+		int32_t i2 = ci * resx * resy + iu0 * resx + iv1;
+		int32_t i3 = ci * resx * resy + iu1 * resx + iv1;
+
+		float3 f00 = map[i0] * (1 - su) * (1 - sv);
+		float3 f01 = map[i1] * su * (1 - sv);
+		float3 f10 = map[i2] * (1 - su) * sv;
+		float3 f11 = map[i3] * su * sv;
+
+		result[i] = f00 + f01 + f10 + f11;
+	}
+}
+
+__forceinline__ __device__
+float3 atomicAdd(float3 *addr, float3 val)
+{
+	float3 old;
+	old.x = atomicAdd(&addr->x, val.x);
+	old.y = atomicAdd(&addr->y, val.y);
+	old.z = atomicAdd(&addr->z, val.z);
+	return old;
+}
+
+__global__
+void kernel_ngf_texture_fetch_backward
+(
+	const float3 *__restrict__ grad_result,
+	const float *__restrict__ u,
+	const float *__restrict__ v,
+	float3 *__restrict__ dmap,
+	int32_t complexes,
+	int32_t resx,
+	int32_t resy,
+	int32_t rate
+)
+{
+	// NOTE: map is (complexes, res x, res y)
+	// uvs are (complexes, rate * rate)
+
+	int32_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+	int32_t stride = blockDim.x * gridDim.x;
+
+	int32_t limit = complexes * rate * rate;
+	for (int32_t i = tid; i < limit; i += stride) {
+		float su = (resx - 1) * u[i];
+		float sv = (resy - 1) * v[i];
+
+		int32_t iu0 = floor(su);
+		int32_t iu1 = floor(su);
+
+		int32_t iv0 = ceil(sv);
+		int32_t iv1 = ceil(sv);
+
+		su -= iu0;
+		sv -= iv0;
+
+		int32_t ci = i / (rate * rate);
+		int32_t i0 = ci * resx * resy + iu0 * resx + iv0;
+		int32_t i1 = ci * resx * resy + iu1 * resx + iv0;
+		int32_t i2 = ci * resx * resy + iu0 * resx + iv1;
+		int32_t i3 = ci * resx * resy + iu1 * resx + iv1;
+
+		float3 d0 = (1 - su) * (1 - sv) * grad_result[i];
+		float3 d1 = su * (1 - sv) * grad_result[i];
+		float3 d2 = (1 - su) * sv * grad_result[i];
+		float3 d3 = su * sv * grad_result[i];
+
+		atomicAdd(&dmap[i0], d0);
+		atomicAdd(&dmap[i1], d1);
+		atomicAdd(&dmap[i2], d2);
+		atomicAdd(&dmap[i3], d3);
+
+//		dmap[i0] = (1 - su) * (1 - sv) * grad_result[i];
+//		dmap[i1] = su * (1 - sv) * grad_result[i];
+//		dmap[i2] = (1 - su) * sv * grad_result[i];
+//		dmap[i3] = su * sv * grad_result[i];
+	}
+}
+
+torch::Tensor ngf_texture_fetch_forward
+(
+	const torch::Tensor &map,
+	const torch::Tensor &u,
+	const torch::Tensor &v,
+	int32_t complexes,
+	int32_t resx,
+	int32_t resy,
+	int32_t rate
+)
+{
+	assert(map.is_cuda());
+	assert(u.is_cuda());
+	assert(v.is_cuda());
+
+	assert(map.dtype() == torch::kFloat32);
+	assert(u.dtype() == torch::kFloat32);
+	assert(v.dtype() == torch::kFloat32);
+
+	assert(map.dim() == 4);
+	assert(u.dim() == 2);
+	assert(v.dim() == 2);
+
+	auto options = torch::TensorOptions()
+		.dtype(torch::kFloat32)
+		.device(torch::kCUDA, 0);
+
+	torch::Tensor result = torch::zeros({ u.numel(), 3 }, options);
+
+	kernel_ngf_texture_fetch_forward <<< 64, 64 >>>
+	(
+		(float3 *) map.data_ptr <float> (),
+		u.data_ptr <float> (),
+		v.data_ptr <float> (),
+		(float3 *) result.mutable_data_ptr <float> (),
+		complexes,
+		resx, resy, rate
+	);
+
+	cudaDeviceSynchronize();
+
+	return result;
+}
+
+torch::Tensor ngf_texture_fetch_backward
+(
+	const torch::Tensor &d_color,
+	const torch::Tensor &u,
+	const torch::Tensor &v,
+	int32_t complexes,
+	int32_t resx,
+	int32_t resy,
+	int32_t rate
+)
+{
+	assert(d_color.is_cuda());
+	assert(u.is_cuda());
+	assert(v.is_cuda());
+
+	assert(d_color.dtype() == torch::kFloat32);
+	assert(u.dtype() == torch::kFloat32);
+	assert(v.dtype() == torch::kFloat32);
+
+	assert(d_color.dim() == 2);
+	assert(u.dim() == 2);
+	assert(v.dim() == 2);
+
+	auto options = torch::TensorOptions()
+		.dtype(torch::kFloat32)
+		.device(torch::kCUDA, 0);
+
+	torch::Tensor result = torch::zeros({ complexes, resx, resy, 3 }, options);
+
+	kernel_ngf_texture_fetch_backward <<< 64, 64 >>>
+	(
+		(float3 *) d_color.data_ptr <float> (),
+		u.data_ptr <float> (),
+		v.data_ptr <float> (),
+		(float3 *) result.mutable_data_ptr <float> (),
+		complexes,
+		resx, resy, rate
+	);
+
+	cudaDeviceSynchronize();
+
+	return result;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
         py::class_ <geometry> (m, "geometry")
@@ -332,8 +554,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 	m.def("cluster_geometry", &cluster_geometry);
 	m.def("triangulate_shorted", &triangulate_shorted);
 	m.def("generate_remapper", &generate_remapper, "Generate remapper");
-	m.def("mesh_deduplicate", &deduplicate, "Deduplicate mesh vertices and reindex the mesh");
+	m.def("deduplicate", &deduplicate, "Deduplicate mesh vertices and reindex the mesh");
 	m.def("parametrize_chart", &parametrize, "Parametrize a chart with disk topology");
 	m.def("parametrize_multicharts", &parametrize_parallel, "Parametrize multiple charts with disk topology in parallel");
 	m.def("load_mesh", &load_mesh);
+
+	m.def("ngf_texture_fetch_forward", &ngf_texture_fetch_forward);
+	m.def("ngf_texture_fetch_backward", &ngf_texture_fetch_backward);
 }

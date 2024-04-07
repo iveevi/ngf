@@ -1,4 +1,5 @@
 import torch
+import ngfutil
 import numpy as np
 
 from .mesh import Mesh
@@ -148,13 +149,12 @@ def lookat(eye, center, up):
 
 
 def arrange_views(simplified: Mesh, cameras: int, radius: float = 1.0):
-    import ngfutil
-
     seeds = list(torch.randint(0, simplified.faces.shape[0], (cameras,)).numpy())
-    clusters = ngfutil.cluster_geometry(simplified.optg, seeds, 10, 'uniform')
+    clusters = ngfutil.cluster_geometry(simplified.optg, seeds, 3, 'uniform')
 
     views = []
     eyes = []
+    fwds = []
     for cluster in clusters:
         faces = simplified.faces[cluster]
 
@@ -194,5 +194,14 @@ def arrange_views(simplified: Mesh, cameras: int, radius: float = 1.0):
 
         views.append(view)
         eyes.append(eye)
+        fwds.append(look)
+
+    # import polyscope as ps
+    # ps.init()
+    # v = torch.stack(eyes)
+    # f = torch.stack(fwds)
+    # ps.register_surface_mesh('ref', simplified.vertices.cpu().numpy(), simplified.faces.cpu().numpy())
+    # ps.register_point_cloud('eyes', v.cpu()).add_vector_quantity('looks', f.cpu())
+    # ps.show()
 
     return torch.stack(views), torch.stack(eyes)

@@ -8,6 +8,8 @@ import torch.nn as nn
 
 from typing import Callable
 
+from util import SIREN
+
 
 # TODO: try a SIREN network...
 class MLP(nn.Module):
@@ -44,13 +46,8 @@ class MLP(nn.Module):
         return bytestream
 
 
-class Sampler:
-    def __init__(self, points: torch.Tensor, features: torch.Tensor, complexes: torch.Tensor):
-        pass
-
-
 def spherical_to_cartesian(spherical):
-    radius = spherical[..., 0].square()
+    radius = spherical[..., 0]
     theta = spherical[..., 1]
     phi = spherical[..., 2]
     x = theta.cos() * phi.sin()
@@ -59,7 +56,13 @@ def spherical_to_cartesian(spherical):
     return radius.unsqueeze(-1) * torch.stack((x, y, z), dim=-1)
 
 
+@torch.jit.script
+def triangle_wave(x):
+    return (2 * x.fmod(1) - 1).abs()
+
+
 # Positional encoding
+@torch.jit.script
 def positional_encoding(vector: torch.Tensor, levels: int) -> list[torch.Tensor]:
     result = []
     for i in range(levels):
@@ -84,7 +87,8 @@ class NGF:
         self.jittering = jittering
         self.normals = normals
 
-        self.ffin = self.features.shape[-1] + 3 * (2 * self.fflevels)
+        # self.ffin = self.features.shape[-1] + 3 * (2 * self.fflevels)
+        self.ffin = self.features.shape[-1] + 2 * 24
         self.mlp = MLP(self.ffin).cuda()
         if mlp is not None:
             self.mlp.load_state_dict(mlp.state_dict())
@@ -105,6 +109,9 @@ class NGF:
         logging.info(f'     FF levels:    {fflevels}')
         logging.info(f'     Jittering:    {jittering}')
         logging.info(f'     Normals:      {normals}')
+
+        std = 32 * torch.ones((24, 3), device='cuda')
+        self.rff = torch.normal(torch.zeros_like(std), std)
 
     # List of parameters
     def parameters(self):
@@ -134,8 +141,9 @@ class NGF:
 
         lf = (lf00 + lf01 + lf10 + lf11).reshape(-1, fsize)
 
-        lin = positional_encoding(lp, self.fflevels) + [lf]
-        lin = torch.cat(lin, dim=-1)
+        lin = lp @ self.rff.T
+        # lin = positional_encoding(lp, self.fflevels) + [lf]
+        lin = torch.cat((lin.sin(), lin.cos(), lf), dim=-1)
         return lp + self.mlp(lin)
 
     def base(self, rate):
@@ -184,10 +192,15 @@ class NGF:
         delta = 0.45/(rate - 1)
 
         # TODO: use a normal distribution with decreasing jittering...
-        rand_uv = (2 * torch.rand((2, U.shape[0], U.shape[1]), device='cuda') - 1)
-        rand_uv *= delta * UV_interior
+        # rand_uv = (2 * torch.rand((2, U.shape[0], U.shape[1]), device='cuda') - 1)
+        # rand_uv *= delta * UV_interior
+        rtheta = 2 * np.pi * torch.rand(*U.shape, device='cuda')
+        rr = torch.rand(*U.shape, device='cuda').sqrt()
+        ru = delta * rr * rtheta.cos() * UV_interior
+        rv = delta * rr * rtheta.sin() * UV_interior
 
-        return U + rand_uv[0], V + rand_uv[1]
+        # return U + rand_uv[0], V + rand_uv[1]
+        return U + ru, V + rv
 
     def save(self, filename):
         """Save into a PyTorch (PT) file"""
@@ -224,8 +237,8 @@ class NGF:
         complexes = torch.from_numpy(mesh.cells_dict['quad'])
 
         points = normalizer(points.float().cuda())
-        features = torch.randn((points.shape[0], features)).cuda()
-        # features = torch.zeros((points.shape[0], features)).cuda()
+        # features = torch.randn((points.shape[0], features)).cuda()
+        features = torch.zeros((points.shape[0], features)).cuda()
         complexes = complexes.int().cuda()
 
         points.requires_grad = True

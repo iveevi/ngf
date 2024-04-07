@@ -18,7 +18,7 @@ class Trainer:
         # Properties
         self.path = os.path.abspath(mesh)
         self.cameras = 200
-        self.batch = 25
+        self.batch = 20
         self.losses = {}
 
         logging.info('Launching training process with configuration:')
@@ -54,17 +54,24 @@ class Trainer:
         faces = faces.int().cuda().reshape(-1, 3)
         normals = vertex_normals(vertices, faces)
 
-        cache = []
-        for batch_views in self.views.split(self.batch):
-            reference_views = self.renderer.render(vertices, normals, faces, batch_views)
-            # fig, axs = plt.subplots(5, 5, layout='constrained')
-            # for ax, img in zip(axs.flatten(), reference_views.cpu()):
-            #     ax.imshow(0.5 + 0.5 * img[..., 3:6])
-            #     ax.axis('off')
-            # plt.show()
-            cache.append(reference_views.cpu())
+        # vertices = self.target.vertices
+        # faces = self.target.faces
+        # colors = torch.rand_like(normals)
 
-        return cache
+        cache = []
+        # for batch_views in self.views.split(self.batch):
+        #     reference_views = self.renderer.render(vertices, normals, faces, batch_views)
+        #     # fig, axs = plt.subplots(5, 5, layout='constrained')
+        #     # for ax, img in zip(axs.flatten(), reference_views.cpu()):
+        #     #     ax.imshow(img)
+        #     #     ax.axis('off')
+        #     # plt.show()
+        #     cache.append(reference_views.cpu())
+        for view in tqdm.tqdm(self.views, ncols=50, leave=False):
+            reference_view = self.renderer.render(vertices, normals, faces, view.unsqueeze(0))
+            cache.append(reference_view)
+
+        return torch.cat(cache).split(self.batch)
 
     def initialize_ngf(self) -> None:
         with torch.no_grad():
@@ -84,8 +91,6 @@ class Trainer:
         logging.info('Neural geometry field initialization phase done')
 
     def optimize_resolution(self, optimizer: torch.optim.Optimizer, rate: int) -> dict[str, list[float]]:
-        import torch.autograd.forward_ad as fwad
-
         losses = {
             'render': [],
             'laplacian': []
@@ -107,7 +112,7 @@ class Trainer:
             uvs = self.ngf.sampler(rate)
             uniform_uvs = self.ngf.sample_uniform(rate)
 
-            # TODO: shuffle the views as well
+            # # TODO: shuffle the views as well
             for batch_reference_views, batch_views in zip(self.reference_views, batched_views):
                 vertices = self.ngf.eval(*uvs)
                 uniform_vertices = self.ngf.eval(*uniform_uvs)
@@ -122,7 +127,7 @@ class Trainer:
                 batch_source_views = self.renderer.render(vertices, normals, faces, batch_views)
 
                 render_loss = (batch_reference_views.cuda() - batch_source_views).abs().mean()
-                loss = render_loss
+                loss = render_loss + laplacian_loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -146,15 +151,14 @@ class Trainer:
             'laplacian': []
         }
 
-        opt = torch.optim.Adam(self.ngf.parameters(), 1e-3)
-
         self.views = arrange_views(self.target, self.cameras)[0]
         logging.info(f'Generated {self.cameras} views for reference mesh')
 
         self.reference_views = self.precompute_reference_views()
         logging.info('Cached reference views')
 
-        for rate in [2, 4, 8]:
+        opt = torch.optim.Adam(self.ngf.parameters(), 1e-3)
+        for rate in [4, 8, 16]:
             rate_losses = self.optimize_resolution(opt, rate)
             self.losses['render'] += rate_losses['render']
             self.losses['laplacian'] += rate_losses['laplacian']
@@ -249,4 +253,4 @@ if __name__ == '__main__':
     trainer.export()
 
     if args.display:
-        trainer.display(8)
+        trainer.display()
