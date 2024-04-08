@@ -4,6 +4,11 @@ import numpy as np
 import sys
 import glob
 import io
+import os
+import torch
+import trimesh
+import ngfutil
+import shutil
 
 from contextlib import redirect_stdout
 
@@ -11,42 +16,12 @@ file_directory = os.path.dirname(__file__)
 load_directory = os.path.join(file_directory, os.path.pardir)
 sys.path += [ file_directory, load_directory ]
 
-from util import *
-from ngf import *
+from nodes import *
+from ngf import NGF
+from util import make_cmap
 
-def make_cmap(complexes, points, LP, sample_rate):
-    Cs = complexes.cpu().numpy()
-    lp = LP.detach().cpu().numpy()
-
-    cmap = dict()
-    for i in range(Cs.shape[0]):
-        for j in Cs[i]:
-            if cmap.get(j) is None:
-                cmap[j] = set()
-
-        corners = np.array([
-            0, sample_rate - 1,
-            sample_rate * (sample_rate - 1),
-            sample_rate ** 2 - 1
-        ]) + (i * sample_rate ** 2)
-
-        qvs = points[Cs[i]].cpu().numpy()
-        cvs = lp[corners]
-
-        for j in range(4):
-            # Find the closest corner
-            dists = np.linalg.norm(qvs[j] - cvs, axis=1)
-            closest = np.argmin(dists)
-            cmap[Cs[i][j]].add(corners[closest])
-
-    return cmap
-
-import trimesh
-import ngfutil
-import shutil
-
-path = '/home/venki/projects/ngf/results/torched/nefertiti-lod250.pt'
-rotation = np.radians([ 90, 0, -140 ])
+path = '/home/venki/projects/ngf/results/torched/einstein-lod1000.pt'
+rotation = np.radians([ 70, 0, 30 ])
 
 ngf = NGF.from_pt(path)
 
@@ -155,7 +130,7 @@ output_node = nodes.new(type='ShaderNodeOutputMaterial')
 principled_node = nodes.new(type='ShaderNodeBsdfPrincipled')
 
 set_principled_node(principled_node=principled_node,
-    base_color=(0.6, 0.6, 0.6, 1.0),
+    base_color=(0.8, 0.6, 0.35, 1.0),
     metallic=0.2, roughness=0.3)
 
 links.new(principled_node.outputs['BSDF'], output_node.inputs['Surface'])

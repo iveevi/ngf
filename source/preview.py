@@ -1,16 +1,11 @@
-import argparse
-import meshio
-import numpy as np
 import os
-import polyscope as ps
-import re
 import torch
-import optext
-import robust_laplacian
+import ngfutil
+import argparse
+import polyscope as ps
 
-from ngf import load_ngf
-from util import quadify, make_cmap
-from mesh import load_mesh
+from ngf import *
+from util import quadify, make_cmap, load_mesh
 
 COLOR_WHEEL = [
         np.array([0.880, 0.320, 0.320]),
@@ -39,7 +34,6 @@ def preview_single(ngf, refs):
         if ngf is not None and mode == 'ngf':
             sample = ngf.sample_uniform(rate)
             V = ngf.eval(*sample).detach()
-            print('EVALLED V', V.shape)
 
             if patches:
                 complex_count = ngf.complexes.shape[0]
@@ -80,7 +74,7 @@ def preview_single(ngf, refs):
                     c.set_color([0, 0, 0])
                     c.set_radius(0.0025)
             else:
-                F = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
+                F = ngfutil.triangulate_shorted(V, ngf.complexes.shape[0], rate)
                 m = ps.register_surface_mesh('ngf', V.cpu().numpy(), F.cpu().numpy())
                 m.set_color([0.5, 0.5, 1.0])
                 m.set_material('wax')
@@ -183,9 +177,9 @@ def preview_many(many, refs):
             uvs = ngf.sample_uniform(rate)
             base = ngf.base(rate)
             cmap = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
-            remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
+            remap = ngfutil.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
             V = ngf.eval(*uvs).detach()
-            indices = optext.triangulate_shorted(V, ngf.complexes.shape[0], rate)
+            indices = ngfutil.triangulate_shorted(V, ngf.complexes.shape[0], rate)
             F = remap.remap_device(indices)
             V, F = V.cpu().numpy(), F.cpu().numpy()
             m = ps.register_surface_mesh(f, V, F)
@@ -327,54 +321,52 @@ def preview_lods(lods):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--ngf', type=str, help='path to ngf')
-    parser.add_argument('--many', type=str, nargs='+', help='path to ngfs')
-    parser.add_argument('--references', type=str, nargs='*', help='path to reference mesh')
-    parser.add_argument('--lods', type=str, help='directory with lods')
+    # parser.add_argument('--many', type=str, nargs='+', help='path to ngfs')
+    # parser.add_argument('--references', type=str, nargs='*', help='path to reference mesh')
+    # parser.add_argument('--lods', type=str, help='directory with lods')
     args = parser.parse_args()
 
     ngf = None
     if args.ngf is not None:
         assert os.path.exists(args.ngf)
+        ngf = NGF.from_pt(args.ngf)
 
-        ngf = torch.load(args.ngf)
-        ngf = load_ngf(ngf)
+    # many = None
+    # if args.many is not None:
+    #     many = {}
+    #     for file in args.many:
+    #         f = os.path.basename(file).split('.')[0]
+    #         f = os.path.dirname(file) + '-' + f
+    #         n = torch.load(file)
+    #         n = load_ngf(n)
+    #         many[f] = n
 
-    many = None
-    if args.many is not None:
-        many = {}
-        for file in args.many:
-            f = os.path.basename(file).split('.')[0]
-            f = os.path.dirname(file) + '-' + f
-            n = torch.load(file)
-            n = load_ngf(n)
-            many[f] = n
+    # refs = []
+    # if args.references is not None:
+    #     refs = {}
+    #     for file in args.references:
+    #         mesh, _ = load_mesh(file)
+    #         # refs.append(mesh)
+    #         f = os.path.basename(file)
+    #         f = os.path.dirname(file) + '-' + f
+    #         refs[f] = (mesh.vertices, mesh.faces)
 
-    refs = []
-    if args.references is not None:
-        refs = {}
-        for file in args.references:
-            mesh, _ = load_mesh(file)
-            # refs.append(mesh)
-            f = os.path.basename(file)
-            f = os.path.dirname(file) + '-' + f
-            refs[f] = (mesh.vertices, mesh.faces)
+    # lods = {}
+    # if args.lods is not None:
+    #     p = re.compile('lod[1-4].pt$')
+    #     for root, _, files in os.walk(args.lods):
+    #         for file in files:
+    #             if p.match(file):
+    #                 base = file.split('.')[0]
+    #                 base = os.path.dirname(file) + '-' + base
+    #                 ngf = torch.load(os.path.join(root, file))
+    #                 ngf = load_ngf(ngf)
+    #                 lods[base] = ngf
 
-    lods = {}
-    if args.lods is not None:
-        p = re.compile('lod[1-4].pt$')
-        for root, _, files in os.walk(args.lods):
-            for file in files:
-                if p.match(file):
-                    base = file.split('.')[0]
-                    base = os.path.dirname(file) + '-' + base
-                    ngf = torch.load(os.path.join(root, file))
-                    ngf = load_ngf(ngf)
-                    lods[base] = ngf
-
-    if lods:
-        preview_lods(lods)
-    if many:
-        preview_many(many, refs)
-    else:
-        assert ngf is not None or refs is not None
-        preview_single(ngf, refs)
+    # if lods:
+    #     preview_lods(lods)
+    # if many:
+    #     preview_many(many, refs)
+    # else:
+    #     assert ngf is not None or refs is not None
+    preview_single(ngf, [])
