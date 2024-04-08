@@ -13,33 +13,6 @@ from ngf import NGF
 from render import Renderer
 
 
-def uniform_laplacian(Q: torch.Tensor, N: int, lambda_: float = 10.0) -> torch.Tensor:
-    import itertools
-
-    graph = [[] for _ in range(N)]
-    for q in Q:
-        l = q.cpu().numpy().tolist()
-        for p in itertools.combinations(l, 2):
-            graph[p[0]].append(p[1])
-            graph[p[1]].append(p[0])
-
-    # print(graph)
-
-    values = []
-    ix, iy = [], []
-    for i, g in enumerate(graph):
-        values.append(lambda_ - len(g))
-        ix.append(i)
-        iy.append(i)
-
-        for k in g:
-            values.append(1)
-            ix.append(i)
-            iy.append(k)
-
-    return torch.sparse_coo_tensor([ix, iy], values, size=(N, N)).cuda()
-
-
 class Trainer:
     def __init__(self, mesh: str, lod: int, features: int = 20):
         # Properties
@@ -122,8 +95,9 @@ class Trainer:
 
         batched_views = list(self.views.split(self.batch))
         indices = np.arange(len(batched_views))
+        length = average_edge_length(base, quads)
 
-        for _ in tqdm.trange(200, ncols=50, leave=False):
+        for _ in tqdm.trange(100, ncols=50, leave=False):
             batch_losses = {
                 'render': [],
                 'laplacian': []
@@ -145,7 +119,8 @@ class Trainer:
                 normals = vertex_normals(vertices, faces)
 
                 smoothed_vertices = graph.smooth(uniform_vertices, 1.0)
-                laplacian_loss = (uniform_vertices - smoothed_vertices).abs().mean()
+                smoothed_vertices = remap.scatter_device(smoothed_vertices)
+                laplacian_loss = 1e-2 * rate * (uniform_vertices - smoothed_vertices).abs().mean()
 
                 batch_source_views = self.renderer.render(vertices, normals, faces, batch_views)
 
@@ -165,78 +140,6 @@ class Trainer:
         logging.info(f'Optimized neural geometry field at resolution ({rate} x {rate})')
 
         return losses
-
-    # def optimize_resolution_diffused(self, optimizer: torch.optim.Optimizer, rate: int) -> dict[str, list[float]]:
-    #     import numpy as np
-    #
-    #     losses = {
-    #         'render': [],
-    #         'laplacian': []
-    #     }
-    #
-    #     base = self.ngf.base(rate).detach()
-    #     cmap = make_cmap(self.ngf.complexes, self.ngf.points.detach(), base, rate)
-    #     remap = ngfutil.generate_remapper(self.ngf.complexes.cpu(), cmap, base.shape[0], rate)
-    #     quads = torch.from_numpy(quadify(self.ngf.complexes.shape[0], rate)).int()
-    #     graph = ngfutil.Graph(remap.remap(quads), base.shape[0])
-    #
-    #     dmatrix = uniform_laplacian(quads, base.shape[0])
-    #
-    #     batched_views = list(self.views.split(self.batch))
-    #     indices = np.arange(len(batched_views))
-    #
-    #     for _ in tqdm.trange(200, ncols=50, leave=False):
-    #         batch_losses = {
-    #             'render': [],
-    #             'laplacian': []
-    #         }
-    #
-    #         uvs = self.ngf.sampler(rate)
-    #         uniform_uvs = self.ngf.sample_uniform(rate)
-    #
-    #         np.random.shuffle(indices)
-    #         for i in indices:
-    #             batch_reference_views = self.reference_views[i]
-    #             batch_views = batched_views[i]
-    #
-    #             with torch.no_grad():
-    #                 vertices = self.ngf.eval(*uvs)
-    #                 vertices.requires_grad = True
-    #
-    #             uniform_vertices = self.ngf.eval(*uniform_uvs)
-    #
-    #             faces = ngfutil.triangulate_shorted(vertices, self.ngf.complexes.shape[0], rate)
-    #             faces = remap.remap_device(faces)
-    #             normals = vertex_normals(vertices, faces)
-    #
-    #             # smoothed_vertices = graph.smooth(uniform_vertices, 1.0)
-    #             # laplacian_loss = (uniform_vertices - smoothed_vertices).abs().mean()
-    #
-    #             batch_source_views = self.renderer.render(vertices, normals, faces, batch_views)
-    #
-    #             render_loss = (batch_reference_views.cuda() - batch_source_views).abs().mean()
-    #             loss = render_loss #+ laplacian_loss
-    #
-    #             optimizer.zero_grad()
-    #             loss.backward()
-    #
-    #             with torch.no_grad():
-    #                 vertices.grad = dmatrix @ vertices.grad
-    #
-    #             proxy_vertices = self.ngf.eval(*uvs)
-    #             proxy_vertices.backward(vertices.grad)
-    #             optimizer.step()
-    #
-    #             batch_losses['render'].append(render_loss.item())
-    #             # batch_losses['laplacian'].append(laplacian_loss.item())
-    #             batch_losses['laplacian'].append(0)
-    #
-    #         losses['render'].append(np.mean(batch_losses['render']))
-    #         losses['laplacian'].append(np.mean(batch_losses['laplacian']))
-    #
-    #     logging.info(f'Optimized neural geometry field at resolution ({rate} x {rate})')
-    #
-    #     return losses
 
     def optimize_resolution_indirectly(self, optimizer: torch.optim.Optimizer, rate: int) -> dict[str, list[float]]:
         import numpy as np
@@ -347,10 +250,9 @@ class Trainer:
         for rate in [4, 8, 16]:
             opt = torch.optim.Adam(self.ngf.parameters(), 1e-3)
             rate_losses = self.optimize_resolution(opt, rate)
-            # rate_losses = self.optimize_resolution_diffused(opt, rate)
-            # rate_losses = self.optimize_resolution_indirectly(opt, rate)
             self.losses['render'] += rate_losses['render']
             self.losses['laplacian'] += rate_losses['laplacian']
+            self.display(rate)
 
         logging.info('Finished training neural geometry field')
 

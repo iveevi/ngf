@@ -5,12 +5,31 @@ import numpy as np
 from .mesh import Mesh
 
 
-def lerp(X, U, V):
-    lp00 = X[:, 0, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * (1.0 - V.unsqueeze(-1))
-    lp01 = X[:, 1, :].unsqueeze(1) * U.unsqueeze(-1) * (1.0 - V.unsqueeze(-1))
-    lp10 = X[:, 3, :].unsqueeze(1) * (1.0 - U.unsqueeze(-1)) * V.unsqueeze(-1)
-    lp11 = X[:, 2, :].unsqueeze(1) * U.unsqueeze(-1) * V.unsqueeze(-1)
-    return lp00 + lp01 + lp10 + lp11
+def uniform_laplacian(Q: torch.Tensor, N: int, lambda_: float = 10.0) -> torch.Tensor:
+    import itertools
+
+    graph = [[] for _ in range(N)]
+    for q in Q:
+        l = q.cpu().numpy().tolist()
+        for p in itertools.combinations(l, 2):
+            graph[p[0]].append(p[1])
+            graph[p[1]].append(p[0])
+
+    # print(graph)
+
+    values = []
+    ix, iy = [], []
+    for i, g in enumerate(graph):
+        values.append(lambda_ - len(g))
+        ix.append(i)
+        iy.append(i)
+
+        for k in g:
+            values.append(1)
+            ix.append(i)
+            iy.append(k)
+
+    return torch.sparse_coo_tensor([ix, iy], values, size=(N, N)).cuda()
 
 
 def indices(sample_rate):

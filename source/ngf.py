@@ -8,8 +8,6 @@ import torch.nn as nn
 
 from typing import Callable
 
-# from util import SIREN
-
 
 # TODO: try a SIREN network...
 class MLP(nn.Module):
@@ -46,6 +44,7 @@ class MLP(nn.Module):
         return bytestream
 
 
+# TODO: return this?
 def spherical_to_cartesian(spherical):
     radius = spherical[..., 0]
     theta = spherical[..., 1]
@@ -56,19 +55,14 @@ def spherical_to_cartesian(spherical):
     return radius.unsqueeze(-1) * torch.stack((x, y, z), dim=-1)
 
 
-@torch.jit.script
-def triangle_wave(x):
-    return (2 * x.fmod(1) - 1).abs()
-
-
 # Positional encoding
-@torch.jit.script
-def positional_encoding(vector: torch.Tensor, levels: int) -> list[torch.Tensor]:
-    result = []
+# @torch.jit.script
+def positional_encoding(vector: torch.Tensor, extra: torch.Tensor, levels: int) -> torch.Tensor:
+    result = [extra]
     for i in range(levels):
         k = 2 ** i
         result += [torch.sin(k * vector), torch.cos(k * vector)]
-    return result
+    return torch.cat(result, dim=-1)
 
 
 class NGF:
@@ -87,7 +81,7 @@ class NGF:
         self.jittering = jittering
         self.normals = normals
 
-        self.ffin = self.features.shape[-1] + 3
+        self.ffin = self.features.shape[-1] + 3 * 2 * self.fflevels
         self.mlp = MLP(self.ffin).cuda()
         if mlp is not None:
             self.mlp.load_state_dict(mlp.state_dict())
@@ -118,51 +112,29 @@ class NGF:
         return self.complexes.shape[0]
 
     @staticmethod
-    def interpolate(points, features, complexes, U, V):
-        fsize = features.shape[1]
-        corner_points = points[complexes]
-        corner_features = features[complexes]
+    def interpolate(attrs, complexes, U, V):
+        attr_size = attrs.shape[1]
+        cattrs = attrs[complexes]
 
         Up, Um = U.unsqueeze(-1), (1.0 - U).unsqueeze(-1)
         Vp, Vm = V.unsqueeze(-1), (1.0 - V).unsqueeze(-1)
 
-        lp00 = corner_points[:, 0, :].unsqueeze(1) * Um * Vm
-        lp01 = corner_points[:, 1, :].unsqueeze(1) * Up * Vm
-        lp10 = corner_points[:, 3, :].unsqueeze(1) * Um * Vp
-        lp11 = corner_points[:, 2, :].unsqueeze(1) * Up * Vp
+        lp00 = cattrs[:, 0, :].unsqueeze(1) * Um * Vm
+        lp01 = cattrs[:, 1, :].unsqueeze(1) * Up * Vm
+        lp10 = cattrs[:, 3, :].unsqueeze(1) * Um * Vp
+        lp11 = cattrs[:, 2, :].unsqueeze(1) * Up * Vp
 
-        lp = (lp00 + lp01 + lp10 + lp11).reshape(-1, 3)
+        return (lp00 + lp01 + lp10 + lp11).reshape(-1, attr_size)
 
-        lf00 = corner_features[:, 0, :].unsqueeze(1) * Um * Vm
-        lf01 = corner_features[:, 1, :].unsqueeze(1) * Up * Vm
-        lf10 = corner_features[:, 3, :].unsqueeze(1) * Um * Vp
-        lf11 = corner_features[:, 2, :].unsqueeze(1) * Up * Vp
-
-        lf = (lf00 + lf01 + lf10 + lf11).reshape(-1, fsize)
-
-        return lp, lf
-
-    # Extraction methods
-    # TODO: interpolation kernel
-    def eval(self, U, V):
-        lp, lf = NGF.interpolate(self.points, self.features, self.complexes, U, V)
-        lin = torch.cat((lp, lf), dim=-1)
+    def eval(self, *uvs):
+        lp = NGF.interpolate(self.points, self.complexes, *uvs)
+        lf = NGF.interpolate(self.features, self.complexes, *uvs)
+        lin = positional_encoding(lp, lf, self.fflevels)
         return lp + self.mlp(lin)
 
     def base(self, rate):
-        U, V = self.sample_uniform(rate)
-
-        corner_points = self.points[self.complexes, :]
-
-        Up, Um = U.unsqueeze(-1), (1.0 - U).unsqueeze(-1)
-        Vp, m = V.unsqueeze(-1), (1.0 - V).unsqueeze(-1)
-
-        lp00 = corner_points[:, 0, :].unsqueeze(1) * Um * m
-        lp01 = corner_points[:, 1, :].unsqueeze(1) * Up * m
-        lp10 = corner_points[:, 3, :].unsqueeze(1) * Um * Vp
-        lp11 = corner_points[:, 2, :].unsqueeze(1) * Up * Vp
-
-        return (lp00 + lp01 + lp10 + lp11).reshape(-1, 3)
+        uvs = self.sample_uniform(rate)
+        return NGF.interpolate(self.points, self.complexes, *uvs)
 
     # Sampling functions
     def sample_uniform(self, rate: int):

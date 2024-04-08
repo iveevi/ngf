@@ -87,10 +87,10 @@ class Renderer:
         return torch.tensor(proj_mat, device='cuda', dtype=torch.float32)
 
     def __init__(self,
-                 # width: int = 256,
-                 # height: int = 256,
-                 width: int = 512,
-                 height: int = 512,
+                 width: int = 256,
+                 height: int = 256,
+                 # width: int = 512,
+                 # height: int = 512,
                  fov: float = 45.0,
                  near:float = 0.1,
                  far: float = 1000.0) -> None:
@@ -110,18 +110,18 @@ class Renderer:
         v_hom = torch.nn.functional.pad(v, (0, 1), 'constant', 1.0)
         v_ndc = torch.matmul(v_hom, mvps.transpose(1, 2))
 
-        # layers = []
-        # with dr.DepthPeeler(self.ctx, v_ndc, f, self.res) as peeler:
-        #     for i in range(3):
-        #         rast, rast_db = peeler.rasterize_next_layer()
-        #         normals = dr.interpolate(n, rast, f)[0]
-        #         normals = dr.antialias(normals, rast, v_ndc, f)
-        #         layers += [normals]
-        # return torch.concat(layers, dim=-1)
+        layers = []
+        with dr.DepthPeeler(self.ctx, v_ndc, f, self.res) as peeler:
+            for i in range(3):
+                rast, rast_db = peeler.rasterize_next_layer()
+                normals = dr.interpolate(n, rast, f)[0]
+                normals = dr.antialias(normals, rast, v_ndc, f)
+                layers += [normals]
+        return torch.concat(layers, dim=-1)
 
-        rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
-        normals = dr.interpolate(n, rast, f)[0]
-        return dr.antialias(normals, rast, v_ndc, f)
+        # rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
+        # normals = dr.interpolate(n, rast, f)[0]
+        # return dr.antialias(normals, rast, v_ndc, f)
 
     def shaded(self, v, n, f, view_mats):
         mvps = self.proj @ view_mats
