@@ -8,7 +8,7 @@ import torch.nn as nn
 
 from typing import Callable
 
-from util import SIREN
+# from util import SIREN
 
 
 # TODO: try a SIREN network...
@@ -87,8 +87,7 @@ class NGF:
         self.jittering = jittering
         self.normals = normals
 
-        # self.ffin = self.features.shape[-1] + 3 * (2 * self.fflevels)
-        self.ffin = self.features.shape[-1] + 2 * 24
+        self.ffin = self.features.shape[-1] + 3
         self.mlp = MLP(self.ffin).cuda()
         if mlp is not None:
             self.mlp.load_state_dict(mlp.state_dict())
@@ -110,19 +109,19 @@ class NGF:
         logging.info(f'     Jittering:    {jittering}')
         logging.info(f'     Normals:      {normals}')
 
-        std = 32 * torch.ones((24, 3), device='cuda')
-        self.rff = torch.normal(torch.zeros_like(std), std)
-
     # List of parameters
     def parameters(self):
         return list(self.mlp.parameters()) + [self.points, self.features]
 
-    # Extraction methods
-    # TODO: interpolation kernel
-    def eval(self, U, V):
-        fsize = self.features.shape[1]
-        corner_points = self.points[self.complexes]
-        corner_features = self.features[self.complexes]
+    # Number of patches
+    def patches(self) -> int:
+        return self.complexes.shape[0]
+
+    @staticmethod
+    def interpolate(points, features, complexes, U, V):
+        fsize = features.shape[1]
+        corner_points = points[complexes]
+        corner_features = features[complexes]
 
         Up, Um = U.unsqueeze(-1), (1.0 - U).unsqueeze(-1)
         Vp, Vm = V.unsqueeze(-1), (1.0 - V).unsqueeze(-1)
@@ -141,9 +140,13 @@ class NGF:
 
         lf = (lf00 + lf01 + lf10 + lf11).reshape(-1, fsize)
 
-        lin = lp @ self.rff.T
-        # lin = positional_encoding(lp, self.fflevels) + [lf]
-        lin = torch.cat((lin.sin(), lin.cos(), lf), dim=-1)
+        return lp, lf
+
+    # Extraction methods
+    # TODO: interpolation kernel
+    def eval(self, U, V):
+        lp, lf = NGF.interpolate(self.points, self.features, self.complexes, U, V)
+        lin = torch.cat((lp, lf), dim=-1)
         return lp + self.mlp(lin)
 
     def base(self, rate):
@@ -191,15 +194,11 @@ class NGF:
 
         delta = 0.45/(rate - 1)
 
-        # TODO: use a normal distribution with decreasing jittering...
-        # rand_uv = (2 * torch.rand((2, U.shape[0], U.shape[1]), device='cuda') - 1)
-        # rand_uv *= delta * UV_interior
         rtheta = 2 * np.pi * torch.rand(*U.shape, device='cuda')
         rr = torch.rand(*U.shape, device='cuda').sqrt()
         ru = delta * rr * rtheta.cos() * UV_interior
         rv = delta * rr * rtheta.sin() * UV_interior
 
-        # return U + rand_uv[0], V + rand_uv[1]
         return U + ru, V + rv
 
     def save(self, filename):
@@ -237,7 +236,6 @@ class NGF:
         complexes = torch.from_numpy(mesh.cells_dict['quad'])
 
         points = normalizer(points.float().cuda())
-        # features = torch.randn((points.shape[0], features)).cuda()
         features = torch.zeros((points.shape[0], features)).cuda()
         complexes = complexes.int().cuda()
 
@@ -252,5 +250,10 @@ class NGF:
     @staticmethod
     def from_pt(path: str) -> NGF:
         data = torch.load(path)
-        return NGF(data['points'], data['features'], data['complexes'],
-                   data['fflevels'], data['jittering'], data['normals'])
+        return NGF(data['points'],
+                   data['features'],
+                   data['complexes'],
+                   data['fflevels'],
+                   data['jittering'],
+                   data['normals'],
+                   mlp=data['model'])

@@ -33,12 +33,6 @@ void kernel_smooth
 			result[i] = make_float3(x/k, y/k, z/k);
 		else
 			result[i] = vertex;
-
-//		x = (1 - factor) * vertex.x + factor * x/k;
-//		y = (1 - factor) * vertex.y + factor * y/k;
-//		z = (1 - factor) * vertex.z + factor * z/k;
-//
-//		result[i] = make_float3(x, y, z);
 	}
 }
 

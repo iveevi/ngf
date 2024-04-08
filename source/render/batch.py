@@ -6,6 +6,7 @@ import glob
 
 sys.path.append(os.path.dirname(__file__))
 from util import *
+from rotations import rotations
 
 C = bpy.context
 D = bpy.data
@@ -16,11 +17,23 @@ D.objects[1].select_set(True)
 D.objects[2].select_set(True)
 bpy.ops.object.delete()
 
+# TODO: sort to use the same view
+
+os.makedirs('results/blender', exist_ok=True)
+
 enode = W.node_tree.nodes.new('ShaderNodeTexEnvironment')
 enode.image = bpy.data.images.load('/home/venki/downloads/rural_crossroads_2k.hdr')
-
 node_tree = W.node_tree
 node_tree.links.new(enode.outputs['Color'], node_tree.nodes['Background'].inputs['Color'])
+
+mat = add_material('Main', use_nodes=True, make_node_tree_empty=True)
+nodes = mat.node_tree.nodes
+links = mat.node_tree.links
+output_node = nodes.new(type='ShaderNodeOutputMaterial')
+principled_node = nodes.new(type='ShaderNodeBsdfPrincipled')
+set_principled_node(principled_node=principled_node,
+    base_color=(0.8, 0.6, 0.35, 1.0),
+    metallic=0.2, roughness=0.3)
 
 directory = sys.argv[-1]
 for path in glob.glob(directory + '/*.stl'):
@@ -39,33 +52,18 @@ for path in glob.glob(directory + '/*.stl'):
     print('extent', extent)
     M.scale = [ 1/extent, 1/extent, 1/extent ]
 
-    mat = add_material('Main', use_nodes=True, make_node_tree_empty=True)
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
-    output_node = nodes.new(type='ShaderNodeOutputMaterial')
-    principled_node = nodes.new(type='ShaderNodeBsdfPrincipled')
-
-    set_principled_node(principled_node=principled_node,
-        base_color=(0.6, 0.6, 0.6, 1.0),
-        metallic=0.2,
-        specular=0.5,
-        roughness=0.3)
-
     links.new(principled_node.outputs['BSDF'], output_node.inputs['Surface'])
     M.data.materials.append(mat)
-    M.rotation_euler = np.radians([ 90, 0, 0 ])
+    M.rotation_euler = rotations(basename)
 
     mesh = M.data
     values = [True] * len(mesh.polygons)
     mesh.polygons.foreach_set('use_smooth', values)
 
     camera = D.objects['Camera']
-    # camera.location = (1, 1, 1)
-    # camera.location = (0.551598, 1.27921, 2.60167)
-    # camera.rotation_euler = np.radians([ -28.2328, 6.5674, -5.14012 ])
     bpy.ops.view3d.camera_to_view_selected()
 
-    R.filepath = 'render-' + basename + '.png'
+    R.filepath = 'results/blender/' + basename + '.png'
     R.resolution_x = 1920
     R.resolution_y = 1080
     R.film_transparent = True

@@ -42,18 +42,18 @@ def make_cmap(complexes, points, LP, sample_rate):
     return cmap
 
 import trimesh
-import optext
+import ngfutil
 import shutil
 
-path = '/home/venki/projects/ngf/results/lucy/lod2.pt'
-directory = '/home/venki/projects/ngf/results/patched'
-
+path = '/home/venki/projects/ngf/results/torched/nefertiti-lod250.pt'
 rotation = np.radians([ 90, 0, -140 ])
 
-ngf = torch.load(path)
-ngf = load_ngf(ngf)
+ngf = NGF.from_pt(path)
 
-shutil.rmtree(directory)
+directory = '/home/venki/projects/ngf/results/viz/patched'
+if os.path.exists(directory):
+    shutil.rmtree(directory)
+
 os.makedirs(directory, exist_ok=True)
 
 uvs = ngf.sample_uniform(16)
@@ -62,8 +62,8 @@ V = ngf.eval(*uvs).detach()
 # Single mesh
 base = ngf.base(16).detach()
 cmap = make_cmap(ngf.complexes, ngf.points.detach(), base, 16)
-remap = optext.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], 16)
-I = optext.triangulate_shorted(V, ngf.complexes.shape[0], 16)
+remap = ngfutil.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], 16)
+I = ngfutil.triangulate_shorted(V, ngf.complexes.shape[0], 16)
 F = remap.remap_device(I)
 mesh = trimesh.Trimesh(vertices=V.cpu(), faces=F.cpu())
 print('\t', mesh)
@@ -102,7 +102,7 @@ def indices(sample_rate):
             triangles.append([b, d, c])
     return np.array(triangles)
 
-for rate in [ 4, 8, 16 ]:
+for rate in [ 2, 4, 8, 16 ]:
     dirate = os.path.join(directory, f'r{rate:02d}')
     os.makedirs(dirate, exist_ok=True)
 
@@ -156,9 +156,7 @@ principled_node = nodes.new(type='ShaderNodeBsdfPrincipled')
 
 set_principled_node(principled_node=principled_node,
     base_color=(0.6, 0.6, 0.6, 1.0),
-    metallic=0.2,
-    specular=0.5,
-    roughness=0.3)
+    metallic=0.2, roughness=0.3)
 
 links.new(principled_node.outputs['BSDF'], output_node.inputs['Surface'])
 M.data.materials.append(mat)
@@ -201,16 +199,13 @@ for i, base_color in enumerate(colors):
     output_node = nodes.new(type='ShaderNodeOutputMaterial')
     principled_node = nodes.new(type='ShaderNodeBsdfPrincipled')
     set_principled_node(principled_node=principled_node,
-        base_color=base_color,
-        metallic=0.2,
-        specular=0.5,
-        roughness=0.3)
+        base_color=base_color, metallic=0.2, roughness=0.3)
 
     links.new(principled_node.outputs['BSDF'], output_node.inputs['Surface'])
     all_materials.append(mat)
 
 output = io.StringIO()
-for dir in [ 'r16' ]:
+for dir in [ 'r02', 'r04', 'r08', 'r16' ]:
     prefix = os.path.join(directory, dir)
     print()
     paths = glob.glob(prefix + '/p*.stl')
@@ -244,19 +239,19 @@ for dir in [ 'r16' ]:
     bpy.ops.render.render(write_still=True)
     bpy.ops.object.delete()
     
-from figuregen.util import image
-import numpy as np
-import simpleimageio
-
-full = simpleimageio.read('render-full.png')
-patched = simpleimageio.read('render-r16.png')
-split = image.SplitImage([ full, patched ], vertical=True).get_image()
-
-print(type(split), split.shape)
-
-alpha = np.sum(full, axis=-1) > 1e-3
-print(alpha.shape, np.sum(split, axis=-1))
-split = np.concatenate((split, alpha[..., None]), axis=-1)
-print(type(split), split.shape)
-
-simpleimageio.write('split.png', split)
+# from figuregen.util import image
+# import numpy as np
+# import simpleimageio
+#
+# full = simpleimageio.read('render-full.png')
+# patched = simpleimageio.read('render-r16.png')
+# split = image.SplitImage([ full, patched ], vertical=True).get_image()
+#
+# print(type(split), split.shape)
+#
+# alpha = np.sum(full, axis=-1) > 1e-3
+# print(alpha.shape, np.sum(split, axis=-1))
+# split = np.concatenate((split, alpha[..., None]), axis=-1)
+# print(type(split), split.shape)
+#
+# simpleimageio.write('split.png', split)
