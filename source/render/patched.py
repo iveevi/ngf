@@ -10,18 +10,113 @@ import trimesh
 import ngfutil
 import shutil
 
-from contextlib import redirect_stdout
+# Blender
+C = bpy.context
+D = bpy.data
+R = bpy.context.scene.render
+W = bpy.context.scene.world
 
-file_directory = os.path.dirname(__file__)
-load_directory = os.path.join(file_directory, os.path.pardir)
-sys.path += [ file_directory, load_directory ]
+# from contextlib import redirect_stdout
 
-from nodes import *
+current = os.path.dirname(__file__)
+upper = os.path.join(current, os.path.pardir)
+sys.path += [current, upper]
+
+from common import *
 from ngf import NGF
 from util import make_cmap
+# from rotations import rotations
 
-path = '/home/venki/projects/ngf/results/torched/einstein-lod1000.pt'
+# Setting up
+# D.objects[1].select_set(True)
+# D.objects[2].select_set(True)
+bpy.ops.object.delete()
+
+node_tree = W.node_tree
+enode = W.node_tree.nodes.new('ShaderNodeTexEnvironment')
+enode.image = bpy.data.images.load('/home/venki/downloads/rural_crossroads_2k.hdr')
+node_tree.nodes['Background'].inputs['Strength'].default_value = 0.5
+node_tree.links.new(enode.outputs['Color'],
+                    node_tree.nodes['Background'].inputs['Color'])
+
+# Reference mesh
 rotation = np.radians([ 70, 0, 30 ])
+reference = 'meshes/einstein.stl'
+basename = os.path.basename(reference)
+basename = basename.split('.')[0]
+bpy.ops.import_mesh.stl(filepath=reference)
+
+M = D.objects[basename]
+
+# TODO: util function
+from mathutils import Vector
+
+vertices = M.data.vertices
+matrix = M.matrix_world
+vertices = [matrix @ v.co for v in vertices]
+
+vmin, vmax = 0, 0
+# vmax = Vector((-1e10, -1e10, -1e10))
+center = Vector((0, 0, 0))
+for v in vertices:
+    vmax = max(vmax, v.x)
+    vmax = max(vmax, v.y)
+    vmax = max(vmax, v.z)
+    
+    vmin = min(vmin, v.x)
+    vmin = min(vmin, v.y)
+    vmin = min(vmin, v.z)
+
+    center += v
+
+center /= len(vertices)
+scale = np.abs(vmax - vmin)/2
+print('center', center, 'scale', scale)
+
+for v in M.data.vertices:
+    v.co = (v.co - center)/scale
+
+# Add the material
+mat = add_material('Main', use_nodes=True, make_node_tree_empty=True)
+nodes = mat.node_tree.nodes
+links = mat.node_tree.links
+output_node = nodes.new(type='ShaderNodeOutputMaterial')
+principled_node = nodes.new(type='ShaderNodeBsdfPrincipled')
+set_principled_node(principled_node=principled_node,
+    base_color=(0.8, 0.6, 0.35, 1.0),
+    metallic=0.2, roughness=0.4)
+
+links.new(principled_node.outputs['BSDF'], output_node.inputs['Surface'])
+M.data.materials.append(mat)
+M.rotation_euler = rotation
+
+camera = D.objects['Camera']
+bpy.ops.view3d.camera_to_view_selected()
+
+R.filepath = 'render-reference.png'
+R.resolution_x = 1920
+R.resolution_y = 1080
+R.film_transparent = True
+
+R.engine = 'CYCLES'
+C.scene.cycles.samples = 256
+C.scene.cycles.use_adaptive_sampling = True
+C.scene.cycles.use_denoising = False
+
+C.scene.cycles.device = 'GPU'
+C.preferences.addons['cycles'].preferences.compute_device_type = 'CUDA'
+
+C.preferences.addons['cycles'].preferences.get_devices()
+for d in C.preferences.addons['cycles'].preferences.devices:
+    d['use'] = 1
+
+bpy.ops.render.render(write_still=True)
+
+M.select_set(True)
+bpy.ops.object.delete()
+
+# Neural geometry field
+path = '/home/venki/projects/ngf/results/torched/einstein-lod1000.pt'
 
 ngf = NGF.from_pt(path)
 
@@ -41,7 +136,6 @@ remap = ngfutil.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], 16)
 I = ngfutil.triangulate_shorted(V, ngf.complexes.shape[0], 16)
 F = remap.remap_device(I)
 mesh = trimesh.Trimesh(vertices=V.cpu(), faces=F.cpu())
-print('\t', mesh)
 mesh.export(os.path.join(directory, 'full.stl'))
 
 # For each resolution
@@ -98,22 +192,6 @@ for rate in [ 2, 4, 8, 16 ]:
         scene = trimesh.Scene(bank)
         scene.export(os.path.join(dirate, f'p{i}.stl'))
 
-# Rendering
-C = bpy.context
-D = bpy.data
-R = bpy.context.scene.render
-W = bpy.context.scene.world
-
-D.objects[1].select_set(True)
-D.objects[2].select_set(True)
-bpy.ops.object.delete()
-
-enode = W.node_tree.nodes.new('ShaderNodeTexEnvironment')
-enode.image = bpy.data.images.load('/home/venki/downloads/rural_crossroads_2k.hdr')
-
-node_tree = W.node_tree
-node_tree.links.new(enode.outputs['Color'], node_tree.nodes['Background'].inputs['Color'])
-
 from tqdm import tqdm
 
 path = os.path.join(directory, 'full.stl')
@@ -131,7 +209,7 @@ principled_node = nodes.new(type='ShaderNodeBsdfPrincipled')
 
 set_principled_node(principled_node=principled_node,
     base_color=(0.8, 0.6, 0.35, 1.0),
-    metallic=0.2, roughness=0.3)
+    metallic=0.2, roughness=0.4)
 
 links.new(principled_node.outputs['BSDF'], output_node.inputs['Surface'])
 M.data.materials.append(mat)
@@ -141,25 +219,25 @@ mesh = M.data
 values = [True] * len(mesh.polygons)
 mesh.polygons.foreach_set('use_smooth', values)
 
-camera = D.objects['Camera']
-bpy.ops.view3d.camera_to_view_selected()
+# camera = D.objects['Camera']
+# bpy.ops.view3d.camera_to_view_selected()
 
 R.filepath = 'render-full.png'
-R.resolution_x = 1920
-R.resolution_y = 1080
-R.film_transparent = True
-
-R.engine = 'CYCLES'
-C.scene.cycles.samples = 256
-C.scene.cycles.use_adaptive_sampling = True
-C.scene.cycles.use_denoising = False
-
-C.scene.cycles.device = 'GPU'
-C.preferences.addons['cycles'].preferences.compute_device_type = 'CUDA'
-
-C.preferences.addons['cycles'].preferences.get_devices()
-for d in C.preferences.addons['cycles'].preferences.devices:
-    d['use'] = 1
+# R.resolution_x = 1920
+# R.resolution_y = 1080
+# R.film_transparent = True
+#
+# R.engine = 'CYCLES'
+# C.scene.cycles.samples = 256
+# C.scene.cycles.use_adaptive_sampling = True
+# C.scene.cycles.use_denoising = False
+#
+# C.scene.cycles.device = 'GPU'
+# C.preferences.addons['cycles'].preferences.compute_device_type = 'CUDA'
+#
+# C.preferences.addons['cycles'].preferences.get_devices()
+# for d in C.preferences.addons['cycles'].preferences.devices:
+#     d['use'] = 1
 
 bpy.ops.render.render(write_still=True)
 
@@ -174,12 +252,12 @@ for i, base_color in enumerate(colors):
     output_node = nodes.new(type='ShaderNodeOutputMaterial')
     principled_node = nodes.new(type='ShaderNodeBsdfPrincipled')
     set_principled_node(principled_node=principled_node,
-        base_color=base_color, metallic=0.2, roughness=0.3)
+        base_color=base_color, metallic=0.2, roughness=0.4)
 
     links.new(principled_node.outputs['BSDF'], output_node.inputs['Surface'])
     all_materials.append(mat)
 
-output = io.StringIO()
+# output = io.StringIO()
 for dir in [ 'r02', 'r04', 'r08', 'r16' ]:
     prefix = os.path.join(directory, dir)
     print()
@@ -189,8 +267,9 @@ for dir in [ 'r02', 'r04', 'r08', 'r16' ]:
         basename = os.path.basename(path)
         basename = basename.split('.')[0]
 
-        with redirect_stdout(output):
-            bpy.ops.import_mesh.stl(filepath=path)
+        # with redirect_stdout(output):
+        #     bpy.ops.import_mesh.stl(filepath=path)
+        bpy.ops.import_mesh.stl(filepath=path)
 
         M = D.objects[basename]
 

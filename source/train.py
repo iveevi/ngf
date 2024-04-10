@@ -7,6 +7,7 @@ import ngfutil
 import argparse
 import pymeshlab
 import trimesh
+import multiprocessing
 
 from util import *
 from ngf import NGF
@@ -14,6 +15,16 @@ from render import Renderer
 
 
 class Trainer:
+    @staticmethod
+    def quadrangulate_surface(mesh: str, count: int, destination: str) -> None:
+        ms = pymeshlab.MeshSet()
+        ms.load_new_mesh(mesh)
+        ms.meshing_decimation_quadric_edge_collapse(targetfacenum=count)
+        ms.meshing_repair_non_manifold_edges()
+        ms.meshing_tri_to_quad_by_smart_triangle_pairing()
+        ms.save_current_mesh(destination)
+        logging.info(f'Quadrangulated mesh into {destination}')
+
     def __init__(self, mesh: str, lod: int, features: int = 20):
         # Properties
         self.path = os.path.abspath(mesh)
@@ -31,13 +42,24 @@ class Trainer:
         self.target, normalizer = load_mesh(mesh)
         logging.info(f'Loaded reference mesh {mesh}')
 
-        ms = pymeshlab.MeshSet()
-        ms.load_new_mesh(mesh)
-        ms.meshing_decimation_quadric_edge_collapse(targetfacenum=2 * lod)
-        ms.meshing_repair_non_manifold_edges()
-        ms.meshing_tri_to_quad_by_smart_triangle_pairing()
-        ms.save_current_mesh(self.exporter.partitioned())
-        logging.info(f'Quadrangulated mesh into {self.exporter.partitioned()}')
+        qargs = (mesh, 2 * lod, self.exporter.partitioned())
+        proc = multiprocessing.Process(target=Trainer.quadrangulate_surface, args=qargs)
+        proc.start()
+
+        # Wait for 30 seconds before termimating
+        proc.join(60)
+        if proc.is_alive():
+            logging.error('Quadrangulation running overtime')
+            proc.terminate()
+            exit()
+
+        # ms = pymeshlab.MeshSet()
+        # ms.load_new_mesh(mesh)
+        # ms.meshing_decimation_quadric_edge_collapse(targetfacenum=2 * lod)
+        # ms.meshing_repair_non_manifold_edges()
+        # ms.meshing_tri_to_quad_by_smart_triangle_pairing()
+        # ms.save_current_mesh(self.exporter.partitioned())
+        # logging.info(f'Quadrangulated mesh into {self.exporter.partitioned()}')
 
         self.renderer = Renderer()
         logging.info('Constructed renderer for optimization')
@@ -46,6 +68,16 @@ class Trainer:
         self.reference_views: torch.Tensor = None
 
         self.ngf = NGF.from_base(self.exporter.partitioned(), normalizer, features)
+        self.lift = lambda i: i
+
+        # TODO: spatial gradient
+        # def lift(i):
+        #     from kornia.filters import laplacian
+        #     lpi = laplacian(i, 3)
+        #     return torch.cat((i, lpi), dim=-1)
+        #
+        # self.lift = lift
+        # self.lift = lambda i: torch.cat((i, i.sin(), i.cos()), dim=-1)
 
     def precompute_reference_views(self):
         vertices = self.target.vertices
@@ -56,8 +88,7 @@ class Trainer:
 
         cache = []
         for view in tqdm.tqdm(self.views, ncols=50, leave=False):
-            reference_view = self.renderer.render(vertices, normals, faces, view.unsqueeze(0))
-            # reference_view = self.renderer.shaded(vertices, normals, faces, view.unsqueeze(0))
+            reference_view = self.lift(self.renderer.render(vertices, normals, faces, view.unsqueeze(0)))
             cache.append(reference_view)
 
         return list(torch.cat(cache).split(self.batch))
@@ -94,7 +125,6 @@ class Trainer:
         graph = ngfutil.Graph(remap.remap(quads), base.shape[0])
 
         batched_views = list(self.views.split(self.batch))
-        indices = np.arange(len(batched_views))
         length = average_edge_length(base, quads)
 
         for _ in tqdm.trange(100, ncols=50, leave=False):
@@ -106,25 +136,24 @@ class Trainer:
             uvs = self.ngf.sampler(rate)
             uniform_uvs = self.ngf.sample_uniform(rate)
 
-            np.random.shuffle(indices)
-            for i in indices:
-                batch_reference_views = self.reference_views[i]
-                batch_views = batched_views[i]
-
+            for batch_views, ref_views in zip(batched_views, self.reference_views):
                 vertices = self.ngf.eval(*uvs)
                 uniform_vertices = self.ngf.eval(*uniform_uvs)
 
                 faces = ngfutil.triangulate_shorted(vertices, self.ngf.complexes.shape[0], rate)
                 faces = remap.remap_device(faces)
-                normals = vertex_normals(vertices, faces)
+
+                # TODO: flatter normals
+                vertices, normals, faces = separate(vertices, faces)
+                # normals = vertex_normals(vertices, faces)
 
                 smoothed_vertices = graph.smooth(uniform_vertices, 1.0)
                 smoothed_vertices = remap.scatter_device(smoothed_vertices)
-                laplacian_loss = 1e-2 * rate * (uniform_vertices - smoothed_vertices).abs().mean()
+                laplacian_loss = (uniform_vertices - smoothed_vertices).abs().mean()
 
-                batch_source_views = self.renderer.render(vertices, normals, faces, batch_views)
+                batch_source_views = self.lift(self.renderer.render(vertices, normals, faces, batch_views))
 
-                render_loss = (batch_reference_views.cuda() - batch_source_views).abs().mean()
+                render_loss = (ref_views.cuda() - batch_source_views).abs().mean()
                 loss = render_loss + laplacian_loss
 
                 optimizer.zero_grad()
@@ -136,98 +165,6 @@ class Trainer:
 
             losses['render'].append(np.mean(batch_losses['render']))
             losses['laplacian'].append(np.mean(batch_losses['laplacian']))
-
-        logging.info(f'Optimized neural geometry field at resolution ({rate} x {rate})')
-
-        return losses
-
-    def optimize_resolution_indirectly(self, optimizer: torch.optim.Optimizer, rate: int) -> dict[str, list[float]]:
-        import numpy as np
-        import polyscope as ps
-
-        from largesteps.geometry import compute_matrix
-        from largesteps.optimize import AdamUniform
-        from largesteps.parameterize import from_differential, to_differential
-
-        losses = {
-            'render': [],
-            'laplacian': []
-        }
-
-        # TODO: how to do jittering?
-        base = self.ngf.base(rate).detach()
-        cmap = make_cmap(self.ngf.complexes, self.ngf.points.detach(), base, rate)
-        remap = ngfutil.generate_remapper(self.ngf.complexes.cpu(), cmap, base.shape[0], rate)
-
-        batched_views = list(self.views.split(self.batch))
-        indices = np.arange(len(batched_views))
-
-        lambda_, lr = {
-            4: (10, 1e-2),
-            8: (20, 5e-3),
-            16: (30, 1e-3)
-        }[rate]
-
-        with torch.no_grad():
-            uvs = self.ngf.sample_uniform(rate)
-            vertices = self.ngf.eval(*uvs)
-
-            faces = ngfutil.triangulate_shorted(vertices, self.ngf.complexes.shape[0], rate)
-            faces = remap.remap_device(faces)
-
-            M = compute_matrix(vertices, faces, lambda_=lambda_)
-            U = to_differential(M, vertices)
-            U.requires_grad = True
-
-        opt = AdamUniform([U], lr)
-
-        ps.init()
-        ps.register_surface_mesh('initial', vertices.detach().cpu().numpy(), faces.cpu().numpy())
-
-        for _ in tqdm.trange(200, ncols=50, leave=False):
-            np.random.shuffle(indices)
-
-            batch = []
-            for i in indices:
-                batch_reference_views = self.reference_views[i]
-                batch_views = batched_views[i]
-
-                vertices = from_differential(M, U, 'Cholesky')
-                normals = vertex_normals(vertices, faces)
-
-                batch_source_views = self.renderer.render(vertices, normals, faces, batch_views)
-                # batch_source_views = self.renderer.shaded(vertices, normals, faces, batch_views)
-
-                render_loss = (batch_reference_views.cuda() - batch_source_views).abs().mean()
-
-                opt.zero_grad()
-                render_loss.backward()
-                opt.step()
-
-                # losses['render'].append(render_loss.item())
-                batch.append(render_loss.item())
-
-            losses['render'].append(np.mean(batch))
-
-        true_vertices = remap.scatter_device(vertices.detach())
-
-        optimizer = torch.optim.Adam(self.ngf.parameters(), 1e-3)
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99999)
-
-        for _ in tqdm.trange(10000, ncols=50, leave=False):
-            vertices = self.ngf.eval(*uvs)
-            loss = (true_vertices - vertices).abs().mean()
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-
-            losses['laplacian'].append(loss.item())
-
-        ps.register_surface_mesh('final', true_vertices.cpu().numpy(), faces.cpu().numpy())
-        ps.register_surface_mesh('learned', vertices.detach().cpu().numpy(), faces.cpu().numpy())
-
-        ps.show()
 
         logging.info(f'Optimized neural geometry field at resolution ({rate} x {rate})')
 
@@ -247,12 +184,12 @@ class Trainer:
         self.reference_views = self.precompute_reference_views()
         logging.info('Cached reference views')
 
-        for rate in [4, 8, 16]:
+        for rate in [4, 8, 12, 16]:
             opt = torch.optim.Adam(self.ngf.parameters(), 1e-3)
             rate_losses = self.optimize_resolution(opt, rate)
             self.losses['render'] += rate_losses['render']
             self.losses['laplacian'] += rate_losses['laplacian']
-            self.display(rate)
+            # self.display(rate)
 
         logging.info('Finished training neural geometry field')
 

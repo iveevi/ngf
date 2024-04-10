@@ -17,7 +17,7 @@ compiled/
 data/
 db.json
 dist/
-evals/
+eval-*/
 experiments/*.png
 experiments/meshes
 experiments/results

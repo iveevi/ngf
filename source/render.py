@@ -8,15 +8,10 @@ import nvdiffrast.torch as dr
 class SphericalHarmonics:
     def __init__(self, envmap):
         h, w = envmap.shape[:2]
-
-        # Compute the grid of theta, phi values
         theta = (torch.linspace(0, np.pi, h, device='cuda')).repeat(w, 1).t()
-        phi = (torch.linspace(3*np.pi, np.pi, w, device='cuda')).repeat(h,1)
+        phi = (torch.linspace(3*np.pi, np.pi, w, device='cuda')).repeat(h, 1)
 
-        # Compute the value of sin(theta) once
         sin_theta = torch.sin(theta)
-        # Compute x,y,z
-        # This differs from the original formulation as here the up axis is Y
         x = sin_theta * torch.cos(phi)
         z = -sin_theta * torch.sin(phi)
         y = torch.cos(theta)
@@ -25,19 +20,8 @@ class SphericalHarmonics:
         Y_0 = 0.282095
 
         # The following are indexed so that using Y_n[-p]...Y_n[p] gives the proper polynomials
-        Y_1 = [
-            0.488603 * z,
-            0.488603 * x,
-            0.488603 * y
-            ]
-
-        Y_2 = [
-            0.315392 * (3*z.square() - 1),
-            1.092548 * x*z,
-            0.546274 * (x.square() - y.square()),
-            1.092548 * x*y,
-            1.092548 * y*z
-        ]
+        Y_1 = [0.488603 * z, 0.488603 * x, 0.488603 * y]
+        Y_2 = [0.315392 * (3 * z.square() - 1), 1.092548 * x * z, 0.546274 * (x.square() - y.square()), 1.092548 * x * y, 1.092548 * y * z]
 
         area = w * h
         radiance = envmap[..., :3]
@@ -71,6 +55,14 @@ class SphericalHarmonics:
         return l.t().view(n.shape)
 
 
+def cartesian_to_spherical(cart):
+    r = torch.sqrt(torch.sum(torch.pow(cart, 2), dim=-1))
+    r = torch.where(r == 0, torch.ones_like(r), r)
+    theta = torch.acos(cart[..., 2] / r)
+    phi = torch.atan2(cart[..., 1], cart[..., 0])
+    return torch.stack((theta, phi), dim=-1)
+
+
 class Renderer:
     ENVIRONMENT = os.path.join(os.path.dirname(__file__), os.path.pardir, 'media', 'environment.hdr')
 
@@ -89,8 +81,6 @@ class Renderer:
     def __init__(self,
                  width: int = 256,
                  height: int = 256,
-                 # width: int = 512,
-                 # height: int = 512,
                  fov: float = 45.0,
                  near:float = 0.1,
                  far: float = 1000.0) -> None:
@@ -115,25 +105,24 @@ class Renderer:
             for i in range(3):
                 rast, rast_db = peeler.rasterize_next_layer()
                 normals = dr.interpolate(n, rast, f)[0]
+                # normals = cartesian_to_spherical(normals)
+                # normals *= (rast[..., -1, None] > 0)
                 normals = dr.antialias(normals, rast, v_ndc, f)
                 layers += [normals]
         return torch.concat(layers, dim=-1)
 
-        # rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
-        # normals = dr.interpolate(n, rast, f)[0]
-        # return dr.antialias(normals, rast, v_ndc, f)
-
-    def shaded(self, v, n, f, view_mats):
+    def shaded(self, v, n, f, view_mats) -> torch.Tensor:
         mvps = self.proj @ view_mats
         v_hom = torch.nn.functional.pad(v, (0, 1), 'constant', 1.0)
         v_ndc = torch.matmul(v_hom, mvps.transpose(1, 2))
         rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
+        n = dr.interpolate(n, rast, f)[0]
         color = self.sh.eval(n).contiguous()
-        color = dr.interpolate(color, rast, f)[0]
+        color = (color/1e3).pow(1/2.2)
         return dr.antialias(color, rast, v_ndc, f)
 
     @torch.no_grad()
-    def interpolate(self, v, a, f, view_mats):
+    def interpolate(self, v, a, f, view_mats) -> torch.Tensor:
         mvps = self.proj @ view_mats
         v_hom = torch.nn.functional.pad(v, (0, 1), 'constant', 1.0)
         v_ndc = torch.matmul(v_hom, mvps.transpose(1, 2))

@@ -4,7 +4,7 @@ import numpy as np
 
 
 class SirenLayer(nn.Module):
-    def __init__(self, in_features, out_features, bias=True, is_first=False, omega_0=30):
+    def __init__(self, in_features, out_features, bias=True, is_first=False, omega_0=120):
         super().__init__()
         self.omega_0 = omega_0
         self.is_first = is_first

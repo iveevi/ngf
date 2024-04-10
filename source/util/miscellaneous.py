@@ -32,6 +32,29 @@ def uniform_laplacian(Q: torch.Tensor, N: int, lambda_: float = 10.0) -> torch.T
     return torch.sparse_coo_tensor([ix, iy], values, size=(N, N)).cuda()
 
 
+def uniform_smooth_laplacian(Q: torch.Tensor, N: int, lambda_: float = 10.0) -> torch.Tensor:
+    import itertools
+
+    graph = [[] for _ in range(N)]
+    for q in Q:
+        l = q.cpu().numpy().tolist()
+        for p in itertools.combinations(l, 2):
+            graph[p[0]].append(p[1])
+            graph[p[1]].append(p[0])
+
+    # print(graph)
+
+    values = []
+    ix, iy = [], []
+    for i, g in enumerate(graph):
+        for k in g:
+            values.append(1/len(g))
+            ix.append(i)
+            iy.append(k)
+
+    return torch.sparse_coo_tensor([ix, iy], values, size=(N, N)).cuda()
+
+
 def indices(sample_rate):
     triangles = []
     for i in range(sample_rate - 1):
@@ -169,6 +192,7 @@ def lookat(eye, center, up):
 
 def arrange_views(simplified: Mesh, cameras: int, radius: float = 1.0):
     seeds = list(torch.randint(0, simplified.faces.shape[0], (cameras,)).numpy())
+    # seeds = list(range(cameras))
     clusters = ngfutil.cluster_geometry(simplified.optg, seeds, 3, 'uniform')
 
     views = []

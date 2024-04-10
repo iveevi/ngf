@@ -8,6 +8,16 @@ import torch.nn as nn
 
 from typing import Callable
 
+from util import uniform_smooth_laplacian, SIREN
+
+
+class SIN(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return x.sin()
+
 
 # TODO: try a SIREN network...
 class MLP(nn.Module):
@@ -57,8 +67,8 @@ def spherical_to_cartesian(spherical):
 
 # Positional encoding
 # @torch.jit.script
-def positional_encoding(vector: torch.Tensor, extra: torch.Tensor, levels: int) -> torch.Tensor:
-    result = [extra]
+def positional_encoding(vector: torch.Tensor, extras: list[torch.Tensor], levels: int) -> torch.Tensor:
+    result = extras
     for i in range(levels):
         k = 2 ** i
         result += [torch.sin(k * vector), torch.cos(k * vector)]
@@ -81,6 +91,7 @@ class NGF:
         self.jittering = jittering
         self.normals = normals
 
+        # TODO: rff
         self.ffin = self.features.shape[-1] + 3 * 2 * self.fflevels
         self.mlp = MLP(self.ffin).cuda()
         if mlp is not None:
@@ -102,6 +113,8 @@ class NGF:
         logging.info(f'     FF levels:    {fflevels}')
         logging.info(f'     Jittering:    {jittering}')
         logging.info(f'     Normals:      {normals}')
+
+        self.L = uniform_smooth_laplacian(self.complexes, self.points.shape[0])
 
     # List of parameters
     def parameters(self):
@@ -129,7 +142,7 @@ class NGF:
     def eval(self, *uvs):
         lp = NGF.interpolate(self.points, self.complexes, *uvs)
         lf = NGF.interpolate(self.features, self.complexes, *uvs)
-        lin = positional_encoding(lp, lf, self.fflevels)
+        lin = positional_encoding(lp, [lf], self.fflevels)
         return lp + self.mlp(lin)
 
     def base(self, rate):

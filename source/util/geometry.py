@@ -1,5 +1,7 @@
 import torch
 
+from typing import Tuple
+
 
 def safe_acos(x):
     return torch.acos(x.clamp(min=-1, max=1))
@@ -50,3 +52,25 @@ def compute_vertex_normals(verts, faces, face_normals):
 def vertex_normals(vertices, faces):
     face_normals = compute_face_normals(vertices, faces)
     return compute_vertex_normals(vertices, faces, face_normals)
+
+
+def separate(vertices: torch.Tensor, faces: torch.Tensor) -> Tuple[torch.Tensor]:
+    # TODO: cache the faces based on vertex count
+    vertices = vertices[faces]
+    
+    v0 = vertices[..., 0, :]
+    v1 = vertices[..., 1, :]
+    v2 = vertices[..., 2, :]
+    
+    n = torch.cross(v1 - v0, v2 - v0, dim=-1)
+    l = n.norm(dim=-1)
+    l = torch.where(l == 0, torch.ones_like(l), l).unsqueeze(-1)
+    n = n / l
+    
+    normals = torch.cat((n, n, n), dim=-1)
+    vertices = vertices.reshape(-1, 3)
+    normals = normals.reshape(-1, 3)
+
+    faces = torch.arange(vertices.shape[0], device='cuda', dtype=torch.int32).reshape(-1, 3)
+
+    return vertices, normals, faces

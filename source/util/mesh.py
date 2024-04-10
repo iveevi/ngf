@@ -40,15 +40,11 @@ def load_mesh(path, normalizer=None) -> Tuple[Mesh, Callable[[torch.Tensor], tor
         f = torch.from_numpy(mesh.cells_dict['quad']).int().cuda()
 
     if normalizer is None:
-        min = v.min(0)[0]
-        max = v.max(0)[0]
-        center = (min + max) / 2
-        scale = (max - min).square().sum().sqrt() / 2.0
-        normalizer = lambda x: (x - center) / scale
-
-    # print('loaded mesh,', v.shape, f.shape)
-    # v, f = ngfutil.mesh_deduplicate(v.cpu(), f.cpu())
-    # print('loaded mesh,', v.shape, f.shape)
+        min, max = v.min(), v.max()
+        vmin, vmax = v.min(dim=0)[0], v.max(dim=0)[0]
+        scale = (max - min).abs()/2
+        center = (vmin + vmax)/2
+        normalizer = (lambda x: (x - center)/scale)
 
     v = normalizer(v)
     fn = compute_face_normals(v, f)
@@ -59,14 +55,3 @@ def load_mesh(path, normalizer=None) -> Tuple[Mesh, Callable[[torch.Tensor], tor
     else:
         optg = ngfutil.geometry(v.cpu(), f.cpu())
         return Mesh(v, f, vn, os.path.abspath(path), optg), normalizer
-
-
-# def simplify_mesh(mesh, faces, normalizer) -> Mesh:
-#     BINARY = os.path.join(os.path.dirname(__file__), '..', 'build', 'simplify')
-#
-#     reduction = faces/mesh.faces.shape[0]
-#     result = os.path.join(os.path.dirname(mesh.path), 'simplified.obj')
-#
-#     subprocess.run([BINARY, mesh.path, result, str(reduction)])
-#
-#     return load_mesh(result, normalizer)[0]
