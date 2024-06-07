@@ -16,3 +16,6 @@
 [submodule "thirdparty/implot"]
 	path = thirdparty/implot
 	url = https://github.com/epezent/implot
+[submodule "thirdparty/nvdiffmodeling"]
+	path = thirdparty/nvdiffmodeling
+	url = https://github.com/NVlabs/nvdiffmodeling.git

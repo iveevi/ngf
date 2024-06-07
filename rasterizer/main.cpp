@@ -508,9 +508,9 @@ int main(int argc, char *argv[])
 		ngf.feature_size = sizes[2];
 		ulog_assert(ngf.feature_size == 20, "testbed", "Expected an NGF with feature size of 20.\n");
 
-		fin.read(reinterpret_cast <char *> (patches.data()), patches.size() * sizeof(glm::ivec4));
 		fin.read(reinterpret_cast <char *> (vertices.data()), vertices.size() * sizeof(glm::vec3));
 		fin.read(reinterpret_cast <char *> (features.data()), features.size() * sizeof(float));
+		fin.read(reinterpret_cast <char *> (patches.data()), patches.size() * sizeof(glm::ivec4));
 
 		ulog_info("ngf io", "read patches data\n");
 

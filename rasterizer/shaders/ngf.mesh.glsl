@@ -48,7 +48,7 @@ layout (binding = 2) readonly buffer Patches
 //   feature size through PC or RD SSBO
 const uint ENCODING_LEVELS = 8;
 const uint FEATURE_SIZE    = 20;
-const uint FFIN            = FEATURE_SIZE + 3 * (2 * ENCODING_LEVELS + 1);
+const uint FFIN            = FEATURE_SIZE + 3 * 2 * ENCODING_LEVELS;
 
 // Neural network weights
 layout (binding = 3) readonly buffer Layers
@@ -130,9 +130,9 @@ vec3 eval(ivec4 complex, float u, float v)
 	for (uint i = 0; i < FEATURE_SIZE; i++)
 		ffin[k++] = feature[i];
 
-	ffin[k++] = vertex.x;
-	ffin[k++] = vertex.y;
-	ffin[k++] = vertex.z;
+	// ffin[k++] = vertex.x;
+	// ffin[k++] = vertex.y;
+	// ffin[k++] = vertex.z;
 	for (uint i = 0; i < ENCODING_LEVELS; i++) {
 		float p = pow(2, i);
 		vec3 sin_v = sin(p * vertex);
