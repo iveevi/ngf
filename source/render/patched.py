@@ -16,8 +16,6 @@ D = bpy.data
 R = bpy.context.scene.render
 W = bpy.context.scene.world
 
-# from contextlib import redirect_stdout
-
 current = os.path.dirname(__file__)
 upper = os.path.join(current, os.path.pardir)
 sys.path += [current, upper]
@@ -25,78 +23,23 @@ sys.path += [current, upper]
 from common import *
 from ngf import NGF
 from util import make_cmap
-# from rotations import rotations
 
 # Setting up
-# D.objects[1].select_set(True)
-# D.objects[2].select_set(True)
+D.objects[0].select_set(True)
+D.objects[1].select_set(True)
+D.objects[2].select_set(True)
 bpy.ops.object.delete()
 
 node_tree = W.node_tree
 enode = W.node_tree.nodes.new('ShaderNodeTexEnvironment')
-enode.image = bpy.data.images.load('/home/venki/downloads/rural_crossroads_2k.hdr')
-node_tree.nodes['Background'].inputs['Strength'].default_value = 0.5
-node_tree.links.new(enode.outputs['Color'],
-                    node_tree.nodes['Background'].inputs['Color'])
+enode.image = bpy.data.images.load('/home/venki/projects/ngf/media/environment.hdr')
+node_tree.links.new(enode.outputs['Color'], node_tree.nodes['Background'].inputs['Color'])
 
 # Reference mesh
-rotation = np.radians([ 70, 0, 30 ])
-reference = 'meshes/einstein.stl'
-basename = os.path.basename(reference)
-basename = basename.split('.')[0]
-bpy.ops.import_mesh.stl(filepath=reference)
+rotation = np.radians([ 90, 0, 0 ])
 
-M = D.objects[basename]
-
-# TODO: util function
-from mathutils import Vector
-
-vertices = M.data.vertices
-matrix = M.matrix_world
-vertices = [matrix @ v.co for v in vertices]
-
-vmin, vmax = 0, 0
-# vmax = Vector((-1e10, -1e10, -1e10))
-center = Vector((0, 0, 0))
-for v in vertices:
-    vmax = max(vmax, v.x)
-    vmax = max(vmax, v.y)
-    vmax = max(vmax, v.z)
-    
-    vmin = min(vmin, v.x)
-    vmin = min(vmin, v.y)
-    vmin = min(vmin, v.z)
-
-    center += v
-
-center /= len(vertices)
-scale = np.abs(vmax - vmin)/2
-print('center', center, 'scale', scale)
-
-for v in M.data.vertices:
-    v.co = (v.co - center)/scale
-
-# Add the material
-mat = add_material('Main', use_nodes=True, make_node_tree_empty=True)
-nodes = mat.node_tree.nodes
-links = mat.node_tree.links
-output_node = nodes.new(type='ShaderNodeOutputMaterial')
-principled_node = nodes.new(type='ShaderNodeBsdfPrincipled')
-set_principled_node(principled_node=principled_node,
-    base_color=(0.8, 0.6, 0.35, 1.0),
-    metallic=0.2, roughness=0.4)
-
-links.new(principled_node.outputs['BSDF'], output_node.inputs['Surface'])
-M.data.materials.append(mat)
-M.rotation_euler = rotation
-
-camera = D.objects['Camera']
-bpy.ops.view3d.camera_to_view_selected()
-
-R.filepath = 'render-reference.png'
 R.resolution_x = 1920
 R.resolution_y = 1080
-R.film_transparent = True
 
 R.engine = 'CYCLES'
 C.scene.cycles.samples = 256
@@ -104,208 +47,135 @@ C.scene.cycles.use_adaptive_sampling = True
 C.scene.cycles.use_denoising = False
 
 C.scene.cycles.device = 'GPU'
-C.preferences.addons['cycles'].preferences.compute_device_type = 'CUDA'
 
 C.preferences.addons['cycles'].preferences.get_devices()
 for d in C.preferences.addons['cycles'].preferences.devices:
     d['use'] = 1
 
-bpy.ops.render.render(write_still=True)
-
-M.select_set(True)
-bpy.ops.object.delete()
-
-# Neural geometry field
-path = '/home/venki/projects/ngf/results/torched/einstein-lod1000.pt'
-
-ngf = NGF.from_pt(path)
-
-directory = '/home/venki/projects/ngf/results/viz/patched'
-if os.path.exists(directory):
-    shutil.rmtree(directory)
-
-os.makedirs(directory, exist_ok=True)
-
-uvs = ngf.sample_uniform(16)
-V = ngf.eval(*uvs).detach()
-
-# Single mesh
-base = ngf.base(16).detach()
-cmap = make_cmap(ngf.complexes, ngf.points.detach(), base, 16)
-remap = ngfutil.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], 16)
-I = ngfutil.triangulate_shorted(V, ngf.complexes.shape[0], 16)
-F = remap.remap_device(I)
-mesh = trimesh.Trimesh(vertices=V.cpu(), faces=F.cpu())
-mesh.export(os.path.join(directory, 'full.stl'))
-
-# For each resolution
-from tqdm import tqdm
-
-colors = [
-	(0.880, 0.320, 0.320, 1),
-	(0.880, 0.530, 0.320, 1),
-	(0.880, 0.740, 0.320, 1),
-	(0.810, 0.880, 0.320, 1),
-	(0.600, 0.880, 0.320, 1),
-	(0.390, 0.880, 0.320, 1),
-	(0.320, 0.880, 0.460, 1),
-	(0.320, 0.880, 0.670, 1),
-	(0.320, 0.880, 0.880, 1),
-	(0.320, 0.670, 0.880, 1),
-	(0.320, 0.460, 0.880, 1),
-	(0.390, 0.320, 0.880, 1),
-	(0.600, 0.320, 0.880, 1),
-	(0.810, 0.320, 0.880, 1),
-	(0.880, 0.320, 0.740, 1),
-	(0.880, 0.320, 0.530, 1)
+# Neural geometry fields
+paths = [
+    '/home/venki/projects/ngf/results/torched/nefertiti-lod2500-f20.pt',
+    '/home/venki/projects/ngf/results/torched/armadillo-lod2500-f20.pt',
+    '/home/venki/projects/ngf/results/torched/buddha-lod2500-f20.pt',
+    '/home/venki/projects/ngf/results/torched/dragon-lod2500-f20.pt',
+    '/home/venki/projects/ngf/results/torched/lucy-lod2500-f20.pt',
+    '/home/venki/projects/ngf/results/torched/xyz-lod2500-f20.pt',
+    '/home/venki/projects/ngf/results/torched/ganesha-lod2500-f20.pt',
+    '/home/venki/projects/ngf/results/torched/metratron-lod2500-f20.pt',
+    '/home/venki/projects/ngf/results/torched/einstein-lod2500-f20.pt',
 ]
 
-def indices(sample_rate):
-    triangles = []
-    for i in range(sample_rate - 1):
-        for j in range(sample_rate - 1):
-            a = i * sample_rate + j
-            c = (i + 1) * sample_rate + j
-            b, d = a + 1, c + 1
-            triangles.append([a, b, c])
-            triangles.append([b, d, c])
-    return np.array(triangles)
+for path in paths:
+    name = os.path.basename(path)
+    name = name.split('.')[0]
 
-for rate in [ 2, 4, 8, 16 ]:
-    dirate = os.path.join(directory, f'r{rate:02d}')
-    os.makedirs(dirate, exist_ok=True)
+    ngf = NGF.from_pt(path)
 
-    uvs = ngf.sample_uniform(rate)
-    V = ngf.eval(*uvs).detach()
-    F = indices(rate)
+    directory = '/home/venki/projects/ngf/results/viz/patched'
+    if os.path.exists(directory):
+        shutil.rmtree(directory)
 
-    banks = [ [] for _ in colors ]
+    os.makedirs(directory, exist_ok=True)
 
-    V = V.reshape(-1, rate * rate, 3).cpu()
-    for i, Vi in tqdm(enumerate(V)):
-        mesh = trimesh.Trimesh(vertices=Vi, faces=F)
-        # mesh.export(os.path.join(dirate, f'p{i}.stl'))
-        ik = i % len(colors)
-        banks[ik].append(mesh)
+    # For each resolution
+    from tqdm import tqdm
 
-    for i, bank in enumerate(banks):
-        scene = trimesh.Scene(bank)
-        scene.export(os.path.join(dirate, f'p{i}.stl'))
+    colors = [
+        (0.880, 0.320, 0.320, 1),
+        (0.880, 0.530, 0.320, 1),
+        (0.880, 0.740, 0.320, 1),
+        (0.810, 0.880, 0.320, 1),
+        (0.600, 0.880, 0.320, 1),
+        (0.390, 0.880, 0.320, 1),
+        (0.320, 0.880, 0.460, 1),
+        (0.320, 0.880, 0.670, 1),
+        (0.320, 0.880, 0.880, 1),
+        (0.320, 0.670, 0.880, 1),
+        (0.320, 0.460, 0.880, 1),
+        (0.390, 0.320, 0.880, 1),
+        (0.600, 0.320, 0.880, 1),
+        (0.810, 0.320, 0.880, 1),
+        (0.880, 0.320, 0.740, 1),
+        (0.880, 0.320, 0.530, 1)
+    ]
 
-from tqdm import tqdm
+    def indices(sample_rate):
+        triangles = []
+        for i in range(sample_rate - 1):
+            for j in range(sample_rate - 1):
+                a = i * sample_rate + j
+                c = (i + 1) * sample_rate + j
+                b, d = a + 1, c + 1
+                triangles.append([a, b, c])
+                triangles.append([b, d, c])
+        return np.array(triangles)
 
-path = os.path.join(directory, 'full.stl')
-basename = os.path.basename(path)
-basename = basename.split('.')[0]
+    # for rate in [ 2, 4, 8, 16 ]:
+    for rate in [ 16 ]:
+        dirate = os.path.join(directory, f'r{rate:02d}')
+        os.makedirs(dirate, exist_ok=True)
 
-bpy.ops.import_mesh.stl(filepath=path)
-M = D.objects[basename]
+        uvs = ngf.sample_uniform(rate)
+        V = ngf.eval(*uvs).detach()
+        F = indices(rate)
 
-mat = add_material('Main', use_nodes=True, make_node_tree_empty=True)
-nodes = mat.node_tree.nodes
-links = mat.node_tree.links
-output_node = nodes.new(type='ShaderNodeOutputMaterial')
-principled_node = nodes.new(type='ShaderNodeBsdfPrincipled')
+        banks = [ [] for _ in colors ]
 
-set_principled_node(principled_node=principled_node,
-    base_color=(0.8, 0.6, 0.35, 1.0),
-    metallic=0.2, roughness=0.4)
+        V = V.reshape(-1, rate * rate, 3).cpu()
+        for i, Vi in tqdm(enumerate(V)):
+            mesh = trimesh.Trimesh(vertices=Vi, faces=F)
+            # mesh.export(os.path.join(dirate, f'p{i}.stl'))
+            ik = i % len(colors)
+            banks[ik].append(mesh)
 
-links.new(principled_node.outputs['BSDF'], output_node.inputs['Surface'])
-M.data.materials.append(mat)
-M.rotation_euler = rotation
+        for i, bank in enumerate(banks):
+            scene = trimesh.Scene(bank)
+            scene.export(os.path.join(dirate, f'p{i}.stl'))
 
-mesh = M.data
-values = [True] * len(mesh.polygons)
-mesh.polygons.foreach_set('use_smooth', values)
+    from tqdm import tqdm
 
-# camera = D.objects['Camera']
-# bpy.ops.view3d.camera_to_view_selected()
+    all_materials = []
+    for i, base_color in enumerate(colors):
+        mat = add_material(f'Material-{i}', use_nodes=True, make_node_tree_empty=True)
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+        output_node = nodes.new(type='ShaderNodeOutputMaterial')
+        principled_node = nodes.new(type='ShaderNodeBsdfPrincipled')
+        set_principled_node(principled_node=principled_node,
+            base_color=base_color, metallic=0, roughness=0.4)
 
-R.filepath = 'render-full.png'
-# R.resolution_x = 1920
-# R.resolution_y = 1080
-# R.film_transparent = True
-#
-# R.engine = 'CYCLES'
-# C.scene.cycles.samples = 256
-# C.scene.cycles.use_adaptive_sampling = True
-# C.scene.cycles.use_denoising = False
-#
-# C.scene.cycles.device = 'GPU'
-# C.preferences.addons['cycles'].preferences.compute_device_type = 'CUDA'
-#
-# C.preferences.addons['cycles'].preferences.get_devices()
-# for d in C.preferences.addons['cycles'].preferences.devices:
-#     d['use'] = 1
+        links.new(principled_node.outputs['BSDF'], output_node.inputs['Surface'])
+        all_materials.append(mat)
 
-bpy.ops.render.render(write_still=True)
+    for dir in [ 'r16' ]:
+        prefix = os.path.join(directory, dir)
+        paths = glob.glob(prefix + '/p*.stl')
 
-M.select_set(True)
-bpy.ops.object.delete()
+        for path in paths:
+            basename = os.path.basename(path)
+            basename = basename.split('.')[0]
 
-all_materials = []
-for i, base_color in enumerate(colors):
-    mat = add_material(f'Material-{i}', use_nodes=True, make_node_tree_empty=True)
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
-    output_node = nodes.new(type='ShaderNodeOutputMaterial')
-    principled_node = nodes.new(type='ShaderNodeBsdfPrincipled')
-    set_principled_node(principled_node=principled_node,
-        base_color=base_color, metallic=0.2, roughness=0.4)
+            bpy.ops.import_mesh.stl(filepath=path)
 
-    links.new(principled_node.outputs['BSDF'], output_node.inputs['Surface'])
-    all_materials.append(mat)
+            M = D.objects[basename]
 
-# output = io.StringIO()
-for dir in [ 'r02', 'r04', 'r08', 'r16' ]:
-    prefix = os.path.join(directory, dir)
-    print()
-    paths = glob.glob(prefix + '/p*.stl')
+            k = int(basename[1:])
+            ik = k % len(colors)
+            M.data.materials.append(all_materials[ik])
+            M.rotation_euler = rotation
+            # M.rotation_euler.z = '#frame/25'
 
-    for path in tqdm(paths):
-        basename = os.path.basename(path)
-        basename = basename.split('.')[0]
+            mesh = M.data
+            values = [True] * len(mesh.polygons)
+            mesh.polygons.foreach_set('use_smooth', values)
 
-        # with redirect_stdout(output):
-        #     bpy.ops.import_mesh.stl(filepath=path)
-        bpy.ops.import_mesh.stl(filepath=path)
+        # Join all the patches into one
+        patches = [obj for obj in bpy.context.scene.objects if obj.name.startswith('p')]
 
-        M = D.objects[basename]
+        bpy.context.view_layer.objects.active = patches[0]
+        for obj in patches:
+            obj.select_set(True)
 
-        k = int(basename[1:])
-        ik = k % len(colors)
-        M.data.materials.append(all_materials[ik])
-        M.rotation_euler = rotation
+        bpy.ops.object.join()
 
-        mesh = M.data
-        values = [True] * len(mesh.polygons)
-        mesh.polygons.foreach_set('use_smooth', values)
-
-    bpy.ops.object.select_all(action='DESELECT')
-    for o in D.objects:
-        if o.type == 'MESH':
-            o.select_set(True)
-        else:
-            o.select_set(False)
-
-    R.filepath = f'render-{dir}.png'
-    bpy.ops.render.render(write_still=True)
-    bpy.ops.object.delete()
-    
-# from figuregen.util import image
-# import numpy as np
-# import simpleimageio
-#
-# full = simpleimageio.read('render-full.png')
-# patched = simpleimageio.read('render-r16.png')
-# split = image.SplitImage([ full, patched ], vertical=True).get_image()
-#
-# print(type(split), split.shape)
-#
-# alpha = np.sum(full, axis=-1) > 1e-3
-# print(alpha.shape, np.sum(split, axis=-1))
-# split = np.concatenate((split, alpha[..., None]), axis=-1)
-# print(type(split), split.shape)
-#
-# simpleimageio.write('split.png', split)
+        bpy.context.active_object.name = name

@@ -19,17 +19,17 @@ class Trainer:
     def quadrangulate_surface(mesh: str, count: int, destination: str) -> None:
         ms = pymeshlab.MeshSet()
         ms.load_new_mesh(mesh)
-        ms.meshing_decimation_quadric_edge_collapse(targetfacenum=count)
+        ms.meshing_decimation_quadric_edge_collapse(targetfacenum=count, qualitythr=1.0)
         ms.meshing_repair_non_manifold_edges()
         ms.meshing_tri_to_quad_by_smart_triangle_pairing()
         ms.save_current_mesh(destination)
         logging.info(f'Quadrangulated mesh into {destination}')
 
-    def __init__(self, mesh: str, lod: int, features: int = 20):
+    def __init__(self, mesh: str, lod: int, features: int, batch: int):
         # Properties
         self.path = os.path.abspath(mesh)
         self.cameras = 200
-        self.batch = 10
+        self.batch = batch
         self.losses = {}
 
         logging.info('Launching training process with configuration:')
@@ -37,7 +37,7 @@ class Trainer:
         logging.info(f'    Camera count:   {self.cameras}')
         logging.info(f'    Batch size:     {self.batch}')
 
-        self.exporter = Exporter(mesh, lod)
+        self.exporter = Exporter(mesh, lod, features)
 
         self.target, normalizer = load_mesh(mesh)
         logging.info(f'Loaded reference mesh {mesh}')
@@ -46,38 +46,20 @@ class Trainer:
         proc = multiprocessing.Process(target=Trainer.quadrangulate_surface, args=qargs)
         proc.start()
 
-        # Wait for 30 seconds before termimating
+        # Wait for minute before termimating
         proc.join(60)
         if proc.is_alive():
             logging.error('Quadrangulation running overtime')
             proc.terminate()
             exit()
 
-        # ms = pymeshlab.MeshSet()
-        # ms.load_new_mesh(mesh)
-        # ms.meshing_decimation_quadric_edge_collapse(targetfacenum=2 * lod)
-        # ms.meshing_repair_non_manifold_edges()
-        # ms.meshing_tri_to_quad_by_smart_triangle_pairing()
-        # ms.save_current_mesh(self.exporter.partitioned())
-        # logging.info(f'Quadrangulated mesh into {self.exporter.partitioned()}')
-
         self.renderer = Renderer()
         logging.info('Constructed renderer for optimization')
 
-        self.views: torch.Tensor = None
-        self.reference_views: torch.Tensor = None
+        self.views = None
+        self.reference_views = None
 
         self.ngf = NGF.from_base(self.exporter.partitioned(), normalizer, features)
-        self.lift = lambda i: i
-
-        # TODO: spatial gradient
-        # def lift(i):
-        #     from kornia.filters import laplacian
-        #     lpi = laplacian(i, 3)
-        #     return torch.cat((i, lpi), dim=-1)
-        #
-        # self.lift = lift
-        # self.lift = lambda i: torch.cat((i, i.sin(), i.cos()), dim=-1)
 
     def precompute_reference_views(self):
         vertices = self.target.vertices
@@ -88,7 +70,7 @@ class Trainer:
 
         cache = []
         for view in tqdm.tqdm(self.views, ncols=50, leave=False):
-            reference_view = self.lift(self.renderer.render(vertices, normals, faces, view.unsqueeze(0)))
+            reference_view = self.renderer.render(vertices, normals, faces, view.unsqueeze(0))
             cache.append(reference_view)
 
         return list(torch.cat(cache).split(self.batch))
@@ -151,7 +133,7 @@ class Trainer:
                 smoothed_vertices = remap.scatter_device(smoothed_vertices)
                 laplacian_loss = (uniform_vertices - smoothed_vertices).abs().mean()
 
-                batch_source_views = self.lift(self.renderer.render(vertices, normals, faces, batch_views))
+                batch_source_views = self.renderer.render(vertices, normals, faces, batch_views)
 
                 render_loss = (ref_views.cuda() - batch_source_views).abs().mean()
                 loss = render_loss + laplacian_loss
@@ -205,7 +187,7 @@ class Trainer:
         logging.info('Exporting neural geometry field as binary')
 
         # Plot results
-        fig, axs = plt.subplots(1, 2, layout='constrained')
+        _, axs = plt.subplots(1, 2, layout='constrained')
 
         axs[0].plot(self.losses['render'], label='Render')
         axs[0].legend()
@@ -272,11 +254,18 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--mesh', type=str)
     parser.add_argument('--lod', type=int, default=2000)
+    parser.add_argument('--features', type=int, default=20)
     parser.add_argument('--display', type=bool, default=True)
+    parser.add_argument('--batch', type=int, default=10)
+    parser.add_argument('--fixed-seed', action='store_true', default=False)
 
     args = parser.parse_args()
+    print(args)
 
-    trainer = Trainer(args.mesh, args.lod)
+    if args.fixed_seed:
+        torch.manual_seed(0)
+
+    trainer = Trainer(args.mesh, args.lod, args.features, args.batch)
     trainer.run()
     trainer.export()
 

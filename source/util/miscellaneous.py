@@ -192,7 +192,6 @@ def lookat(eye, center, up):
 
 def arrange_views(simplified: Mesh, cameras: int, radius: float = 1.0):
     seeds = list(torch.randint(0, simplified.faces.shape[0], (cameras,)).numpy())
-    # seeds = list(range(cameras))
     clusters = ngfutil.cluster_geometry(simplified.optg, seeds, 3, 'uniform')
 
     views = []

@@ -14,16 +14,16 @@ R = bpy.context.scene.render
 W = bpy.context.scene.world
 
 D.objects[1].select_set(True)
-# D.objects[2].select_set(True)
+D.objects[2].select_set(True)
 bpy.ops.object.delete()
 
 # TODO: sort to use the same view
 
-# enode = W.node_tree.nodes.new('ShaderNodeTexEnvironment')
-# enode.image = bpy.data.images.load('/home/venki/downloads/rural_crossroads_2k.hdr')
-# node_tree = W.node_tree
-# # node_tree.nodes['Background'].inputs['Strength'].default_value = 0.5
-# node_tree.links.new(enode.outputs['Color'], node_tree.nodes['Background'].inputs['Color'])
+enode = W.node_tree.nodes.new('ShaderNodeTexEnvironment')
+enode.image = bpy.data.images.load('/home/venki/downloads/rural_crossroads_2k.hdr')
+node_tree = W.node_tree
+node_tree.nodes['Background'].inputs['Strength'].default_value = 0.5
+node_tree.links.new(enode.outputs['Color'], node_tree.nodes['Background'].inputs['Color'])
 
 # geometry_node = W.node_tree.nodes.new('ShaderNodeNewGeometry')
 # rotation_node = W.node_tree.nodes.new('ShaderNodeVectorRotate')
@@ -38,8 +38,8 @@ links = mat.node_tree.links
 output_node = nodes.new(type='ShaderNodeOutputMaterial')
 principled_node = nodes.new(type='ShaderNodeBsdfPrincipled')
 set_principled_node(principled_node=principled_node,
-    base_color=(0.8, 0.6, 0.35, 1.0),
-    metallic=0.2, roughness=0.3)
+    base_color=(0.5, 0.4, 0.45, 1.0),
+    metallic=0.7, roughness=0.2, coat_ior=1.0, coat_roughness=0.001)
 
 directory = sys.argv[-1]
 model = sys.argv[-2]
@@ -90,15 +90,16 @@ for path in glob.glob(directory + '/*.stl'):
     links.new(principled_node.outputs['BSDF'], output_node.inputs['Surface'])
     M.data.materials.append(mat)
     M.rotation_euler = rotations(model)
+    # M.rotation_euler = rotations(basename)
 
     # mesh = M.data
     # values = [True] * len(mesh.polygons)
     # mesh.polygons.foreach_set('use_smooth', values)
 
-    if not init:
-        camera = D.objects['Camera']
-        bpy.ops.view3d.camera_to_view_selected()
-        init = True
+    # if not init:
+    camera = D.objects['Camera']
+    bpy.ops.view3d.camera_to_view_selected()
+    # init = True
 
     # R.filepath = 'results/blender/' + basename + '.png'
     R.filepath = os.path.join(destination, basename + '.png')

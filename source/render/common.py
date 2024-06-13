@@ -25,11 +25,17 @@ def set_principled_node(principled_node: bpy.types.Node,
                         base_color: Tuple[float, float, float, float] = (0.6, 0.6, 0.6, 1.0),
                         metallic: float = 0.0,
                         roughness: float = 0.5,
-                        ior: float = 1.45,
-                        transmission: float = 0.0) -> None:
+                        coat: float = 1.0,
+                        coat_roughness: float = 0.075,
+                        coat_ior: float = 1.7) -> None:
     principled_node.inputs['Base Color'].default_value = base_color
     principled_node.inputs['Metallic'].default_value = metallic
     principled_node.inputs['Roughness'].default_value = roughness
+    principled_node.inputs['Coat Weight'].default_value = coat
+    principled_node.inputs['Coat Roughness'].default_value = coat_roughness
+    principled_node.inputs['Coat IOR'].default_value = coat_ior
+    # principled_node.inputs['Subsurface Weight'].default_value = 1
+    # principled_node.inputs['Subsurface Scale'].default_value = 0.1
 
 def normalize(M: bpy.types.Mesh) -> None:
     vertices = M.data.vertices

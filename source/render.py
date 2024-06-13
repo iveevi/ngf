@@ -117,8 +117,11 @@ class Renderer:
         v_ndc = torch.matmul(v_hom, mvps.transpose(1, 2))
         rast = dr.rasterize(self.ctx, v_ndc, f, self.res)[0]
         n = dr.interpolate(n, rast, f)[0]
-        color = self.sh.eval(n).contiguous()
+        color = self.sh.eval(n).contiguous().abs()
+        assert not color.isnan().any()
+        assert not (color < 0).any()
         color = (color/1e3).pow(1/2.2)
+        assert not color.isnan().any()
         return dr.antialias(color, rast, v_ndc, f)
 
     @torch.no_grad()

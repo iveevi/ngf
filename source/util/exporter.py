@@ -20,27 +20,27 @@ class Exporter:
         os.makedirs(Exporter.stl, exist_ok=True)
         os.makedirs(Exporter.meta, exist_ok=True)
 
-    def __init__(self, mesh: str, lod: int):
+    def __init__(self, mesh: str, lod: int, features: int):
         Exporter.dirfill()
 
         self.prefix = os.path.basename(mesh)
         self.prefix = self.prefix.split('.')[0]
-        self.lod = lod
+        self.basename = self.prefix + f'-lod{lod}-f{features}'
 
     def partitioned(self):
-        return os.path.join(Exporter.quadrangulated, self.prefix + f'-lod{self.lod}.obj')
+        return os.path.join(Exporter.quadrangulated, self.basename + '.obj')
 
     def pytorch(self):
-        return os.path.join(Exporter.torched, self.prefix + f'-lod{self.lod}.pt')
+        return os.path.join(Exporter.torched, self.basename + '.pt')
 
     def binary(self):
-        return os.path.join(Exporter.binaries, self.prefix + f'-lod{self.lod}.bin')
+        return os.path.join(Exporter.binaries, self.basename + '.bin')
 
     def plot(self):
-        return os.path.join(Exporter.loss, self.prefix + f'-lod{self.lod}.pdf')
+        return os.path.join(Exporter.loss, self.basename + '.pdf')
 
     def mesh(self):
-        return os.path.join(Exporter.stl, self.prefix + f'-lod{self.lod}.stl')
+        return os.path.join(Exporter.stl, self.basename + '.stl')
 
     def metadata(self):
-        return os.path.join(Exporter.meta, self.prefix + f'-lod{self.lod}.json')
+        return os.path.join(Exporter.meta, self.basename + '.json')

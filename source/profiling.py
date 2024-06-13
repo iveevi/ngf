@@ -8,12 +8,12 @@ from util import *
 
 
 if __name__ == '__main__':
-    reference_path = 'meshes/nefertiti/target.obj'
-    base_path = 'meshes/nefertiti/source-lod1.obj'
+    reference_path = 'meshes/xyz.stl'
+    base_path = 'results/quadrangulated/xyz-lod1000-f20.obj'
 
     target, normalizer = load_mesh(reference_path)
     renderer = Renderer()
-    views = arrange_views(target, 20)
+    views = arrange_views(target, 20)[0]
     ngf = NGF.from_base(base_path, normalizer, 16)
 
     # Get the reference views
@@ -23,7 +23,7 @@ if __name__ == '__main__':
     faces = faces.int().cuda().reshape(-1, 3)
     normals = vertex_normals(vertices, faces)
 
-    reference_views = renderer.render_attributes(vertices, normals, faces, views)
+    reference_views = renderer.interpolate(*separate(vertices, faces), views)
 
     # Laplacian setup
     rate = 16
@@ -31,7 +31,7 @@ if __name__ == '__main__':
     cmap = make_cmap(ngf.complexes, ngf.points.detach(), base, rate)
     remap = ngfutil.generate_remapper(ngf.complexes.cpu(), cmap, base.shape[0], rate)
     quads = torch.from_numpy(quadify(ngf.complexes.shape[0], rate)).int()
-    graph = ngfutil.Graph(remap.remap(quads))
+    graph = ngfutil.Graph(remap.remap(quads), base.shape[0])
 
     # Run profiler on an iteration
     optimizer = torch.optim.Adam(ngf.parameters(), 1e-3)
@@ -42,9 +42,9 @@ if __name__ == '__main__':
 
         faces = ngfutil.triangulate_shorted(vertices, ngf.complexes.shape[0], rate)
         faces = remap.remap_device(faces)
-        normals = vertex_normals(vertices, faces)
+        # normals = vertex_normals(vertices, faces)
 
-        batch_source_views = renderer.render_attributes(vertices, normals, faces, views)
+        batch_source_views = renderer.interpolate(*separate(vertices, faces), views)
 
         laplacian_loss = (vertices - smoothed_vertices).abs().mean()
         render_loss = (reference_views.cuda() - batch_source_views).abs().mean()
