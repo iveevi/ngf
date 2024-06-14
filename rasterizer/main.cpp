@@ -453,19 +453,21 @@ const Pipeline &activate_pipeline(const Engine &engine, const vk::CommandBuffer 
 
 int main(int argc, char *argv[])
 {
-	if (argc < 3) {
-		ulog_error("testbed", "Usage: testbed <reference mesh> <ngf>\n");
+	if (argc < 2) {
+		// ulog_error("testbed", "Usage: testbed <reference mesh> <ngf>\n");
+		ulog_error("testbed", "Usage: testbed <ngf>\n");
 		return EXIT_FAILURE;
 	}
 
-	std::string path_ref = argv[1];
-	std::string path_ngf = argv[2];
+	// std::string path_ref = argv[1];
+	// std::string path_ngf = argv[2];
+	std::string path_ngf = argv[1];
 
-	Mesh reference = *Mesh::load(path_ref).begin();
-	reference = Mesh::normalize(reference);
-	reference.normals = smooth_normals(reference);
-
-	ulog_info("testbed", "loaded mesh with %d vertices and %d faces\n", reference.vertices.size(), reference.triangles.size());
+	// Mesh reference = *Mesh::load(path_ref).begin();
+	// reference = Mesh::normalize(reference);
+	// reference.normals = smooth_normals(reference);
+	//
+	// ulog_info("testbed", "loaded mesh with %d vertices and %d faces\n", reference.vertices.size(), reference.triangles.size());
 
 	// Load the neural geometry field
 	constexpr int32_t LAYERS = 4;
@@ -601,7 +603,7 @@ int main(int argc, char *argv[])
 	Engine engine = Engine::from(phdev, extensions);
 
 	engine.camera_transform.position = glm::vec3 { 0, 0, -2.3 };
-	VulkanMesh vk_ref = VulkanMesh::from(engine, reference);
+	// VulkanMesh vk_ref = VulkanMesh::from(engine, reference);
 	VulkanMesh vk_ngf = VulkanMesh::from(engine, ngf_base);
 
 	// Upload NGF as Vulkan buffers

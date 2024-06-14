@@ -252,12 +252,12 @@ if __name__ == '__main__':
                         datefmt='%H:%M:%S')
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mesh', type=str)
-    parser.add_argument('--lod', type=int, default=2000)
-    parser.add_argument('--features', type=int, default=20)
-    parser.add_argument('--display', type=bool, default=True)
-    parser.add_argument('--batch', type=int, default=10)
-    parser.add_argument('--fixed-seed', action='store_true', default=False)
+    parser.add_argument('--mesh', type=str, help='Target mesh')
+    parser.add_argument('--lod', type=int, default=2000, help='Number of patches to partition')
+    parser.add_argument('--features', type=int, default=20, help='Feature vector size')
+    parser.add_argument('--display', type=bool, default=True, help='Display the result after training')
+    parser.add_argument('--batch', type=int, default=10, help='Batch size for training')
+    parser.add_argument('--fixed-seed', action='store_true', default=False, help='Fixed random seed (for debugging)')
 
     args = parser.parse_args()
     print(args)

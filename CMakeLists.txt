@@ -1,22 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(nsc CXX CUDA)
+project(ngf CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR})
 
-# Mxx CUDA optimization
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --use_fast_math -lineinfo -Xptxas -O3")
-
 add_definitions("-DSHADERS_DIRECTORY=\"${CMAKE_SOURCE_DIR}/rasterizer/shaders\"")
 
-# Set architecture to 8.0+
-set(CMAKE_CUDA_ARCHITECTURES 80)
-
-find_package(OpenMP REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(glslang REQUIRED)
-find_package(OpenCV REQUIRED)
 
 add_library(imgui OBJECT
 	thirdparty/imgui/imgui.cpp
@@ -42,15 +34,7 @@ target_link_libraries(testbed
 	SPIRV
 	glslang::glslang
 	glslang::glslang-default-resource-limits
-	OpenMP::OpenMP_CXX
-	Vulkan::Vulkan
-	avcodec
-	swscale
-	avdevice
-	avformat
-	avfilter
-	avutil
-	${OpenCV_LIBS})
+	Vulkan::Vulkan)
 
 include_directories(.
 	thirdparty
