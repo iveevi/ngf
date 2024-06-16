@@ -7,6 +7,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/quaternion.hpp>
 
+#include "microlog.h"
+
 struct Transform {
 	glm::vec3 position = glm::vec3(0.0f);
 	glm::vec3 rotation = glm::vec3(0.0f);
@@ -33,5 +35,3 @@ struct Camera {
 	glm::mat4 perspective_matrix() const;
 	static glm::mat4 view_matrix(const Transform &);
 };
-
-// std::string readfile(const std::string &path);

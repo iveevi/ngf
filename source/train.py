@@ -260,7 +260,6 @@ if __name__ == '__main__':
     parser.add_argument('--fixed-seed', action='store_true', default=False, help='Fixed random seed (for debugging)')
 
     args = parser.parse_args()
-    print(args)
 
     if args.fixed_seed:
         torch.manual_seed(0)

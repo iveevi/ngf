@@ -1,8 +1,7 @@
 #include <fstream>
 #include <sstream>
 
-#include "util.hpp"
-#include "microlog.h"
+#include "common.hpp"
 
 // Transform
 void Transform::from(const glm::vec3 &position_, const glm::vec3 &rotation_, const glm::vec3 &scale_)
@@ -73,16 +72,4 @@ glm::mat4 Camera::view_matrix(const Transform &transform)
 		transform.position + forward,
 		up
 	);
-}
-
-// Functions
-std::string readfile(const std::string &path)
-{
-	std::ifstream file(path);
-	ulog_assert(file.is_open(), "Could not open file: %s", path.c_str());
-
-	std::stringstream buffer;
-	buffer << file.rdbuf();
-
-	return buffer.str();
 }

@@ -16,48 +16,34 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb/stb_image_write.h>
 
-#include "mesh.hpp"
-#include "microlog.h"
-#include "util.hpp"
+#include "common.hpp"
 
 struct Engine;
 
-struct Vertex {
-	glm::vec3 position;
-	glm::vec3 normal;
-};
-
-struct BasePushConstants {
+struct MVP {
 	glm::mat4 model;
 	glm::mat4 view;
 	glm::mat4 proj;
 };
 
-struct alignas(16) NGFPushConstants {
+struct alignas(16) TaskData {
 	glm::mat4 model;
 	glm::mat4 view;
 	glm::mat4 proj;
 
 	glm::vec2 extent;
+	int resolution;
 	float time;
 };
 
-struct alignas(16) ShadingPushConstants {
+struct alignas(16) ShadingData {
 	alignas(16) glm::vec3 viewing;
 	alignas(16) glm::vec3 color;
-	uint32_t mode;
-};
-
-struct VulkanMesh {
-	littlevk::Buffer vertices;
-	littlevk::Buffer triangles;
-	size_t indices;
-
-	static VulkanMesh from(const Engine &, const Mesh &);
+	int mode;
 };
 
 struct MouseInfo {
-	bool drag = false;
+	bool left_drag = false;
 	bool voided = true;
 	float last_x = 0.0f;
 	float last_y = 0.0f;
@@ -73,7 +59,7 @@ void button_callback(GLFWwindow *window, int button, int action, int mods)
 		return;
 
 	if (button == GLFW_MOUSE_BUTTON_LEFT) {
-		mouse.drag = (action == GLFW_PRESS);
+		mouse.left_drag = (action == GLFW_PRESS);
 		if (action == GLFW_RELEASE)
 			mouse.voided = true;
 	}
@@ -106,7 +92,7 @@ void cursor_callback(GLFWwindow *window, double xpos, double ypos)
 	xoffset *= sensitivity;
 	yoffset *= sensitivity;
 
-	if (mouse.drag) {
+	if (mouse.left_drag) {
 		camera_transform->rotation.x += yoffset;
 		camera_transform->rotation.y -= xoffset;
 
@@ -116,6 +102,13 @@ void cursor_callback(GLFWwindow *window, double xpos, double ypos)
 			camera_transform->rotation.x = -89.0f;
 	}
 }
+
+constexpr std::array <vk::DescriptorSetLayoutBinding, 4> meshlet_dslbs {
+	vk::DescriptorSetLayoutBinding { 0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT },
+	vk::DescriptorSetLayoutBinding { 1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT },
+	vk::DescriptorSetLayoutBinding { 2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT },
+	vk::DescriptorSetLayoutBinding { 3, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT },
+};
 
 struct Engine : littlevk::Skeleton {
 	vk::PhysicalDevice phdev;
@@ -142,7 +135,7 @@ struct Engine : littlevk::Skeleton {
 	Camera camera;
 	Transform camera_transform;
 
-	BasePushConstants push_constants;
+	MVP mvp;
 
 	// Other frame information
 	float last_time;
@@ -301,24 +294,17 @@ struct Engine : littlevk::Skeleton {
 
 		using standalone::readfile;
 
-		constexpr std::array <vk::DescriptorSetLayoutBinding, 4> meshlet_dslbs {
-			vk::DescriptorSetLayoutBinding { 0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT },
-			vk::DescriptorSetLayoutBinding { 1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT },
-			vk::DescriptorSetLayoutBinding { 2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT },
-			vk::DescriptorSetLayoutBinding { 3, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT },
-		};
-
 		auto bundle = littlevk::ShaderStageBundle(engine.device, engine.dal)
-			.file(SHADERS_DIRECTORY "/ngf.mesh.glsl", vk::ShaderStageFlagBits::eMeshEXT)
-			.file(SHADERS_DIRECTORY "/ngf.task.glsl", vk::ShaderStageFlagBits::eTaskEXT)
-			.file(SHADERS_DIRECTORY "/ngf.frag.glsl", vk::ShaderStageFlagBits::eFragment);
+			.file(SHADERS_DIRECTORY "/ngf.mesh", vk::ShaderStageFlagBits::eMeshEXT)
+			.file(SHADERS_DIRECTORY "/ngf.task", vk::ShaderStageFlagBits::eTaskEXT)
+			.file(SHADERS_DIRECTORY "/ngf.frag", vk::ShaderStageFlagBits::eFragment);
 
 		engine.meshlet = littlevk::PipelineAssembler <littlevk::eGraphics> (engine.device, engine.window, engine.dal)
 			.with_render_pass(engine.render_pass, 0)
 			.with_shader_bundle(bundle)
 			.with_dsl_bindings(meshlet_dslbs)
-			.with_push_constant <NGFPushConstants> (vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT)
-			.with_push_constant <ShadingPushConstants> (vk::ShaderStageFlagBits::eFragment, sizeof(NGFPushConstants));
+			.with_push_constant <TaskData> (vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT)
+			.with_push_constant <ShadingData> (vk::ShaderStageFlagBits::eFragment, sizeof(TaskData));
 
 		// Other configurations
 		engine.camera.from(engine.aspect_ratio());
@@ -339,31 +325,6 @@ struct Engine : littlevk::Skeleton {
 static bool valid_window(const Engine &engine)
 {
 	return glfwWindowShouldClose(engine.window->handle) == 0;
-}
-
-VulkanMesh VulkanMesh::from(const Engine &engine, const Mesh &m)
-{
-	VulkanMesh vm;
-
-	vm.indices = 3 * m.triangles.size();
-
-	vm.vertices = littlevk::buffer
-	(
-		engine.device,
-		engine.memory_properties,
-		interleave_attributes(m),
-		vk::BufferUsageFlagBits::eVertexBuffer
-	).unwrap(engine.dal);
-
-	vm.triangles = littlevk::buffer
-	(
-	 	engine.device,
-		engine.memory_properties,
-		m.triangles,
-		vk::BufferUsageFlagBits::eIndexBuffer
-	).unwrap(engine.dal);
-
-	return vm;
 }
 
 void handle_key_input(Engine &engine, Transform &camera_transform)
@@ -403,8 +364,8 @@ std::optional <std::pair <vk::CommandBuffer, littlevk::SurfaceOperation>> new_fr
 
 	// Update camera state before passing to render hooks
 	engine.camera.aspect = engine.aspect_ratio();
-	engine.push_constants.view = engine.camera.view_matrix(engine.camera_transform);
-	engine.push_constants.proj = engine.camera.perspective_matrix();
+	engine.mvp.view = engine.camera.view_matrix(engine.camera_transform);
+	engine.mvp.proj = engine.camera.perspective_matrix();
 
 	// Get next image
 	littlevk::SurfaceOperation op;
@@ -561,34 +522,6 @@ int main(int argc, char *argv[])
 			ngf.vertices[i] = glm::vec4(vertices[i], 0.0f);
 	}
 
-	Mesh ngf_base;
-
-	{
-		// Get the base mesh
-		std::vector <glm::vec3> vertices;
-		std::vector <glm::vec3> normals;
-		std::vector <glm::uvec3> triangles;
-
-		for (const glm::ivec4 &p : ngf.patches) {
-			int32_t size = vertices.size();
-			vertices.push_back(ngf.vertices[p.x]);
-			vertices.push_back(ngf.vertices[p.y]);
-			vertices.push_back(ngf.vertices[p.w]);
-			vertices.push_back(ngf.vertices[p.z]);
-
-			normals.push_back(glm::vec3 {});
-			normals.push_back(glm::vec3 {});
-			normals.push_back(glm::vec3 {});
-			normals.push_back(glm::vec3 {});
-
-			triangles.push_back({ size, size + 1, size + 3 });
-			triangles.push_back({ size, size + 3, size + 2 });
-		}
-
-		ngf_base = Mesh { vertices, normals, triangles };
-		ngf_base.normals = smooth_normals(ngf_base);
-	}
-
 	// Configure renderer
 	static const std::vector <const char *> extensions {
 		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
@@ -608,103 +541,41 @@ int main(int argc, char *argv[])
 
 	engine.camera_transform.position = glm::vec3 { 0, 0, -2.3 };
 
-	VulkanMesh vk_ngf = VulkanMesh::from(engine, ngf_base);
-
-	// Upload NGF as Vulkan buffers
+	// Device buffers for the neural geometry field
 	struct {
-		littlevk::Buffer points;
+		littlevk::Buffer vertices;
 		littlevk::Buffer features;
 		littlevk::Buffer patches;
 		littlevk::Buffer network;
 		vk::DescriptorSet dset;
-	} vk_ngf_buffers;
+	} vk_ngf;
 
-	{
-		vk_ngf_buffers.points = littlevk::buffer
-		(
-			engine.device,
-			engine.memory_properties,
-			ngf.vertices,
-			vk::BufferUsageFlagBits::eStorageBuffer
-		).unwrap(engine.dal);
-
-		vk_ngf_buffers.patches = littlevk::buffer
-		(
-			engine.device,
-			engine.memory_properties,
-			ngf.patches,
-			vk::BufferUsageFlagBits::eStorageBuffer
-		).unwrap(engine.dal);
-
-		std::vector <float> features = ngf.features;
-
-		float casted = *reinterpret_cast <float *> (&ngf.feature_size);
-		features.insert(features.begin(), casted);
-		vk_ngf_buffers.features = littlevk::buffer
-		(
-			engine.device,
-			engine.memory_properties,
-			features,
-			vk::BufferUsageFlagBits::eStorageBuffer
-		).unwrap(engine.dal);
-
-		// First in the neural network weights
-		std::vector <float> network;
-		for (int32_t i = 0; i < LAYERS; i++) {
-			network.insert(network.begin(), ngf.weights[i].vec.begin(), ngf.weights[i].vec.end());
-			network.insert(network.begin(), ngf.biases[i].vec.begin(), ngf.biases[i].vec.end());
-		}
-
-		vk_ngf_buffers.network = littlevk::buffer(
-			engine.device,
-			engine.memory_properties,
-			network,
-			vk::BufferUsageFlagBits::eStorageBuffer
-		).unwrap(engine.dal);
-
-		// Bind resources
-		std::array <vk::DescriptorSetLayout, 1> dsls { *engine.meshlet.dsl };
-
-		vk::DescriptorSetAllocateInfo info {};
-		info.descriptorPool = engine.descriptor_pool;
-		info.descriptorSetCount = 1;
-		info.pSetLayouts = &dsls[0];
-
-		vk_ngf_buffers.dset = engine.device.allocateDescriptorSets(info).front();
-
-		littlevk::bind(engine.device, vk_ngf_buffers.dset, vk_ngf_buffers.points,   0);
-		littlevk::bind(engine.device, vk_ngf_buffers.dset, vk_ngf_buffers.features, 1);
-		littlevk::bind(engine.device, vk_ngf_buffers.dset, vk_ngf_buffers.patches,  2);
-		littlevk::bind(engine.device, vk_ngf_buffers.dset, vk_ngf_buffers.network,  3);
+	// Concatenate the neural network weights
+	std::vector <float> network;
+	for (int32_t i = 0; i < LAYERS; i++) {
+		network.insert(network.begin(), ngf.weights[i].vec.begin(), ngf.weights[i].vec.end());
+		network.insert(network.begin(), ngf.biases[i].vec.begin(), ngf.biases[i].vec.end());
 	}
 
-	// Storing framebuffer information
-	littlevk::Buffer staging;
+	std::tie(vk_ngf.vertices, vk_ngf.features, vk_ngf.patches, vk_ngf.network) = littlevk::linked_device_allocator(engine.device, engine.memory_properties, engine.dal)
+		.buffer(ngf.vertices, vk::BufferUsageFlagBits::eStorageBuffer)
+		.buffer(ngf.features, vk::BufferUsageFlagBits::eStorageBuffer)
+		.buffer(ngf.patches, vk::BufferUsageFlagBits::eStorageBuffer)
+		.buffer(network, vk::BufferUsageFlagBits::eStorageBuffer);
 
-	{
-		staging = littlevk::buffer
-		(
-			engine.device,
-			engine.memory_properties,
-			1920 * 1080 * sizeof(glm::ivec4),
-			vk::BufferUsageFlagBits::eStorageBuffer
-				| vk::BufferUsageFlagBits::eTransferDst
-		).unwrap(engine.dal);
-	}
+	vk_ngf.dset = littlevk::bind(engine.device, engine.descriptor_pool)
+		.allocate_descriptor_sets(*engine.meshlet.dsl).front();
+
+	littlevk::bind(engine.device, vk_ngf.dset, meshlet_dslbs)
+		.update(0, 0, *vk_ngf.vertices, 0, sizeof(glm::vec4) * ngf.vertices.size())
+		.update(1, 0, *vk_ngf.features, 0, sizeof(float) * ngf.features.size())
+		.update(2, 0, *vk_ngf.patches, 0, sizeof(glm::ivec4) * ngf.patches.size())
+		.update(3, 0, *vk_ngf.network, 0, sizeof(float) * network.size())
+		.finalize();
 
 	// Plotting data
-	constexpr uint32_t SAMPLES = 10;
-
-	std::deque <float> frametimes;
-	uint32_t mode = 0;
-
-
-	// Setup directory for storing files
-	std::filesystem::remove_all("video");
-	std::filesystem::create_directory("video");
-
-	std::vector <uint32_t> fb_vec(1920 * 1080);
-	std::vector <uint8_t>  translated(1920 * 1080 * 3);
+	int mode = 0;
+	int resolution = 15;
 
 	size_t frame = 0;
 	while (valid_window(engine)) {
@@ -721,35 +592,35 @@ int main(int argc, char *argv[])
 		render_pass_begin(engine, cmd, op);
 
 		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.meshlet.handle);
-		cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, engine.meshlet.layout, 0, { vk_ngf_buffers.dset }, nullptr);
+		cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, engine.meshlet.layout, 0, { vk_ngf.dset }, nullptr);
 
 		float time = glfwGetTime();
 
 		// Task/Mesh shader push constants
-		NGFPushConstants ngf_pc {
+		TaskData ngf_pc {
 			Transform().matrix(),
-			engine.push_constants.view,
-			engine.push_constants.proj,
+			engine.mvp.view,
+			engine.mvp.proj,
 			{ engine.window->extent.width, engine.window->extent.height },
+			resolution,
 			time
 		};
 
-		cmd.pushConstants <NGFPushConstants> (engine.meshlet.layout,
+		cmd.pushConstants <TaskData> (engine.meshlet.layout,
 			vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT,
 			0, ngf_pc);
 
 		// Fragment shader push constants
-		ShadingPushConstants shading_pc {
+		ShadingData shading_pc {
 			.viewing = glm::vec3(glm::inverse(ngf_pc.view) * glm::vec4(0, 0, 1, 0)),
 			.color = glm::vec3(0.6f, 0.5f, 1.0f),
 			.mode = mode
 		};
 
-		cmd.pushConstants <ShadingPushConstants> (engine.meshlet.layout,
+		cmd.pushConstants <ShadingData> (engine.meshlet.layout,
 			vk::ShaderStageFlagBits::eFragment,
-			sizeof(NGFPushConstants), shading_pc);
+			sizeof(TaskData), shading_pc);
 
-		// TODO: time this process (timer class)
 		cmd.drawMeshTasksEXT(ngf.patch_count, 1, 1);
 
 		// ImGui pass
@@ -761,8 +632,18 @@ int main(int argc, char *argv[])
 			ImGui::Begin("Info");
 
 			float ft = ImGui::GetIO().DeltaTime;
-			ImGui::Text("Frame time: %f ms / %d fps", ft * 1000.0f, int32_t(1.0f/ft));
-			ImGui::Text("Number of active patches: %d\n", ngf.patch_count);
+
+			ImGui::Text("Performance");
+
+			ImGui::Text("%05.2f ms per frame", ft * 1000.0f);
+			ImGui::Text("%04d frames per second", int(1.0/ft));
+
+			ImGui::Separator();
+
+			ImGui::Text("Statistics");
+			ImGui::Spacing();
+			ImGui::Text("%d active patches", ngf.patch_count);
+
 			ImGui::Separator();
 
 			static const std::unordered_map <uint32_t, std::string> mode_descriptions {
@@ -776,6 +657,11 @@ int main(int argc, char *argv[])
 				if (ImGui::RadioButton(desc.c_str(), mode == m))
 					mode = m;
 			}
+
+			ImGui::Separator();
+
+			ImGui::Text("Tessellation");
+			ImGui::DragInt("Resolution", (int *) &resolution, 0.05f, 2, 15);
 
 			ImGui::End();
 

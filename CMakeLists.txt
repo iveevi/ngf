@@ -24,8 +24,7 @@ add_library(imgui OBJECT
 add_executable(testbed
 	rasterizer/main.cpp
 	rasterizer/mesh.cpp
-	rasterizer/util.cpp
-	# rasterizer/pipeline.cpp
+	rasterizer/projection.cpp
 	$<TARGET_OBJECTS:imgui>)
 
 target_link_libraries(testbed
