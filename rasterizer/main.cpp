@@ -218,38 +218,30 @@ struct Engine : littlevk::Skeleton {
 		engine.skeletonize(phdev, { 1920, 1080 }, "Neural Geometry Fields Testbed", extensions, ft, vk::PresentModeKHR::eImmediate);
 
 		// Create the render pass
-		engine.render_pass = littlevk::default_color_depth_render_pass
-			(engine.device, engine.swapchain.format).unwrap(engine.dal);
+		engine.render_pass = littlevk::RenderPassAssembler(engine.device, engine.dal)
+			.add_attachment(littlevk::default_color_attachment(engine.swapchain.format))
+			.add_attachment(littlevk::default_depth_attachment())
+			.add_subpass(vk::PipelineBindPoint::eGraphics)
+				.color_attachment(0, vk::ImageLayout::eColorAttachmentOptimal)
+				.depth_attachment(1, vk::ImageLayout::eDepthStencilAttachmentOptimal)
+				.done();
 
 		// Create the depth buffer
-		littlevk::ImageCreateInfo depth_info {
-			engine.window->extent.width,
-			engine.window->extent.height,
-			vk::Format::eD32Sfloat,
-			vk::ImageUsageFlagBits::eDepthStencilAttachment,
-			vk::ImageAspectFlagBits::eDepth,
-		};
-
-		littlevk::Image depth_buffer = littlevk::image(
-			engine.device,
-			depth_info, engine.memory_properties
-		).unwrap(engine.dal);
+		littlevk::Image depth_buffer = bind(engine.device, engine.memory_properties, engine.dal)
+			.image(engine.window->extent,
+				vk::Format::eD32Sfloat,
+				vk::ImageUsageFlagBits::eDepthStencilAttachment,
+				vk::ImageAspectFlagBits::eDepth);
 
 		// Create framebuffers from the swapchain
-		littlevk::FramebufferSetInfo fb_info {
-			.swapchain = engine.swapchain,
-			.render_pass = engine.render_pass,
-			.extent = engine.window->extent,
-			.depth_buffer = depth_buffer.view
-		};
+		littlevk::FramebufferGenerator generator(engine.device, engine.render_pass, engine.window->extent, engine.dal);
+		for (const auto &view : engine.swapchain.image_views)
+			generator.add(view, depth_buffer.view);
 
-		engine.framebuffers = littlevk::framebuffers
-			(engine.device, fb_info).unwrap(engine.dal);
+		engine.framebuffers = generator.unpack();
 
 		// Allocate command buffers
-		engine.command_pool = littlevk::command_pool
-		(
-			engine.device,
+		engine.command_pool = littlevk::command_pool(engine.device,
 			vk::CommandPoolCreateInfo {
 				vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
 				littlevk::find_graphics_queue_family(phdev)
@@ -329,17 +321,17 @@ VulkanMesh VulkanMesh::from(const Engine &engine, const Mesh &m)
 	vm.vertices = littlevk::buffer
 	(
 		engine.device,
-		interleave_attributes(m), // TODO: in an engine, put flags for which to include
-		vk::BufferUsageFlagBits::eVertexBuffer,
-		engine.memory_properties
+		engine.memory_properties,
+		interleave_attributes(m),
+		vk::BufferUsageFlagBits::eVertexBuffer
 	).unwrap(engine.dal);
 
 	vm.triangles = littlevk::buffer
 	(
 	 	engine.device,
+		engine.memory_properties,
 		m.triangles,
-		vk::BufferUsageFlagBits::eIndexBuffer,
-		engine.memory_properties
+		vk::BufferUsageFlagBits::eIndexBuffer
 	).unwrap(engine.dal);
 
 	return vm;
@@ -352,7 +344,6 @@ void handle_key_input(Engine &engine, Transform &camera_transform)
 	float delta = speed * float(glfwGetTime() - engine.last_time);
 	engine.last_time = glfwGetTime();
 
-	// TODO: littlevk io system
 	GLFWwindow *win = engine.window->handle;
 
 	glm::vec3 velocity(0.0f);
@@ -408,7 +399,6 @@ void end_frame(const Engine &engine, const vk::CommandBuffer &cmd, size_t frame)
 	cmd.end();
 
 	// Submit command buffer while signaling the semaphore
-	// TODO: littlevk shortcut for this...
 	vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
 
 	vk::SubmitInfo submit_info {
@@ -454,20 +444,11 @@ const Pipeline &activate_pipeline(const Engine &engine, const vk::CommandBuffer 
 int main(int argc, char *argv[])
 {
 	if (argc < 2) {
-		// ulog_error("testbed", "Usage: testbed <reference mesh> <ngf>\n");
 		ulog_error("testbed", "Usage: testbed <ngf>\n");
 		return EXIT_FAILURE;
 	}
 
-	// std::string path_ref = argv[1];
-	// std::string path_ngf = argv[2];
 	std::string path_ngf = argv[1];
-
-	// Mesh reference = *Mesh::load(path_ref).begin();
-	// reference = Mesh::normalize(reference);
-	// reference.normals = smooth_normals(reference);
-	//
-	// ulog_info("testbed", "loaded mesh with %d vertices and %d faces\n", reference.vertices.size(), reference.triangles.size());
 
 	// Load the neural geometry field
 	constexpr int32_t LAYERS = 4;
@@ -603,7 +584,7 @@ int main(int argc, char *argv[])
 	Engine engine = Engine::from(phdev, extensions);
 
 	engine.camera_transform.position = glm::vec3 { 0, 0, -2.3 };
-	// VulkanMesh vk_ref = VulkanMesh::from(engine, reference);
+
 	VulkanMesh vk_ngf = VulkanMesh::from(engine, ngf_base);
 
 	// Upload NGF as Vulkan buffers
@@ -619,17 +600,17 @@ int main(int argc, char *argv[])
 		vk_ngf_buffers.points = littlevk::buffer
 		(
 			engine.device,
+			engine.memory_properties,
 			ngf.vertices,
-			vk::BufferUsageFlagBits::eStorageBuffer,
-			engine.memory_properties
+			vk::BufferUsageFlagBits::eStorageBuffer
 		).unwrap(engine.dal);
 
 		vk_ngf_buffers.patches = littlevk::buffer
 		(
 			engine.device,
+			engine.memory_properties,
 			ngf.patches,
-			vk::BufferUsageFlagBits::eStorageBuffer,
-			engine.memory_properties
+			vk::BufferUsageFlagBits::eStorageBuffer
 		).unwrap(engine.dal);
 
 		std::vector <float> features = ngf.features;
@@ -639,9 +620,9 @@ int main(int argc, char *argv[])
 		vk_ngf_buffers.features = littlevk::buffer
 		(
 			engine.device,
+			engine.memory_properties,
 			features,
-			vk::BufferUsageFlagBits::eStorageBuffer,
-			engine.memory_properties
+			vk::BufferUsageFlagBits::eStorageBuffer
 		).unwrap(engine.dal);
 
 		// First in the neural network weights
@@ -653,9 +634,9 @@ int main(int argc, char *argv[])
 
 		vk_ngf_buffers.network = littlevk::buffer(
 			engine.device,
+			engine.memory_properties,
 			network,
-			vk::BufferUsageFlagBits::eStorageBuffer,
-			engine.memory_properties
+			vk::BufferUsageFlagBits::eStorageBuffer
 		).unwrap(engine.dal);
 
 		// Bind resources
@@ -679,9 +660,10 @@ int main(int argc, char *argv[])
 		staging = littlevk::buffer
 		(
 			engine.device,
+			engine.memory_properties,
 			1920 * 1080 * sizeof(glm::ivec4),
-			vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst,
-			engine.memory_properties
+			vk::BufferUsageFlagBits::eStorageBuffer
+				| vk::BufferUsageFlagBits::eTransferDst
 		).unwrap(engine.dal);
 	}
 
@@ -788,24 +770,6 @@ int main(int argc, char *argv[])
 					mode = m;
 			}
 
-			// ImGui::Separator();
-			//
-			// frametimes.push_back(1000.0f * ft);
-			// if (frametimes.size() > SAMPLES)
-			// 	frametimes.pop_front();
-			//
-			// if (ImPlot::BeginPlot("Frametime")) {
-			// 	std::vector <float> flat(frametimes.begin(), frametimes.end());
-			// 	float max = 0.0f;
-			// 	for (float f : flat)
-			// 		max = std::max(max, f);
-			//
-			// 	ImPlot::SetupAxesLimits(0, 100, 0, max);
-			// 	ImPlot::SetNextAxisLimits(0, 100, 0, max);
-			// 	ImPlot::PlotLine("Frametimes", flat.data(), flat.size());
-			// 	ImPlot::EndPlot();
-			// }
-
 			ImGui::End();
 
 			ImGui::Render();
@@ -816,16 +780,11 @@ int main(int argc, char *argv[])
 
 		// Download the frame into the staging buffer
 		const vk::Image &fb = engine.swapchain.images[op.index];
-		littlevk::transition(cmd, fb, vk::ImageLayout::ePresentSrcKHR, vk::ImageLayout::eTransferSrcOptimal);
 
-		littlevk::copy_image_to_buffer
-		(
-			cmd, fb,
-			staging, engine.window->extent,
-			vk::ImageLayout::eTransferSrcOptimal
-		);
-
-		littlevk::transition(cmd, fb, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::ePresentSrcKHR);
+		// TODO: video mode
+		// littlevk::transition(cmd, fb, vk::ImageLayout::ePresentSrcKHR, vk::ImageLayout::eTransferSrcOptimal);
+		// littlevk::copy_image_to_buffer(cmd, fb, staging, engine.window->extent, vk::ImageLayout::eTransferSrcOptimal);
+		// littlevk::transition(cmd, fb, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::ePresentSrcKHR);
 
 		end_frame(engine, cmd, frame);
 

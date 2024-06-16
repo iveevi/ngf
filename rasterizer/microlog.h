@@ -9,14 +9,9 @@ void ulog_warning (const char *, const char *, ...);
 void ulog_info    (const char *, const char *, ...);
 void ulog_assert  (bool, const char *, const char *, ...);
 
-// TODO: time logging modes
-//
-// default is full time
-// currently implementing delta time
-
 static struct {
 	bool timer;
-} ulog_config = { .timer = false };
+} ulog_config = { .timer = true };
 
 static struct {
 	bool enabled;

@@ -69,6 +69,7 @@ Pipeline ppl_normals
 	).unwrap(dal);
 
 	littlevk::pipeline::GraphicsCreateInfo pipeline_info;
+	pipeline_info.subpass = 0;
 	pipeline_info.shader_stages = shader_stages;
 	pipeline_info.vertex_binding = vertex_binding;
 	pipeline_info.vertex_attributes = vertex_attributes;
@@ -193,6 +194,7 @@ Pipeline ppl_ngf
 	).unwrap(dal);
 
 	littlevk::pipeline::GraphicsCreateInfo pipeline_info;
+	pipeline_info.subpass = 0;
 	pipeline_info.shader_stages = shader_stages;
 	pipeline_info.extent = extent;
 	pipeline_info.pipeline_layout = ppl.layout;
