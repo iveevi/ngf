@@ -13,6 +13,7 @@ layout (location = 2) in flat uint pindex;
 layout (location = 0) out vec4 fragment;
 
 const uint COLORS = 16;
+
 const vec3 WHEEL[16] = vec3[](
 	vec3(0.880, 0.320, 0.320),
 	vec3(0.880, 0.530, 0.320),
@@ -43,13 +44,11 @@ void main()
 	if (mode == 2) {
 		vec3 diffuse = color * vec3(max(0, dot(N, light_direction)));
 		vec3 ambient = color * 0.1f;
-		// fragment = vec4(diffuse + ambient, 0);
-		// vec3 specular = vec3(pow(max(0, dot(-viewing, N)), 16));
-		// fragment = vec4(specular, 0);
 
 		vec3 H = normalize(-viewing + light_direction);
 		vec3 specular = vec3(pow(max(0, dot(N, H)), 16));
-		fragment = vec4(diffuse + specular + ambient, 0);
+
+		fragment = vec4(diffuse + specular + ambient, 1);
 		fragment = pow(fragment, vec4(1/2.2));
 	} else if (mode == 1) {
 		// Normals

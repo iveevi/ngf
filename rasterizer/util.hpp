@@ -34,4 +34,4 @@ struct Camera {
 	static glm::mat4 view_matrix(const Transform &);
 };
 
-std::string readfile(const std::string &path);
+// std::string readfile(const std::string &path);

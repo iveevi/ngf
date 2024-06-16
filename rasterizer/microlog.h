@@ -11,7 +11,7 @@ void ulog_assert  (bool, const char *, const char *, ...);
 
 static struct {
 	bool timer;
-} ulog_config = { .timer = true };
+} ulog_config = { .timer = false };
 
 static struct {
 	bool enabled;

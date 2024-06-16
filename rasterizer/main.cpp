@@ -18,10 +18,35 @@
 
 #include "mesh.hpp"
 #include "microlog.h"
-#include "pipeline.hpp"
 #include "util.hpp"
 
 struct Engine;
+
+struct Vertex {
+	glm::vec3 position;
+	glm::vec3 normal;
+};
+
+struct BasePushConstants {
+	glm::mat4 model;
+	glm::mat4 view;
+	glm::mat4 proj;
+};
+
+struct alignas(16) NGFPushConstants {
+	glm::mat4 model;
+	glm::mat4 view;
+	glm::mat4 proj;
+
+	glm::vec2 extent;
+	float time;
+};
+
+struct alignas(16) ShadingPushConstants {
+	alignas(16) glm::vec3 viewing;
+	alignas(16) glm::vec3 color;
+	uint32_t mode;
+};
 
 struct VulkanMesh {
 	littlevk::Buffer vertices;
@@ -108,14 +133,13 @@ struct Engine : littlevk::Skeleton {
 	littlevk::PresentSyncronization sync;
 
 	// Pipelines
-	Pipeline normals;
-	Pipeline ngf_meshlet;
+	littlevk::Pipeline meshlet;
 
 	// ImGui resources
 	vk::DescriptorPool imgui_descriptor_pool;
 
 	// View parameters
-	Camera    camera;
+	Camera camera;
 	Transform camera_transform;
 
 	BasePushConstants push_constants;
@@ -275,21 +299,26 @@ struct Engine : littlevk::Skeleton {
 		// Configure pipelines
 		configure_imgui(engine);
 
-		engine.normals = ppl_normals
-		(
-			engine.device,
-			engine.render_pass,
-			engine.window->extent,
-			engine.dal
-		);
+		using standalone::readfile;
 
-		engine.ngf_meshlet = ppl_ngf
-		(
-			engine.device,
-			engine.render_pass,
-			engine.window->extent,
-			engine.dal
-		);
+		constexpr std::array <vk::DescriptorSetLayoutBinding, 4> meshlet_dslbs {
+			vk::DescriptorSetLayoutBinding { 0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT },
+			vk::DescriptorSetLayoutBinding { 1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT },
+			vk::DescriptorSetLayoutBinding { 2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT },
+			vk::DescriptorSetLayoutBinding { 3, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT },
+		};
+
+		auto bundle = littlevk::ShaderStageBundle(engine.device, engine.dal)
+			.file(SHADERS_DIRECTORY "/ngf.mesh.glsl", vk::ShaderStageFlagBits::eMeshEXT)
+			.file(SHADERS_DIRECTORY "/ngf.task.glsl", vk::ShaderStageFlagBits::eTaskEXT)
+			.file(SHADERS_DIRECTORY "/ngf.frag.glsl", vk::ShaderStageFlagBits::eFragment);
+
+		engine.meshlet = littlevk::PipelineAssembler <littlevk::eGraphics> (engine.device, engine.window, engine.dal)
+			.with_render_pass(engine.render_pass, 0)
+			.with_shader_bundle(bundle)
+			.with_dsl_bindings(meshlet_dslbs)
+			.with_push_constant <NGFPushConstants> (vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT)
+			.with_push_constant <ShadingPushConstants> (vk::ShaderStageFlagBits::eFragment, sizeof(NGFPushConstants));
 
 		// Other configurations
 		engine.camera.from(engine.aspect_ratio());
@@ -433,12 +462,6 @@ void render_pass_begin(const Engine &engine, const vk::CommandBuffer &cmd, const
 void render_pass_end(const Engine &engine, const vk::CommandBuffer &cmd)
 {
 	return cmd.endRenderPass();
-}
-
-const Pipeline &activate_pipeline(const Engine &engine, const vk::CommandBuffer &cmd)
-{
-	cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.normals.pipeline);
-	return engine.normals;
 }
 
 int main(int argc, char *argv[])
@@ -640,10 +663,12 @@ int main(int argc, char *argv[])
 		).unwrap(engine.dal);
 
 		// Bind resources
+		std::array <vk::DescriptorSetLayout, 1> dsls { *engine.meshlet.dsl };
+
 		vk::DescriptorSetAllocateInfo info {};
 		info.descriptorPool = engine.descriptor_pool;
 		info.descriptorSetCount = 1;
-		info.pSetLayouts = &engine.ngf_meshlet.dsl;
+		info.pSetLayouts = &dsls[0];
 
 		vk_ngf_buffers.dset = engine.device.allocateDescriptorSets(info).front();
 
@@ -673,11 +698,6 @@ int main(int argc, char *argv[])
 	std::deque <float> frametimes;
 	uint32_t mode = 0;
 
-	size_t frame = 0;
-
-	constexpr int DURATION = 90;
-	// constexpr int DURATION = 180;
-	int iteration = 0;
 
 	// Setup directory for storing files
 	std::filesystem::remove_all("video");
@@ -686,6 +706,7 @@ int main(int argc, char *argv[])
 	std::vector <uint32_t> fb_vec(1920 * 1080);
 	std::vector <uint8_t>  translated(1920 * 1080 * 3);
 
+	size_t frame = 0;
 	while (valid_window(engine)) {
 		// Get events
 		glfwPollEvents();
@@ -699,34 +720,23 @@ int main(int argc, char *argv[])
 
 		render_pass_begin(engine, cmd, op);
 
-		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.ngf_meshlet.pipeline);
-		cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, engine.ngf_meshlet.layout, 0, { vk_ngf_buffers.dset }, nullptr);
+		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.meshlet.handle);
+		cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, engine.meshlet.layout, 0, { vk_ngf_buffers.dset }, nullptr);
 
 		float time = glfwGetTime();
 
 		// Task/Mesh shader push constants
 		NGFPushConstants ngf_pc {
-			engine.push_constants.model,
+			Transform().matrix(),
 			engine.push_constants.view,
 			engine.push_constants.proj,
-			{
-				engine.window->extent.width,
-				engine.window->extent.height
-			},
+			{ engine.window->extent.width, engine.window->extent.height },
 			time
 		};
 
-		Transform tf_ngf;
-		tf_ngf.rotation.y = fmod(2.0f * iteration, 360.0f);
-		// tf_ngf.position.x = 0.5f;
-		ngf_pc.model = tf_ngf.matrix();
-
-		cmd.pushConstants <NGFPushConstants>
-		(
-			engine.ngf_meshlet.layout,
+		cmd.pushConstants <NGFPushConstants> (engine.meshlet.layout,
 			vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT,
-			0, ngf_pc
-		);
+			0, ngf_pc);
 
 		// Fragment shader push constants
 		ShadingPushConstants shading_pc {
@@ -735,12 +745,9 @@ int main(int argc, char *argv[])
 			.mode = mode
 		};
 
-		cmd.pushConstants <ShadingPushConstants>
-		(
-			engine.ngf_meshlet.layout,
+		cmd.pushConstants <ShadingPushConstants> (engine.meshlet.layout,
 			vk::ShaderStageFlagBits::eFragment,
-			sizeof(NGFPushConstants), shading_pc
-		);
+			sizeof(NGFPushConstants), shading_pc);
 
 		// TODO: time this process (timer class)
 		cmd.drawMeshTasksEXT(ngf.patch_count, 1, 1);
@@ -778,21 +785,11 @@ int main(int argc, char *argv[])
 
 		render_pass_end(engine, cmd);
 
-		// Download the frame into the staging buffer
-		const vk::Image &fb = engine.swapchain.images[op.index];
-
-		// TODO: video mode
-		// littlevk::transition(cmd, fb, vk::ImageLayout::ePresentSrcKHR, vk::ImageLayout::eTransferSrcOptimal);
-		// littlevk::copy_image_to_buffer(cmd, fb, staging, engine.window->extent, vk::ImageLayout::eTransferSrcOptimal);
-		// littlevk::transition(cmd, fb, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::ePresentSrcKHR);
-
+		// Complete the frame
 		end_frame(engine, cmd, frame);
 
 		// Present the frame and submit
 		present_frame(engine, op, frame);
-
-		// Save frame as an image
-		engine.device.waitIdle();
 
 		// Post frame
 		frame = 1 - frame;
