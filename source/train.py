@@ -75,23 +75,6 @@ class Trainer:
 
         return list(torch.cat(cache).split(self.batch))
 
-    def initialize_ngf(self) -> None:
-        with torch.no_grad():
-            base = self.ngf.base(4)
-
-        opt = torch.optim.Adam(self.ngf.parameters(), 1e-3)
-        for _ in tqdm.trange(1_000, ncols=50, leave=False):
-            uvs = self.ngf.sample_uniform(4)
-            vertices = self.ngf.eval(*uvs)
-
-            loss = (vertices - base).abs().mean()
-
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-
-        logging.info('Neural geometry field initialization phase done')
-
     def optimize_resolution(self, optimizer: torch.optim.Optimizer, rate: int) -> dict[str, list[float]]:
         import numpy as np
 
@@ -125,9 +108,7 @@ class Trainer:
                 faces = ngfutil.triangulate_shorted(vertices, self.ngf.complexes.shape[0], rate)
                 faces = remap.remap_device(faces)
 
-                # TODO: flatter normals
                 vertices, normals, faces = separate(vertices, faces)
-                # normals = vertex_normals(vertices, faces)
 
                 smoothed_vertices = graph.smooth(uniform_vertices, 1.0)
                 smoothed_vertices = remap.scatter_device(smoothed_vertices)
@@ -153,8 +134,6 @@ class Trainer:
         return losses
 
     def run(self) -> None:
-        # self.initialize_ngf()
-
         self.losses = {
             'render': [],
             'laplacian': []

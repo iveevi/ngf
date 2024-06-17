@@ -29,7 +29,7 @@ layout (push_constant) uniform NGFPushConstants
 
 taskPayloadSharedEXT Payload payload;
 
-// TODO: counter for number of primitives sent
+// TODO: (atomic) counter for number of primitives sent
 
 vec2 project(vec3 p)
 {

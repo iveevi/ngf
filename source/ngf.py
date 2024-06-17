@@ -8,18 +8,7 @@ import torch.nn as nn
 
 from typing import Callable
 
-from util import uniform_smooth_laplacian, SIREN
 
-
-class SIN(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x):
-        return x.sin()
-
-
-# TODO: try a SIREN network...
 class MLP(nn.Module):
     def __init__(self, ffin: int) -> None:
         super(MLP, self).__init__()
@@ -54,19 +43,7 @@ class MLP(nn.Module):
         return bytestream
 
 
-# TODO: return this?
-def spherical_to_cartesian(spherical):
-    radius = spherical[..., 0]
-    theta = spherical[..., 1]
-    phi = spherical[..., 2]
-    x = theta.cos() * phi.sin()
-    y = theta.sin() * phi.sin()
-    z = phi.cos()
-    return radius.unsqueeze(-1) * torch.stack((x, y, z), dim=-1)
-
-
 # Positional encoding
-# @torch.jit.script
 def positional_encoding(vector: torch.Tensor, extras: list[torch.Tensor], levels: int) -> torch.Tensor:
     result = extras
     for i in range(levels):
@@ -91,7 +68,6 @@ class NGF:
         self.jittering = jittering
         self.normals = normals
 
-        # TODO: rff
         self.ffin = self.features.shape[-1] + 3 * 2 * self.fflevels
         self.mlp = MLP(self.ffin).cuda()
         if mlp is not None:
@@ -113,8 +89,6 @@ class NGF:
         logging.info(f'     FF levels:    {fflevels}')
         logging.info(f'     Jittering:    {jittering}')
         logging.info(f'     Normals:      {normals}')
-
-        self.L = uniform_smooth_laplacian(self.complexes, self.points.shape[0])
 
     # List of parameters
     def parameters(self):
@@ -200,8 +174,6 @@ class NGF:
 
     def stream(self):
         """Convert neural geometry field to byte stream"""
-        # TODO: quantization
-
         sizes = [self.complexes.shape[0], self.points.shape[0], self.features.shape[-1]]
         size_bytes = np.array(sizes, dtype=np.int32).tobytes()
 

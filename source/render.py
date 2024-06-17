@@ -105,10 +105,13 @@ class Renderer:
             for i in range(3):
                 rast, rast_db = peeler.rasterize_next_layer()
                 normals = dr.interpolate(n, rast, f)[0]
-                # normals = cartesian_to_spherical(normals)
-                # normals *= (rast[..., -1, None] > 0)
                 normals = dr.antialias(normals, rast, v_ndc, f)
-                layers += [normals]
+
+                vertices = dr.interpolate(v, rast, f)[0]
+                vertices = dr.antialias(vertices, rast, v_ndc, f)
+
+                layers += [normals, vertices]
+
         return torch.concat(layers, dim=-1)
 
     def shaded(self, v, n, f, view_mats) -> torch.Tensor:

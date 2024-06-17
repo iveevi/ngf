@@ -4,10 +4,11 @@
 
 # Usage
 
-Training neural geometry fields requires an NVIDIA GPU with CUDA support;
-the memory usage of the training routine is modest, being able to run on a
-3060 mobile GPU. The necessary python packages are listed in `requirements.txt`
-so installing them with `pip install -r requirements.txt` is simplest.
+Training neural geometry fields requires an NVIDIA GPU with CUDA support. The
+necessary python packages are listed in `requirements.txt` so installing them
+with `pip install -r requirements.txt` is simplest. If there are errors in
+install the library in `extensions` it can likely be resolved by installing
+PyTorch and/or Wheel.
 
 Then run `python source/train.py` on any target mesh:
 
@@ -36,18 +37,34 @@ results
 └── torched            (Pytorch binary data)
 ```
 
+The memory usage is relatively modest (under 8 GB for the default 1K patches
+and 10 feature channels), but it can be adjusted with the batch size option.
+
+Some tips to consider if errors appear:
+
+- The STL format for meshes is most reliable; if the program complains from the
+  meshio library, try again with a STL rather than an OBJ or etc.
+- PyMeshLab is used for simplification and quadrangulation, but the execution
+  is not always reliable. For this reason we time out the quadrangulation process
+  after a minute. If this happens, the target mesh is likely too large.
+
 # Rasterizer
 
 ![](media/rasterizer.png)
 
-Source code for the real-time rasterizer is provided in the `rasterizer` directory. The only dependencies for building the program are GLFW and Vulkan; the rest (ImGui and glm) are provided as submodules of this project. We rely on CMake to compile the program:
+Source code for the real-time rasterizer is provided in the `rasterizer`
+directory. The only dependencies for building the program are GLFW and Vulkan;
+the rest (ImGui and glm) are provided as submodules of this project. We rely on
+CMake to compile the program:
 
 ```
 cmake -B build .
 cmake --build build -j
 ```
 
-To run the rasterizer, run the resulting `build/testbed` executable by providing a path to the neural geometry field binary file (e.g. within `results/binaries`):
+To run the rasterizer, run the resulting `build/testbed` executable by
+providing a path to the neural geometry field binary file (e.g. within
+`results/binaries`):
 
 ```
 ./build/testbed results/binaries/nefertiti-lod1000-f20.bin
