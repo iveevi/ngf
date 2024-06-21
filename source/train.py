@@ -75,7 +75,7 @@ class Trainer:
 
         return list(torch.cat(cache).split(self.batch))
 
-    def optimize_resolution(self, optimizer: torch.optim.Optimizer, rate: int) -> dict[str, list[float]]:
+    def optimize_resolution(self, optimizer: torch.optim.Optimizer, rate: int, offset: int) -> dict[str, list[float]]:
         import numpy as np
 
         losses = {
@@ -92,7 +92,7 @@ class Trainer:
         batched_views = list(self.views.split(self.batch))
         length = average_edge_length(base, quads)
 
-        for _ in tqdm.trange(100, ncols=50, leave=False):
+        for i in tqdm.trange(100, ncols=50, leave=False):
             batch_losses = {
                 'render': [],
                 'laplacian': []
@@ -126,6 +126,17 @@ class Trainer:
                 batch_losses['render'].append(render_loss.item())
                 batch_losses['laplacian'].append(laplacian_loss.item())
 
+            # Save mesh
+            with torch.no_grad():
+                uniform_uvs = self.ngf.sample_uniform(rate)
+                uniform_vertices = self.ngf.eval(*uniform_uvs)
+                faces = ngfutil.triangulate_shorted(uniform_vertices, self.ngf.complexes.shape[0], rate)
+                faces = remap.remap_device(faces)
+
+                os.makedirs('extras/training', exist_ok=True)
+                m = trimesh.Trimesh(uniform_vertices.cpu().numpy(), faces.cpu().numpy())
+                m.export(f'extras/training/m{i + offset:03d}.stl')
+
             losses['render'].append(np.mean(batch_losses['render']))
             losses['laplacian'].append(np.mean(batch_losses['laplacian']))
 
@@ -145,12 +156,14 @@ class Trainer:
         self.reference_views = self.precompute_reference_views()
         logging.info('Cached reference views')
 
+        offset = 0
         for rate in [4, 8, 12, 16]:
             opt = torch.optim.Adam(self.ngf.parameters(), 1e-3)
-            rate_losses = self.optimize_resolution(opt, rate)
+            rate_losses = self.optimize_resolution(opt, rate, offset)
             self.losses['render'] += rate_losses['render']
             self.losses['laplacian'] += rate_losses['laplacian']
             # self.display(rate)
+            offset += 100
 
         logging.info('Finished training neural geometry field')
 
