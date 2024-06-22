@@ -20,7 +20,7 @@ bpy.ops.object.delete()
 # TODO: sort to use the same view
 
 enode = W.node_tree.nodes.new('ShaderNodeTexEnvironment')
-enode.image = bpy.data.images.load('/home/venki/downloads/rural_crossroads_2k.hdr')
+enode.image = bpy.data.images.load('media/environment.hdr')
 node_tree = W.node_tree
 node_tree.nodes['Background'].inputs['Strength'].default_value = 0.5
 node_tree.links.new(enode.outputs['Color'], node_tree.nodes['Background'].inputs['Color'])

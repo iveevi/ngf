@@ -32,7 +32,7 @@ bpy.ops.object.delete()
 
 node_tree = W.node_tree
 enode = W.node_tree.nodes.new('ShaderNodeTexEnvironment')
-enode.image = bpy.data.images.load('/home/venki/projects/ngf/media/environment.hdr')
+enode.image = bpy.data.images.load('media/environment.hdr')
 node_tree.links.new(enode.outputs['Color'], node_tree.nodes['Background'].inputs['Color'])
 
 # Reference mesh
@@ -54,15 +54,15 @@ for d in C.preferences.addons['cycles'].preferences.devices:
 
 # Neural geometry fields
 paths = [
-    '/home/venki/projects/ngf/results/torched/nefertiti-lod2500-f20.pt',
-    '/home/venki/projects/ngf/results/torched/armadillo-lod2500-f20.pt',
-    '/home/venki/projects/ngf/results/torched/buddha-lod2500-f20.pt',
-    '/home/venki/projects/ngf/results/torched/dragon-lod2500-f20.pt',
-    '/home/venki/projects/ngf/results/torched/lucy-lod2500-f20.pt',
-    '/home/venki/projects/ngf/results/torched/xyz-lod2500-f20.pt',
-    '/home/venki/projects/ngf/results/torched/ganesha-lod2500-f20.pt',
-    '/home/venki/projects/ngf/results/torched/metratron-lod2500-f20.pt',
-    '/home/venki/projects/ngf/results/torched/einstein-lod2500-f20.pt',
+    # 'results/torched/nefertiti-lod2500-f20.pt',
+    # 'results/torched/armadillo-lod2500-f20.pt',
+    # 'results/torched/buddha-lod2500-f20.pt',
+    # 'results/torched/dragon-lod2500-f20.pt',
+    # 'results/torched/lucy-lod2500-f20.pt',
+    # 'results/torched/xyz-lod2500-f20.pt',
+    'results/torched/ganesha-lod2500-f20.pt',
+    # 'results/torched/metratron-lod2500-f20.pt',
+    # 'results/torched/einstein-lod2500-f20.pt',
 ]
 
 for path in paths:
@@ -71,7 +71,7 @@ for path in paths:
 
     ngf = NGF.from_pt(path)
 
-    directory = '/home/venki/projects/ngf/results/viz/patched'
+    directory = 'results/viz/patched'
     if os.path.exists(directory):
         shutil.rmtree(directory)
 
