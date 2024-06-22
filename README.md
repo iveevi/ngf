@@ -8,7 +8,7 @@ Training neural geometry fields requires an NVIDIA GPU with CUDA support. The
 necessary python packages are listed in `requirements.txt` so installing them
 with `pip install -r requirements.txt` is simplest. If there are errors in
 install the library in `extensions` it can likely be resolved by installing
-PyTorch and/or Wheel.
+PyTorch and/or Wheel. Note that Assimp will need to be installed as well.
 
 Then run `python source/train.py` on any target mesh:
 
