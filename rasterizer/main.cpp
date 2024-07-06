@@ -12,6 +12,7 @@
 #include <backends/imgui_impl_vulkan.h>
 
 #include <implot.h>
+#include <vulkan/vulkan_enums.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb/stb_image_write.h>
@@ -78,7 +79,6 @@ struct alignas(16) TaskData {
 struct alignas(16) ShadingData {
 	alignas(16) glm::vec3 viewing;
 	alignas(16) glm::vec3 color;
-	int mode;
 };
 
 struct MouseInfo {
@@ -171,6 +171,23 @@ constexpr std::array <vk::DescriptorSetLayoutBinding, 1> environment_dslbs {
 	},
 };
 
+struct FragmentShaderInfo {
+	std::filesystem::path path;
+	vk::CullModeFlags culling = vk::CullModeFlagBits::eBack;
+	vk::PolygonMode fill = vk::PolygonMode::eFill;
+};
+
+const std::unordered_map <std::string, FragmentShaderInfo> fragment_shaders {
+	{ "shaded", { SHADERS_DIRECTORY "/shaded.frag" } },
+	{ "patches", { SHADERS_DIRECTORY "/patches.frag" } },
+	{ "normals", { SHADERS_DIRECTORY "/normals.frag" } },
+	{ "wireframe", {
+		SHADERS_DIRECTORY "/fill.frag",
+		vk::CullModeFlagBits::eNone,
+		vk::PolygonMode::eLine
+	} },
+};
+
 struct Engine : littlevk::Skeleton {
 	vk::PhysicalDevice phdev;
 	vk::PhysicalDeviceMemoryProperties memory_properties;
@@ -189,7 +206,9 @@ struct Engine : littlevk::Skeleton {
 	littlevk::PresentSyncronization sync;
 
 	// Pipelines
-	littlevk::Pipeline meshlet;
+	// littlevk::Pipeline meshlet;
+	std::unordered_map <std::string, littlevk::Pipeline> primaries;
+
 	littlevk::Pipeline environment;
 
 	// ImGui resources
@@ -418,28 +437,32 @@ struct Engine : littlevk::Skeleton {
 		using standalone::readfile;
 
 		const std::string entry = "main";
+		const std::filesystem::path mesh_shader = SHADERS_DIRECTORY "/ngf.mesh";
+		const std::filesystem::path task_shader = SHADERS_DIRECTORY "/ngf.task";
+
 		const littlevk::shader::Defines defines {
 			{ "FEATURE_SIZE", std::to_string(fsize) }
 		};
 
-		auto meshlet_bundle = littlevk::ShaderStageBundle(engine.device, engine.dal)
-			.file(SHADERS_DIRECTORY "/ngf.mesh", vk::ShaderStageFlagBits::eMeshEXT, entry, {}, defines)
-			.file(SHADERS_DIRECTORY "/ngf.task", vk::ShaderStageFlagBits::eTaskEXT, entry, {}, defines)
-			.file(SHADERS_DIRECTORY "/ngf.frag", vk::ShaderStageFlagBits::eFragment, entry, {}, defines);
+		for (const auto &[key, info] : fragment_shaders) {
+			auto bundle = littlevk::ShaderStageBundle(engine.device, engine.dal)
+				.file(mesh_shader, vk::ShaderStageFlagBits::eMeshEXT, entry, {}, defines)
+				.file(task_shader, vk::ShaderStageFlagBits::eTaskEXT, entry, {}, defines)
+				.file(info.path, vk::ShaderStageFlagBits::eFragment, entry, {}, defines);
+
+			engine.primaries[key] = littlevk::PipelineAssembler <littlevk::eGraphics> (engine.device, engine.window, engine.dal)
+				.with_render_pass(engine.render_pass, 0)
+				.with_shader_bundle(bundle)
+				.with_dsl_bindings(meshlet_dslbs)
+				.polygon_mode(info.fill)
+				.cull_mode(info.culling)
+				.with_push_constant <TaskData> (vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT)
+				.with_push_constant <ShadingData> (vk::ShaderStageFlagBits::eFragment, sizeof(TaskData));
+		}
 
 		auto environment_bundle = littlevk::ShaderStageBundle(engine.device, engine.dal)
 			.file(SHADERS_DIRECTORY "/quad.vert", vk::ShaderStageFlagBits::eVertex)
 			.file(SHADERS_DIRECTORY "/env.frag", vk::ShaderStageFlagBits::eFragment);
-
-		engine.meshlet = littlevk::PipelineAssembler <littlevk::eGraphics> (engine.device, engine.window, engine.dal)
-			.with_render_pass(engine.render_pass, 0)
-			.with_shader_bundle(meshlet_bundle)
-			.with_dsl_bindings(meshlet_dslbs)
-			.with_push_constant <TaskData> (vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT)
-			.with_push_constant <ShadingData> (vk::ShaderStageFlagBits::eFragment, sizeof(TaskData));
-
-			// TODO: wireframe mode
-			// .polygon_mode(vk::PolygonMode::eLine);
 
 		engine.environment = littlevk::PipelineAssembler <littlevk::eGraphics> (engine.device, engine.window, engine.dal)
 			.with_render_pass(engine.render_pass, 0)
@@ -710,7 +733,7 @@ int main(int argc, char *argv[])
 		.buffer(network, vk::BufferUsageFlagBits::eStorageBuffer);
 
 	vk_ngf.dset = littlevk::bind(engine.device, engine.descriptor_pool)
-		.allocate_descriptor_sets(*engine.meshlet.dsl).front();
+		.allocate_descriptor_sets(*engine.primaries["shaded"].dsl).front();
 
 	littlevk::bind(engine.device, vk_ngf.dset, meshlet_dslbs)
 		.update(0, 0, *vk_ngf.vertices, 0, sizeof(glm::vec4) * ngf.vertices.size())
@@ -733,7 +756,8 @@ int main(int argc, char *argv[])
 		.finalize();
 
 	// Plotting data
-	int mode = 0;
+	std::string key = "shaded";
+
 	int resolution = 15;
 
 	size_t frame = 0;
@@ -750,7 +774,7 @@ int main(int argc, char *argv[])
 
 		render_pass_begin(engine, cmd, op);
 
-		if (mode == 2) {
+		if (key == "shaded") {
 			cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.environment.handle);
 
 			RayFrame rayframe = engine.camera.rayframe(engine.camera_transform);
@@ -767,10 +791,10 @@ int main(int argc, char *argv[])
 			cmd.draw(6, 1, 0, 0);
 		}
 
-		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.meshlet.handle);
+		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.primaries[key].handle);
 
 		cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-				engine.meshlet.layout,
+				engine.primaries[key].layout,
 				0, { vk_ngf.dset }, nullptr);
 
 		float time = glfwGetTime();
@@ -785,7 +809,7 @@ int main(int argc, char *argv[])
 			time
 		};
 
-		cmd.pushConstants <TaskData> (engine.meshlet.layout,
+		cmd.pushConstants <TaskData> (engine.primaries[key].layout,
 			vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT,
 			0, ngf_pc);
 
@@ -793,10 +817,9 @@ int main(int argc, char *argv[])
 		ShadingData shading_pc {
 			.viewing = glm::vec3(glm::inverse(ngf_pc.view) * glm::vec4(0, 0, 1, 0)),
 			.color = glm::vec3(0.6f, 0.5f, 1.0f),
-			.mode = mode
 		};
 
-		cmd.pushConstants <ShadingData> (engine.meshlet.layout,
+		cmd.pushConstants <ShadingData> (engine.primaries[key].layout,
 			vk::ShaderStageFlagBits::eFragment,
 			sizeof(TaskData), shading_pc);
 
@@ -810,12 +833,13 @@ int main(int argc, char *argv[])
 
 			ImGui::Begin("Info");
 
-			float ft = ImGui::GetIO().DeltaTime;
+			float fr = ImGui::GetIO().Framerate;
+			float ft = 1.0f/fr;
 
 			ImGui::Text("Performance");
 
 			ImGui::Text("%05.2f ms per frame", ft * 1000.0f);
-			ImGui::Text("%04d frames per second", int(1.0/ft));
+			ImGui::Text("%04d frames per second", (int) fr);
 
 			ImGui::Separator();
 
@@ -825,16 +849,10 @@ int main(int argc, char *argv[])
 
 			ImGui::Separator();
 
-			static const std::unordered_map <uint32_t, std::string> mode_descriptions {
-				{ 0, "Patches" },
-				{ 1, "Normal" },
-				{ 2, "Shaded" }
-			};
-
 			ImGui::Text("Render mode");
-			for (const auto &[m, desc] : mode_descriptions) {
-				if (ImGui::RadioButton(desc.c_str(), mode == m))
-					mode = m;
+			for (const auto &[k, _] : fragment_shaders) {
+				if (ImGui::RadioButton(k.c_str(), key == k))
+					key = k;
 			}
 
 			ImGui::Separator();
