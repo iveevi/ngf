@@ -16,7 +16,46 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb/stb_image_write.h>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb/stb_image.h>
+
 #include "common.hpp"
+
+struct Texture {
+	int width;
+	int height;
+	int channels;
+	std::vector <uint8_t> pixels;
+};
+
+Texture load_texture(const std::filesystem::path &path)
+{
+	std::string tr = path.string();
+	if (!std::filesystem::exists(path)) {
+		// TODO: ulog
+		fprintf(stderr, "load_texture: could not find path : %s\n", tr.c_str());
+		return {};
+	}
+
+	int width;
+	int height;
+	int channels;
+
+	stbi_set_flip_vertically_on_load(true);
+
+	uint8_t *pixels = stbi_load(tr.c_str(), &width, &height, &channels, 4);
+
+	std::vector <uint8_t> vector;
+	vector.resize(width * height * 4);
+	memcpy(vector.data(), pixels, vector.size() * sizeof(uint8_t));
+
+	return Texture {
+		.width = width,
+		.height = height,
+		.channels = channels,
+		.pixels = vector
+	};
+}
 
 struct Engine;
 
@@ -104,10 +143,32 @@ void cursor_callback(GLFWwindow *window, double xpos, double ypos)
 }
 
 constexpr std::array <vk::DescriptorSetLayoutBinding, 4> meshlet_dslbs {
-	vk::DescriptorSetLayoutBinding { 0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT },
-	vk::DescriptorSetLayoutBinding { 1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT },
-	vk::DescriptorSetLayoutBinding { 2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT },
-	vk::DescriptorSetLayoutBinding { 3, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eMeshEXT },
+	vk::DescriptorSetLayoutBinding {
+		0, vk::DescriptorType::eStorageBuffer,
+		1, vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT
+	},
+
+	vk::DescriptorSetLayoutBinding {
+		1, vk::DescriptorType::eStorageBuffer,
+		1, vk::ShaderStageFlagBits::eMeshEXT
+	},
+
+	vk::DescriptorSetLayoutBinding {
+		2, vk::DescriptorType::eStorageBuffer,
+		1, vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT
+	},
+
+	vk::DescriptorSetLayoutBinding {
+		3, vk::DescriptorType::eStorageBuffer,
+		1, vk::ShaderStageFlagBits::eMeshEXT
+	},
+};
+
+constexpr std::array <vk::DescriptorSetLayoutBinding, 1> environment_dslbs {
+	vk::DescriptorSetLayoutBinding {
+		0, vk::DescriptorType::eCombinedImageSampler,
+		1, vk::ShaderStageFlagBits::eFragment
+	},
 };
 
 struct Engine : littlevk::Skeleton {
@@ -120,13 +181,16 @@ struct Engine : littlevk::Skeleton {
 	vk::CommandPool command_pool;
 	vk::DescriptorPool descriptor_pool;
 
+	std::vector <littlevk::Image> depth;
 	std::vector <vk::Framebuffer> framebuffers;
+
 	std::vector <vk::CommandBuffer> command_buffers;
 
 	littlevk::PresentSyncronization sync;
 
 	// Pipelines
 	littlevk::Pipeline meshlet;
+	littlevk::Pipeline environment;
 
 	// ImGui resources
 	vk::DescriptorPool imgui_descriptor_pool;
@@ -139,6 +203,65 @@ struct Engine : littlevk::Skeleton {
 
 	// Other frame information
 	float last_time;
+
+	// Resizing framebuffers
+	void resize() {
+		// TODO: return a tuple from the skeleton...
+		// e.g. littlevk::std::...
+		device.waitIdle();
+
+		// Resize the swapchain
+		littlevk::Skeleton::resize();
+
+		// Resize the depth buffers
+		for (auto db : depth)
+			littlevk::destroy_image(device, db);
+
+		// Allocate new ones
+		depth.clear();
+		for (size_t i = 0; i < swapchain.images.size(); i++) {
+			littlevk::Image depth_buffer = bind(device, memory_properties, dal)
+				.image(window->extent,
+					vk::Format::eD32Sfloat,
+					vk::ImageUsageFlagBits::eDepthStencilAttachment,
+					vk::ImageAspectFlagBits::eDepth);
+
+			depth.push_back(depth_buffer);
+		}
+
+		// Create the framebuffers
+		littlevk::FramebufferGenerator generator(device, render_pass, window->extent, dal);
+		for (size_t i = 0; i < swapchain.images.size(); i++)
+			generator.add(swapchain.image_views[i], depth[i].view);
+
+		framebuffers = generator.unpack();
+	}
+
+	// Allocating images
+	littlevk::Image upload_texture(const Texture &tex) {
+		littlevk::Image image;
+		littlevk::Buffer staging;
+
+		std::tie(image, staging) = bind(device, memory_properties, dal)
+			.image((uint32_t) tex.width, (uint32_t) tex.height,
+				vk::Format::eR8G8B8A8Unorm,
+				vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+				vk::ImageAspectFlagBits::eColor)
+			.buffer(tex.pixels, vk::BufferUsageFlagBits::eTransferSrc);
+
+		littlevk::submit_now(device, command_pool, graphics_queue,
+			[&](const vk::CommandBuffer &cmd) {
+				littlevk::transition(cmd, image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+				littlevk::copy_buffer_to_image(cmd, image, staging, vk::ImageLayout::eTransferDstOptimal);
+				littlevk::transition(cmd, image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
+			}
+		);
+
+		// Free interim data
+		littlevk::destroy_buffer(device, staging);
+
+		return image;
+	}
 
 	// Construction
 	static void configure_imgui(Engine &engine) {
@@ -177,6 +300,7 @@ struct Engine : littlevk::Skeleton {
 		init_info.ImageCount = 2;
 		init_info.CheckVkResultFn = nullptr;
 		init_info.RenderPass = engine.render_pass;
+		init_info.Subpass = 0;
 
 		ImGui_ImplVulkan_Init(&init_info);
 
@@ -200,39 +324,49 @@ struct Engine : littlevk::Skeleton {
 		properties.pNext = &ms_properties;
 
 		phdev.getProperties2(&properties);
-		printf("properties:\n");
-		printf("  max (task) payload memory: %d KB\n", ms_properties.maxTaskPayloadSize / 1024);
-		printf("  max (task) shared memory: %d KB\n", ms_properties.maxTaskSharedMemorySize / 1024);
-		printf("  max (mesh) shared memory: %d KB\n", ms_properties.maxMeshSharedMemorySize / 1024);
-		printf("  max output vertices: %d\n", ms_properties.maxMeshOutputVertices);
-		printf("  max output primitives: %d\n", ms_properties.maxMeshOutputPrimitives);
-		printf("  max work group invocations: %d\n", ms_properties.maxMeshWorkGroupInvocations);
+		ulog_info("testbed", "physical device properties:\n");
+		ulog_info("testbed", "  max (task) payload memory: %d KB\n", ms_properties.maxTaskPayloadSize / 1024);
+		ulog_info("testbed", "  max (task) shared memory: %d KB\n", ms_properties.maxTaskSharedMemorySize / 1024);
+		ulog_info("testbed", "  max (mesh) shared memory: %d KB\n", ms_properties.maxMeshSharedMemorySize / 1024);
+		ulog_info("testbed", "  max output vertices: %d\n", ms_properties.maxMeshOutputVertices);
+		ulog_info("testbed", "  max output primitives: %d\n", ms_properties.maxMeshOutputPrimitives);
+		ulog_info("testbed", "  max work group invocations: %d\n", ms_properties.maxMeshWorkGroupInvocations);
 
 		// Configure the features
 		vk::PhysicalDeviceMeshShaderFeaturesEXT ms_ft = {};
 		vk::PhysicalDeviceMaintenance4FeaturesKHR m4_ft = {};
+		vk::PhysicalDeviceSeparateDepthStencilLayoutsFeaturesKHR separation = {};
+		vk::PhysicalDeviceRobustness2FeaturesEXT robustness = {};
 		vk::PhysicalDeviceFeatures2KHR ft = {};
 
 		ft.features.independentBlend = true;
 		ft.features.fillModeNonSolid = true;
 		ft.features.geometryShader = true;
 
+		// TODO: littlevk next_chain(...)
 		ft.pNext = &ms_ft;
 		ms_ft.pNext = &m4_ft;
+		m4_ft.pNext = &separation;
+		separation.pNext = &robustness;
 
 		phdev.getFeatures2(&ft);
 
-		printf("features:\n");
-		printf("  task shaders: %s\n", ms_ft.taskShader ? "true" : "false");
-		printf("  mesh shaders: %s\n", ms_ft.meshShader ? "true" : "false");
-		printf("  multiview: %s\n", ms_ft.multiviewMeshShader ? "true" : "false");
-		printf("  m4: %s\n", m4_ft.maintenance4 ? "true" : "false");
+		ulog_info("testbed", "features:\n");
+		ulog_info("testbed", "  task shaders: %s\n", ms_ft.taskShader ? "true" : "false");
+		ulog_info("testbed", "  mesh shaders: %s\n", ms_ft.meshShader ? "true" : "false");
+		ulog_info("testbed", "  multiview: %s\n", ms_ft.multiviewMeshShader ? "true" : "false");
+		ulog_info("testbed", "  m4: %s\n", m4_ft.maintenance4 ? "true" : "false");
 
 		ms_ft.multiviewMeshShader = vk::False;
 		ms_ft.primitiveFragmentShadingRateMeshShader = vk::False;
 
+		separation.separateDepthStencilLayouts = vk::True;
+
+		robustness.nullDescriptor = vk::True;
+
 		// Initialize the device and surface
-		engine.skeletonize(phdev, { 1920, 1080 }, "Neural Geometry Fields Testbed", extensions, ft, vk::PresentModeKHR::eImmediate);
+		engine.skeletonize(phdev, { 1920, 1080 }, "Neural Geometry Fields Testbed",
+				extensions, ft, vk::PresentModeKHR::eImmediate);
 
 		// Create the render pass
 		engine.render_pass = littlevk::RenderPassAssembler(engine.device, engine.dal)
@@ -243,19 +377,8 @@ struct Engine : littlevk::Skeleton {
 				.depth_attachment(1, vk::ImageLayout::eDepthStencilAttachmentOptimal)
 				.done();
 
-		// Create the depth buffer
-		littlevk::Image depth_buffer = bind(engine.device, engine.memory_properties, engine.dal)
-			.image(engine.window->extent,
-				vk::Format::eD32Sfloat,
-				vk::ImageUsageFlagBits::eDepthStencilAttachment,
-				vk::ImageAspectFlagBits::eDepth);
-
-		// Create framebuffers from the swapchain
-		littlevk::FramebufferGenerator generator(engine.device, engine.render_pass, engine.window->extent, engine.dal);
-		for (const auto &view : engine.swapchain.image_views)
-			generator.add(view, depth_buffer.view);
-
-		engine.framebuffers = generator.unpack();
+		// Get everything to the correct size
+		engine.resize();
 
 		// Allocate command buffers
 		engine.command_pool = littlevk::command_pool(engine.device,
@@ -299,17 +422,32 @@ struct Engine : littlevk::Skeleton {
 			{ "FEATURE_SIZE", std::to_string(fsize) }
 		};
 
-		auto bundle = littlevk::ShaderStageBundle(engine.device, engine.dal)
+		auto meshlet_bundle = littlevk::ShaderStageBundle(engine.device, engine.dal)
 			.file(SHADERS_DIRECTORY "/ngf.mesh", vk::ShaderStageFlagBits::eMeshEXT, entry, {}, defines)
 			.file(SHADERS_DIRECTORY "/ngf.task", vk::ShaderStageFlagBits::eTaskEXT, entry, {}, defines)
 			.file(SHADERS_DIRECTORY "/ngf.frag", vk::ShaderStageFlagBits::eFragment, entry, {}, defines);
 
+		auto environment_bundle = littlevk::ShaderStageBundle(engine.device, engine.dal)
+			.file(SHADERS_DIRECTORY "/quad.vert", vk::ShaderStageFlagBits::eVertex)
+			.file(SHADERS_DIRECTORY "/env.frag", vk::ShaderStageFlagBits::eFragment);
+
 		engine.meshlet = littlevk::PipelineAssembler <littlevk::eGraphics> (engine.device, engine.window, engine.dal)
 			.with_render_pass(engine.render_pass, 0)
-			.with_shader_bundle(bundle)
+			.with_shader_bundle(meshlet_bundle)
 			.with_dsl_bindings(meshlet_dslbs)
 			.with_push_constant <TaskData> (vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT)
 			.with_push_constant <ShadingData> (vk::ShaderStageFlagBits::eFragment, sizeof(TaskData));
+
+			// TODO: wireframe mode
+			// .polygon_mode(vk::PolygonMode::eLine);
+
+		engine.environment = littlevk::PipelineAssembler <littlevk::eGraphics> (engine.device, engine.window, engine.dal)
+			.with_render_pass(engine.render_pass, 0)
+			.with_shader_bundle(environment_bundle)
+			.cull_mode(vk::CullModeFlagBits::eNone)
+			.depth_stencil(false, false)
+			.with_dsl_bindings(environment_dslbs)
+			.with_push_constant <RayFrame> (vk::ShaderStageFlagBits::eFragment);
 
 		// Other configurations
 		engine.camera.from(engine.aspect_ratio());
@@ -432,6 +570,9 @@ void render_pass_end(const Engine &engine, const vk::CommandBuffer &cmd)
 
 int main(int argc, char *argv[])
 {
+	// TODO: resizing the window
+	littlevk::config().enable_logging = false;
+
 	if (argc < 2) {
 		ulog_error("testbed", "Usage: testbed <ngf>\n");
 		return EXIT_FAILURE;
@@ -478,7 +619,6 @@ int main(int argc, char *argv[])
 
 		ngf.patch_count = sizes[0];
 		ngf.feature_size = sizes[2];
-		// ulog_assert(ngf.feature_size == 20, "testbed", "Expected an NGF with feature size of 20.\n");
 
 		fin.read(reinterpret_cast <char *> (vertices.data()), vertices.size() * sizeof(glm::vec3));
 		fin.read(reinterpret_cast <char *> (features.data()), features.size() * sizeof(float));
@@ -529,10 +669,11 @@ int main(int argc, char *argv[])
 
 	// Configure renderer
 	static const std::vector <const char *> extensions {
-		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 		VK_EXT_MESH_SHADER_EXTENSION_NAME,
+		VK_EXT_ROBUSTNESS_2_EXTENSION_NAME,
 		VK_KHR_MAINTENANCE_4_EXTENSION_NAME,
 		VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,
+		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 	};
 
 	auto predicate = [](const vk::PhysicalDevice &phdev) {
@@ -578,6 +719,19 @@ int main(int argc, char *argv[])
 		.update(3, 0, *vk_ngf.network, 0, sizeof(float) * network.size())
 		.finalize();
 
+	// Environment map
+	vk::Sampler sampler = littlevk::SamplerAssembler(engine.device, engine.dal);
+
+	Texture tex = load_texture("resources/environment.hdr");
+	littlevk::Image dtex = engine.upload_texture(tex);
+
+	vk::DescriptorSet env_dset = littlevk::bind(engine.device, engine.descriptor_pool)
+		.allocate_descriptor_sets(*engine.environment.dsl).front();
+
+	littlevk::bind(engine.device, env_dset, environment_dslbs)
+		.update(0, 0, sampler, dtex.view, vk::ImageLayout::eShaderReadOnlyOptimal)
+		.finalize();
+
 	// Plotting data
 	int mode = 0;
 	int resolution = 15;
@@ -596,8 +750,28 @@ int main(int argc, char *argv[])
 
 		render_pass_begin(engine, cmd, op);
 
+		if (mode == 2) {
+			cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.environment.handle);
+
+			RayFrame rayframe = engine.camera.rayframe(engine.camera_transform);
+
+			cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+					engine.environment.layout,
+					0, { env_dset }, nullptr);
+
+			cmd.pushConstants <RayFrame> (engine.environment.layout,
+				vk::ShaderStageFlagBits::eFragment,
+				0, rayframe);
+
+			cmd.bindVertexBuffers(0, { VK_NULL_HANDLE }, { 0 });
+			cmd.draw(6, 1, 0, 0);
+		}
+
 		cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.meshlet.handle);
-		cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, engine.meshlet.layout, 0, { vk_ngf.dset }, nullptr);
+
+		cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+				engine.meshlet.layout,
+				0, { vk_ngf.dset }, nullptr);
 
 		float time = glfwGetTime();
 

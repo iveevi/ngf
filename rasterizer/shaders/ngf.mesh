@@ -228,7 +228,14 @@ void main()
 		uint primitive_index = 2 * (gl_LocalInvocationID.x + qwidth * gl_LocalInvocationID.y);
 
 		// TODO: diagonal cutting? switch to NV mesh shaders for read access
-		gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(gl_LocalInvocationIndex, gl_LocalInvocationIndex + 1, gl_LocalInvocationIndex + WORK_GROUP_SIZE);
-		gl_PrimitiveTriangleIndicesEXT[primitive_index + 1] = uvec3(gl_LocalInvocationIndex + WORK_GROUP_SIZE + 1, gl_LocalInvocationIndex + 1, gl_LocalInvocationIndex + WORK_GROUP_SIZE);
+		gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(
+			gl_LocalInvocationIndex,
+			gl_LocalInvocationIndex + 1,
+			gl_LocalInvocationIndex + WORK_GROUP_SIZE);
+
+		gl_PrimitiveTriangleIndicesEXT[primitive_index + 1] = uvec3(
+			gl_LocalInvocationIndex + 1,
+			gl_LocalInvocationIndex + WORK_GROUP_SIZE + 1,
+			gl_LocalInvocationIndex + WORK_GROUP_SIZE);
 	}
 }
