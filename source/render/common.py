@@ -34,8 +34,6 @@ def set_principled_node(principled_node: bpy.types.Node,
     principled_node.inputs['Coat Weight'].default_value = coat
     principled_node.inputs['Coat Roughness'].default_value = coat_roughness
     principled_node.inputs['Coat IOR'].default_value = coat_ior
-    # principled_node.inputs['Subsurface Weight'].default_value = 1
-    # principled_node.inputs['Subsurface Scale'].default_value = 0.1
 
 def normalize(M: bpy.types.Mesh) -> None:
     vertices = M.data.vertices
@@ -50,21 +48,21 @@ def normalize(M: bpy.types.Mesh) -> None:
         vmax = max(vmax, v.x)
         vmax = max(vmax, v.y)
         vmax = max(vmax, v.z)
-        
+
         vmin = min(vmin, v.x)
         vmin = min(vmin, v.y)
         vmin = min(vmin, v.z)
-        
+
         vecmax.x = max(vecmax.x, v.x)
         vecmax.y = max(vecmax.y, v.y)
         vecmax.z = max(vecmax.z, v.z)
-        
+
         vecmin.x = max(vecmin.x, v.x)
         vecmin.y = max(vecmin.y, v.y)
         vecmin.z = max(vecmin.z, v.z)
 
     center = (vecmin + vecmin)/2
     scale = abs(vmax - vmin)/2
-    print('mesh normalization:', center, scale)
+
     for v in M.data.vertices:
         v.co = (v.co - center)/scale

@@ -79,7 +79,4 @@ C.preferences.addons['cycles'].preferences.get_devices()
 for d in C.preferences.addons['cycles'].preferences.devices:
     d['use'] = 1
 
-# bpy.ops.render.render(write_still=True)
-
 M.select_set(True)
-# bpy.ops.object.delete()

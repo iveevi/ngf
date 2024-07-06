@@ -1,6 +1,6 @@
 # Neural Geometry Fields for Meshes
 
-![](media/teaser.jpg)
+![](resources/teaser.jpg)
 
 # Usage
 
@@ -50,7 +50,7 @@ Some tips to consider if errors appear:
 
 # Rasterizer
 
-![](media/rasterizer.png)
+![](resources/rasterizer.png)
 
 Source code for the real-time rasterizer is provided in the `rasterizer`
 directory. The only dependencies for building the program are GLFW and Vulkan;
@@ -62,13 +62,16 @@ cmake -B build .
 cmake --build build -j
 ```
 
-To run the rasterizer, run the resulting `build/testbed` executable by
+To run the rasterizer, execute the resulting `build/testbed` binary by
 providing a path to the neural geometry field binary file (e.g. within
-`results/binaries`):
+`results/binaries`). For example:
 
 ```
 ./build/testbed results/binaries/nefertiti-lod1000-f20.bin
 ```
+
+A few binaries have been provided in the `resources/samples` directory to
+explore the rasterizer on pretrained NGFs.
 
 # Citation
 

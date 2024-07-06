@@ -43,7 +43,6 @@ layout (binding = 2) readonly buffer Patches
 
 // Local execution data
 const uint ENCODING_LEVELS = 8;
-const uint FEATURE_SIZE    = 20;
 const uint FFIN            = FEATURE_SIZE + 3 * 2 * ENCODING_LEVELS;
 
 // Neural network weights

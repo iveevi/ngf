@@ -24,7 +24,7 @@ experiments/results
 export/
 imgui.ini
 measurements/
-media/figures/
+resources/figures/
 meshes/
 output/
 results/

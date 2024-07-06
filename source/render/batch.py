@@ -17,20 +17,11 @@ D.objects[1].select_set(True)
 D.objects[2].select_set(True)
 bpy.ops.object.delete()
 
-# TODO: sort to use the same view
-
 enode = W.node_tree.nodes.new('ShaderNodeTexEnvironment')
-enode.image = bpy.data.images.load('media/environment.hdr')
+enode.image = bpy.data.images.load('resources/environment.hdr')
 node_tree = W.node_tree
 node_tree.nodes['Background'].inputs['Strength'].default_value = 0.5
 node_tree.links.new(enode.outputs['Color'], node_tree.nodes['Background'].inputs['Color'])
-
-# geometry_node = W.node_tree.nodes.new('ShaderNodeNewGeometry')
-# rotation_node = W.node_tree.nodes.new('ShaderNodeVectorRotate')
-# rotation_node.inputs['Axis'].default_value = (1, 1, -1)
-# rotation_node.inputs['Angle'].default_value = np.radians(162)
-# W.node_tree.links.new(geometry_node.outputs['True Normal'], rotation_node.inputs['Vector'])
-# W.node_tree.links.new(rotation_node.outputs['Vector'], W.node_tree.nodes['World Output'].inputs['Surface'])
 
 mat = add_material('Main', use_nodes=True, make_node_tree_empty=True)
 nodes = mat.node_tree.nodes
@@ -44,8 +35,7 @@ set_principled_node(principled_node=principled_node,
 directory = sys.argv[-1]
 model = sys.argv[-2]
 init = False
-    
-# TODO: util function to configure
+
 R.resolution_x = 1920
 R.resolution_y = 1080
 R.film_transparent = True
@@ -74,37 +64,16 @@ for path in glob.glob(directory + '/*.stl'):
 
     M = D.objects[basename]
     normalize(M)
-    # if not basename.endswith('ngf'):
-    #     normalize(M)
-    # else:
-    #     print('NORMALIZING')
-
-    # mx = M.dimensions.x
-    # my = M.dimensions.y
-    # mz = M.dimensions.z
-    # # extent = np.max([ mx, my, mz ])
-    # extent = np.sqrt(mx ** 2 + my ** 2 + mz ** 2)/2
-    # print('extent', extent)
-    # M.scale = [ 1/extent, 1/extent, 1/extent ]
 
     links.new(principled_node.outputs['BSDF'], output_node.inputs['Surface'])
     M.data.materials.append(mat)
     M.rotation_euler = rotations(model)
-    # M.rotation_euler = rotations(basename)
 
-    # mesh = M.data
-    # values = [True] * len(mesh.polygons)
-    # mesh.polygons.foreach_set('use_smooth', values)
-
-    # if not init:
     camera = D.objects['Camera']
     bpy.ops.view3d.camera_to_view_selected()
-    # init = True
 
-    # R.filepath = 'results/blender/' + basename + '.png'
     R.filepath = os.path.join(destination, basename + '.png')
     bpy.ops.render.render(write_still=True)
 
     M.select_set(True)
     bpy.ops.object.delete()
-    # break

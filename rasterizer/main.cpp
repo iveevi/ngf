@@ -187,7 +187,7 @@ struct Engine : littlevk::Skeleton {
 		ImPlot::CreateContext();
 	}
 
-	static Engine from(const vk::PhysicalDevice &phdev, const std::vector <const char *> &extensions) {
+	static Engine from(const vk::PhysicalDevice &phdev, const std::vector <const char *> &extensions, size_t fsize) {
 		Engine engine;
 
 		engine.phdev = phdev;
@@ -294,10 +294,15 @@ struct Engine : littlevk::Skeleton {
 
 		using standalone::readfile;
 
+		const std::string entry = "main";
+		const littlevk::shader::Defines defines {
+			{ "FEATURE_SIZE", std::to_string(fsize) }
+		};
+
 		auto bundle = littlevk::ShaderStageBundle(engine.device, engine.dal)
-			.file(SHADERS_DIRECTORY "/ngf.mesh", vk::ShaderStageFlagBits::eMeshEXT)
-			.file(SHADERS_DIRECTORY "/ngf.task", vk::ShaderStageFlagBits::eTaskEXT)
-			.file(SHADERS_DIRECTORY "/ngf.frag", vk::ShaderStageFlagBits::eFragment);
+			.file(SHADERS_DIRECTORY "/ngf.mesh", vk::ShaderStageFlagBits::eMeshEXT, entry, {}, defines)
+			.file(SHADERS_DIRECTORY "/ngf.task", vk::ShaderStageFlagBits::eTaskEXT, entry, {}, defines)
+			.file(SHADERS_DIRECTORY "/ngf.frag", vk::ShaderStageFlagBits::eFragment, entry, {}, defines);
 
 		engine.meshlet = littlevk::PipelineAssembler <littlevk::eGraphics> (engine.device, engine.window, engine.dal)
 			.with_render_pass(engine.render_pass, 0)
@@ -473,7 +478,7 @@ int main(int argc, char *argv[])
 
 		ngf.patch_count = sizes[0];
 		ngf.feature_size = sizes[2];
-		ulog_assert(ngf.feature_size == 20, "testbed", "Expected an NGF with feature size of 20.\n");
+		// ulog_assert(ngf.feature_size == 20, "testbed", "Expected an NGF with feature size of 20.\n");
 
 		fin.read(reinterpret_cast <char *> (vertices.data()), vertices.size() * sizeof(glm::vec3));
 		fin.read(reinterpret_cast <char *> (features.data()), features.size() * sizeof(float));
@@ -537,7 +542,7 @@ int main(int argc, char *argv[])
 	vk::PhysicalDevice phdev = littlevk::pick_physical_device(predicate);
 
 	// Initialization
-	Engine engine = Engine::from(phdev, extensions);
+	Engine engine = Engine::from(phdev, extensions, ngf.feature_size);
 
 	engine.camera_transform.position = glm::vec3 { 0, 0, -2.3 };
 

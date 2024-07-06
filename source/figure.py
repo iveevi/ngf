@@ -168,17 +168,17 @@ def synthesize_tex(code, filename, log=True):
         fp.write(code)
         fp.seek(0)
 
-        os.makedirs(os.path.dirname('media/figures/generated/'), exist_ok=True)
+        os.makedirs(os.path.dirname('resources/figures/generated/'), exist_ok=True)
 
         if log:
             subprocess.check_call(['xelatex', '-interaction=nonstopmode', fp.name],
-                cwd=os.path.dirname('media/figures/generated/'))
+                cwd=os.path.dirname('resources/figures/generated/'))
         else:
             subprocess.check_call(['xelatex', '-interaction=nonstopmode', fp.name],
-                cwd=os.path.dirname('media/figures/generated/'), stdout=subprocess.DEVNULL)
+                cwd=os.path.dirname('resources/figures/generated/'), stdout=subprocess.DEVNULL)
 
         # Copy resulting PDF to destination
-        result = os.path.join('media/figures/generated/', os.path.basename(fp.name) + '.pdf')
+        result = os.path.join('resources/figures/generated/', os.path.basename(fp.name) + '.pdf')
         subprocess.check_call(['cp', result, filename])
         print('Retrieving', result, 'into', filename)
 
@@ -218,7 +218,7 @@ def results_plot(name, db):
             mind = abs(entry['count'] - 1000)
             primary = i
 
-    directory = os.path.join('media', 'figures', 'generated')
+    directory = os.path.join('resources', 'figures', 'generated')
     abs_directory = os.path.abspath(directory)
     os.makedirs(abs_directory, exist_ok=True)
 
@@ -425,7 +425,7 @@ def results_plot(name, db):
 
     print('CODE', code)
 
-    synthesize_tex(code, os.path.join('media', 'figures', name + '.pdf'))
+    synthesize_tex(code, os.path.join('resources', 'figures', name + '.pdf'))
 
 # Loss plots (gather from directory)
 def loss_plot(dir):
@@ -719,7 +719,7 @@ def tessellation(db):
 
     import torchvision
 
-    directory     = os.path.join('media', 'figures', 'generated')
+    directory     = os.path.join('resources', 'figures', 'generated')
     abs_directory = os.path.abspath(directory)
 
     for k, img in images.items():
@@ -856,7 +856,7 @@ def features(db):
 
     import torchvision
 
-    directory     = os.path.join('media', 'figures', 'generated')
+    directory     = os.path.join('resources', 'figures', 'generated')
     abs_directory = os.path.abspath(directory)
 
     for k, img in images.items():
@@ -1017,7 +1017,7 @@ def frequencies(db):
     cbox2 = 30, 130, 470, 570
 
     # Extract and export the images
-    directory = os.path.join('media', 'figures', 'generated')
+    directory = os.path.join('resources', 'figures', 'generated')
     abs_directory = os.path.abspath(directory)
     os.makedirs(abs_directory, exist_ok=True)
     for k, img in images.items():
@@ -1168,7 +1168,7 @@ def losses(db):
     cbox = cropbox(images)
 
     # Extract and export the images
-    directory = os.path.join('media', 'figures', 'generated')
+    directory = os.path.join('resources', 'figures', 'generated')
     abs_directory = os.path.abspath(directory)
     os.makedirs(abs_directory, exist_ok=True)
     for k, img in images.items():
@@ -1243,7 +1243,7 @@ def ingp(db):
     cbox = cropbox(images)
 
     # Extract and export the images
-    directory = os.path.join('media', 'figures', 'generated')
+    directory = os.path.join('resources', 'figures', 'generated')
     abs_directory = os.path.abspath(directory)
     os.makedirs(abs_directory, exist_ok=True)
 
@@ -1352,7 +1352,7 @@ def teaser(db):
     cbox = cropbox(images)
 
     # Extract and export the images
-    directory = os.path.join('media', 'figures', 'generated')
+    directory = os.path.join('resources', 'figures', 'generated')
     abs_directory = os.path.abspath(directory)
     os.makedirs(abs_directory, exist_ok=True)
 

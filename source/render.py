@@ -64,7 +64,7 @@ def cartesian_to_spherical(cart):
 
 
 class Renderer:
-    ENVIRONMENT = os.path.join(os.path.dirname(__file__), os.path.pardir, 'media', 'environment.hdr')
+    ENVIRONMENT = os.path.join(os.path.dirname(__file__), os.path.pardir, 'resources', 'environment.hdr')
 
     @staticmethod
     def projection(fov: float, ar: float, near: float, far: float) -> torch.Tensor:

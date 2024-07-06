@@ -32,7 +32,7 @@ bpy.ops.object.delete()
 
 node_tree = W.node_tree
 enode = W.node_tree.nodes.new('ShaderNodeTexEnvironment')
-enode.image = bpy.data.images.load('media/environment.hdr')
+enode.image = bpy.data.images.load('resources/environment.hdr')
 node_tree.links.new(enode.outputs['Color'], node_tree.nodes['Background'].inputs['Color'])
 
 # Reference mesh
