@@ -33,8 +33,7 @@ Texture load_texture(const std::filesystem::path &path)
 {
 	std::string tr = path.string();
 	if (!std::filesystem::exists(path)) {
-		// TODO: ulog
-		fprintf(stderr, "load_texture: could not find path : %s\n", tr.c_str());
+		ulog_error("load_texture", "load_texture: could not find path : %s\n", tr.c_str());
 		return {};
 	}
 
@@ -178,10 +177,10 @@ struct FragmentShaderInfo {
 };
 
 const std::unordered_map <std::string, FragmentShaderInfo> fragment_shaders {
-	{ "shaded", { SHADERS_DIRECTORY "/shaded.frag" } },
-	{ "patches", { SHADERS_DIRECTORY "/patches.frag" } },
-	{ "normals", { SHADERS_DIRECTORY "/normals.frag" } },
-	{ "wireframe", {
+	{ "Shaded", { SHADERS_DIRECTORY "/shaded.frag" } },
+	{ "Patches", { SHADERS_DIRECTORY "/patches.frag" } },
+	{ "Normals", { SHADERS_DIRECTORY "/normals.frag" } },
+	{ "Wireframe", {
 		SHADERS_DIRECTORY "/fill.frag",
 		vk::CullModeFlagBits::eNone,
 		vk::PolygonMode::eLine
@@ -733,7 +732,7 @@ int main(int argc, char *argv[])
 		.buffer(network, vk::BufferUsageFlagBits::eStorageBuffer);
 
 	vk_ngf.dset = littlevk::bind(engine.device, engine.descriptor_pool)
-		.allocate_descriptor_sets(*engine.primaries["shaded"].dsl).front();
+		.allocate_descriptor_sets(*engine.primaries["Shaded"].dsl).front();
 
 	littlevk::bind(engine.device, vk_ngf.dset, meshlet_dslbs)
 		.update(0, 0, *vk_ngf.vertices, 0, sizeof(glm::vec4) * ngf.vertices.size())
@@ -756,7 +755,7 @@ int main(int argc, char *argv[])
 		.finalize();
 
 	// Plotting data
-	std::string key = "shaded";
+	std::string key = "Shaded";
 
 	int resolution = 15;
 
@@ -774,7 +773,7 @@ int main(int argc, char *argv[])
 
 		render_pass_begin(engine, cmd, op);
 
-		if (key == "shaded") {
+		if (key == "Shaded") {
 			cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.environment.handle);
 
 			RayFrame rayframe = engine.camera.rayframe(engine.camera_transform);

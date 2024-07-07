@@ -4,6 +4,7 @@
 #extension GL_EXT_mesh_shader: require
 #extension GL_EXT_debug_printf : require
 #extension GL_EXT_control_flow_attributes : require
+#extension GL_KHR_shader_subgroup_shuffle : require
 
 #include "payload.h"
 
@@ -11,7 +12,7 @@ const uint WORK_GROUP_SIZE = 8;
 
 layout (local_size_x = WORK_GROUP_SIZE, local_size_y = WORK_GROUP_SIZE) in;
 
-// NOTE: each mesh shader does at least a quadrant of a patch
+// Each mesh shader does at least a quadrant of a patch
 layout (triangles, max_vertices = 64, max_primitives = 98) out;
 
 // Inputs
@@ -223,19 +224,46 @@ void main()
 	position[gl_LocalInvocationIndex] = vec3(model * vec4(v, 1.0f));
 	pindex[gl_LocalInvocationIndex] = payload.pindex;
 
-	// barrier();
+	uint gli = gl_LocalInvocationIndex;
 	if (gl_LocalInvocationID.x < qwidth && gl_LocalInvocationID.y < qheight) {
-		uint primitive_index = 2 * (gl_LocalInvocationID.x + qwidth * gl_LocalInvocationID.y);
+		uint prim = 2 * (gl_LocalInvocationID.x + qwidth * gl_LocalInvocationID.y);
 
-		// TODO: diagonal cutting? switch to NV mesh shaders for read access
-		gl_PrimitiveTriangleIndicesEXT[primitive_index] = uvec3(
-			gl_LocalInvocationIndex,
-			gl_LocalInvocationIndex + 1,
-			gl_LocalInvocationIndex + WORK_GROUP_SIZE);
+		// Assumes that the subgroup size is 32
+		uint gsi = gl_SubgroupInvocationID;
 
-		gl_PrimitiveTriangleIndicesEXT[primitive_index + 1] = uvec3(
-			gl_LocalInvocationIndex + 1,
-			gl_LocalInvocationIndex + WORK_GROUP_SIZE + 1,
-			gl_LocalInvocationIndex + WORK_GROUP_SIZE);
+		float sign = 1;
+		uint side = gsi + 1;
+		if (side >= 32 || gl_LocalInvocationID.x >= qwidth) {
+			side = gsi - 1;
+			sign *= -1;
+		}
+
+		uint vert = gsi + WORK_GROUP_SIZE;
+		if (vert >= 32) {
+			vert = gsi - WORK_GROUP_SIZE;
+			sign *= -1;
+		}
+
+		uint sidevert = gsi + WORK_GROUP_SIZE + 1;
+		if (sidevert >= 32)
+			sidevert = gsi - WORK_GROUP_SIZE + 1;
+		if (sidevert >= 32)
+			sidevert = gsi - WORK_GROUP_SIZE - 1;
+
+		vec3 sv = subgroupShuffle(v, side);
+		vec3 vv = subgroupShuffle(v, vert);
+		vec3 svv = subgroupShuffle(v, sidevert);
+
+		float d0 = length(v - svv);
+		float d1 = length(sv - vv);
+
+		if (d0 > d1) {
+			gl_PrimitiveTriangleIndicesEXT[prim] = uvec3(gli, gli + 1, gli + WORK_GROUP_SIZE);
+			gl_PrimitiveTriangleIndicesEXT[prim + 1] = uvec3(gli + 1, gli + WORK_GROUP_SIZE + 1, gli + WORK_GROUP_SIZE);
+		} else {
+			gl_PrimitiveTriangleIndicesEXT[prim] = uvec3(gli, gli + 1, gli + WORK_GROUP_SIZE + 1);
+			gl_PrimitiveTriangleIndicesEXT[prim + 1] = uvec3(gli, gli + WORK_GROUP_SIZE + 1, gli + WORK_GROUP_SIZE);
+
+		}
 	}
 }
