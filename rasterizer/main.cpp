@@ -140,51 +140,23 @@ void cursor_callback(GLFWwindow *window, double xpos, double ypos)
 	}
 }
 
-constexpr std::array <vk::DescriptorSetLayoutBinding, 9> meshlet_dslbs {
-	vk::DescriptorSetLayoutBinding {
-		0, vk::DescriptorType::eStorageBuffer,
-		1, vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT
-	},
-
-	vk::DescriptorSetLayoutBinding {
-		1, vk::DescriptorType::eStorageBuffer,
+constexpr vk::DescriptorSetLayoutBinding texture_at(uint32_t binding)
+{
+	return vk::DescriptorSetLayoutBinding {
+		binding, vk::DescriptorType::eCombinedImageSampler,
 		1, vk::ShaderStageFlagBits::eMeshEXT
-	},
+	};
+}
 
-	vk::DescriptorSetLayoutBinding {
-		2, vk::DescriptorType::eStorageBuffer,
-		1, vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT
-	},
-
-	vk::DescriptorSetLayoutBinding {
-		3, vk::DescriptorType::eStorageBuffer,
-		1, vk::ShaderStageFlagBits::eMeshEXT
-	},
-
-	vk::DescriptorSetLayoutBinding {
-		4, vk::DescriptorType::eCombinedImageSampler,
-		1, vk::ShaderStageFlagBits::eMeshEXT
-	},
-
-	vk::DescriptorSetLayoutBinding {
-		5, vk::DescriptorType::eCombinedImageSampler,
-		1, vk::ShaderStageFlagBits::eMeshEXT
-	},
-
-	vk::DescriptorSetLayoutBinding {
-		6, vk::DescriptorType::eCombinedImageSampler,
-		1, vk::ShaderStageFlagBits::eMeshEXT
-	},
-
-	vk::DescriptorSetLayoutBinding {
-		7, vk::DescriptorType::eCombinedImageSampler,
-		1, vk::ShaderStageFlagBits::eMeshEXT
-	},
-
-	vk::DescriptorSetLayoutBinding {
-		8, vk::DescriptorType::eCombinedImageSampler,
-		1, vk::ShaderStageFlagBits::eMeshEXT
-	},
+constexpr std::array <vk::DescriptorSetLayoutBinding, 8> meshlet_dslbs {
+	texture_at(0),	// Complexes
+	texture_at(1),	// Vertices
+	texture_at(2),	// Features
+	texture_at(3),	// Bias vectors
+	texture_at(4),	// Layer weights
+	texture_at(5),	// .
+	texture_at(6),	// .
+	texture_at(7),	// .
 };
 
 constexpr std::array <vk::DescriptorSetLayoutBinding, 1> environment_dslbs {
@@ -778,6 +750,29 @@ int main(int argc, char *argv[])
 			W0[j * 64 + i] = ngf.weights[0].vec[i * w0c + j];
 	}
 
+	// Feature vector
+	std::vector <glm::vec4> features(ngf.patch_count * ngf.feature_size);
+
+	for (size_t i = 0; i < ngf.patch_count; i++) {
+		glm::ivec4 complex = ngf.patches[i];
+		for (size_t j = 0; j < ngf.feature_size; j++) {
+			float f0 = ngf.features[complex.x * ngf.feature_size + j];
+			float f1 = ngf.features[complex.y * ngf.feature_size + j];
+			float f2 = ngf.features[complex.z * ngf.feature_size + j];
+			float f3 = ngf.features[complex.w * ngf.feature_size + j];
+			features[i * ngf.feature_size + j] = glm::vec4(f0, f1, f2, f3);
+		}
+	}
+
+	littlevk::Image complex_texture;
+	littlevk::Buffer complex_buffer;
+
+	littlevk::Image vertex_texture;
+	littlevk::Buffer vertex_buffer;
+
+	littlevk::Image feature_texture;
+	littlevk::Buffer feature_buffer;
+
 	littlevk::Image W0_texture;
 	littlevk::Buffer W0_buffer;
 
@@ -791,6 +786,9 @@ int main(int argc, char *argv[])
 	littlevk::Buffer W3_buffer;
 
 	std::tie(bias_texture, bias_buffer,
+			complex_texture, complex_buffer,
+			vertex_texture, vertex_buffer,
+			feature_texture, feature_buffer,
 			W0_texture, W0_buffer,
 			W1_texture, W1_buffer,
 			W2_texture, W2_buffer,
@@ -803,6 +801,30 @@ int main(int argc, char *argv[])
 			vk::ImageType::e1D,
 			vk::ImageViewType::e1D)
 		.buffer(biases, vk::BufferUsageFlagBits::eTransferSrc)
+		.image(ngf.patch_count, 1,
+			vk::Format::eR32G32B32A32Sfloat,
+			vk::ImageUsageFlagBits::eSampled
+				| vk::ImageUsageFlagBits::eTransferDst,
+			vk::ImageAspectFlagBits::eColor,
+			vk::ImageType::e1D,
+			vk::ImageViewType::e1D)
+		.buffer(ngf.patches, vk::BufferUsageFlagBits::eTransferSrc)
+		.image(ngf.vertices.size(), 1,
+			vk::Format::eR32G32B32A32Sfloat,
+			vk::ImageUsageFlagBits::eSampled
+				| vk::ImageUsageFlagBits::eTransferDst,
+			vk::ImageAspectFlagBits::eColor,
+			vk::ImageType::e1D,
+			vk::ImageViewType::e1D)
+		.buffer(ngf.vertices, vk::BufferUsageFlagBits::eTransferSrc)
+		.image(ngf.feature_size, ngf.patch_count,
+			vk::Format::eR32G32B32A32Sfloat,
+			vk::ImageUsageFlagBits::eSampled
+				| vk::ImageUsageFlagBits::eTransferDst,
+			vk::ImageAspectFlagBits::eColor,
+			vk::ImageType::e2D,
+			vk::ImageViewType::e2D)
+		.buffer(features, vk::BufferUsageFlagBits::eTransferSrc)
 		.image(16, w0c,
 			vk::Format::eR32G32B32A32Sfloat,
 			vk::ImageUsageFlagBits::eSampled
@@ -837,62 +859,30 @@ int main(int argc, char *argv[])
 		.buffer(W3, vk::BufferUsageFlagBits::eTransferSrc);
 
 	// Peform all the transfers
+	auto copy_to_texure = [](const vk::CommandBuffer &cmd, const littlevk::Image &texture, const littlevk::Buffer &buffer) {
+		littlevk::transition(cmd, texture,
+				vk::ImageLayout::eUndefined,
+				vk::ImageLayout::eTransferDstOptimal);
+
+		littlevk::copy_buffer_to_image(cmd, texture, buffer,
+				vk::ImageLayout::eTransferDstOptimal);
+
+		littlevk::transition(cmd, texture,
+				vk::ImageLayout::eTransferDstOptimal,
+				vk::ImageLayout::eShaderReadOnlyOptimal);
+	};
+
 	littlevk::submit_now(engine.device, engine.command_pool, engine.graphics_queue,
 		[&](const vk::CommandBuffer &cmd) {
-			littlevk::transition(cmd, bias_texture,
-					vk::ImageLayout::eUndefined,
-					vk::ImageLayout::eTransferDstOptimal);
+			copy_to_texure(cmd, bias_texture, bias_buffer);
+			copy_to_texure(cmd, complex_texture, complex_buffer);
+			copy_to_texure(cmd, vertex_texture, vertex_buffer);
+			copy_to_texure(cmd, feature_texture, feature_buffer);
 
-			littlevk::copy_buffer_to_image(cmd, bias_texture, bias_buffer,
-					vk::ImageLayout::eTransferDstOptimal);
-
-			littlevk::transition(cmd, bias_texture,
-					vk::ImageLayout::eTransferDstOptimal,
-					vk::ImageLayout::eShaderReadOnlyOptimal);
-
-			littlevk::transition(cmd, W0_texture,
-					vk::ImageLayout::eUndefined,
-					vk::ImageLayout::eTransferDstOptimal);
-
-			littlevk::copy_buffer_to_image(cmd, W0_texture, W0_buffer,
-					vk::ImageLayout::eTransferDstOptimal);
-
-			littlevk::transition(cmd, W0_texture,
-					vk::ImageLayout::eTransferDstOptimal,
-					vk::ImageLayout::eShaderReadOnlyOptimal);
-
-			littlevk::transition(cmd, W1_texture,
-					vk::ImageLayout::eUndefined,
-					vk::ImageLayout::eTransferDstOptimal);
-
-			littlevk::copy_buffer_to_image(cmd, W1_texture, W1_buffer,
-					vk::ImageLayout::eTransferDstOptimal);
-
-			littlevk::transition(cmd, W1_texture,
-					vk::ImageLayout::eTransferDstOptimal,
-					vk::ImageLayout::eShaderReadOnlyOptimal);
-
-			littlevk::transition(cmd, W2_texture,
-					vk::ImageLayout::eUndefined,
-					vk::ImageLayout::eTransferDstOptimal);
-
-			littlevk::copy_buffer_to_image(cmd, W2_texture, W2_buffer,
-					vk::ImageLayout::eTransferDstOptimal);
-
-			littlevk::transition(cmd, W2_texture,
-					vk::ImageLayout::eTransferDstOptimal,
-					vk::ImageLayout::eShaderReadOnlyOptimal);
-
-			littlevk::transition(cmd, W3_texture,
-					vk::ImageLayout::eUndefined,
-					vk::ImageLayout::eTransferDstOptimal);
-
-			littlevk::copy_buffer_to_image(cmd, W3_texture, W3_buffer,
-					vk::ImageLayout::eTransferDstOptimal);
-
-			littlevk::transition(cmd, W3_texture,
-					vk::ImageLayout::eTransferDstOptimal,
-					vk::ImageLayout::eShaderReadOnlyOptimal);
+			copy_to_texure(cmd, W0_texture, W0_buffer);
+			copy_to_texure(cmd, W1_texture, W1_buffer);
+			copy_to_texure(cmd, W2_texture, W2_buffer);
+			copy_to_texure(cmd, W3_texture, W3_buffer);
 		}
 	);
 
@@ -907,16 +897,17 @@ int main(int argc, char *argv[])
 
 	vk::Sampler floating_sampler = littlevk::SamplerAssembler(engine.device, engine.dal);
 
+	auto SROO = vk::ImageLayout::eShaderReadOnlyOptimal;
+
 	littlevk::bind(engine.device, vk_ngf.dset, meshlet_dslbs)
-		.update(0, 0, *vk_ngf.vertices, 0, sizeof(glm::vec4) * ngf.vertices.size())
-		.update(1, 0, *vk_ngf.features, 0, sizeof(float) * ngf.features.size())
-		.update(2, 0, *vk_ngf.patches, 0, sizeof(glm::ivec4) * ngf.patches.size())
-		.update(3, 0, *vk_ngf.network, 0, sizeof(float) * network.size())
-		.update(4, 0, floating_sampler, bias_texture.view, vk::ImageLayout::eShaderReadOnlyOptimal)
-		.update(5, 0, floating_sampler, W0_texture.view, vk::ImageLayout::eShaderReadOnlyOptimal)
-		.update(6, 0, floating_sampler, W1_texture.view, vk::ImageLayout::eShaderReadOnlyOptimal)
-		.update(7, 0, floating_sampler, W2_texture.view, vk::ImageLayout::eShaderReadOnlyOptimal)
-		.update(8, 0, floating_sampler, W3_texture.view, vk::ImageLayout::eShaderReadOnlyOptimal)
+		.update(0, 0, floating_sampler, complex_texture.view, SROO)
+		.update(1, 0, floating_sampler, vertex_texture.view, SROO)
+		.update(2, 0, floating_sampler, feature_texture.view, SROO)
+		.update(3, 0, floating_sampler, bias_texture.view, SROO)
+		.update(4, 0, floating_sampler, W0_texture.view, SROO)
+		.update(5, 0, floating_sampler, W1_texture.view, SROO)
+		.update(6, 0, floating_sampler, W2_texture.view, SROO)
+		.update(7, 0, floating_sampler, W3_texture.view, SROO)
 		.finalize();
 
 	// Environment map

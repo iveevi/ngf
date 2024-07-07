@@ -27,31 +27,19 @@ layout (push_constant) uniform NGFPushConstants {
 	float time;
 };
 
-layout (binding = 0) readonly buffer Points
-{
-	vec3 data[];
-} points;
-
-layout (binding = 1) readonly buffer Features
-{
-	float data[];
-} features;
-
-layout (binding = 2) readonly buffer Patches
-{
-	ivec4 data[];
-} patches;
-
 // Local execution data
 const uint ENCODING_LEVELS = 8;
-const uint FFIN            = FEATURE_SIZE + 3 * 2 * ENCODING_LEVELS;
+const uint FFIN = FEATURE_SIZE + 3 * 2 * ENCODING_LEVELS;
 
 // Neural network weights
-layout (binding = 4) uniform sampler1D biases;
-layout (binding = 5) uniform sampler2D w0;
-layout (binding = 6) uniform sampler2D w1;
-layout (binding = 7) uniform sampler2D w2;
-layout (binding = 8) uniform sampler2D w3;
+layout (binding = 0) uniform isampler1D ctex;
+layout (binding = 1) uniform sampler1D vtex;
+layout (binding = 2) uniform sampler2D ftex;
+layout (binding = 3) uniform sampler1D biases;
+layout (binding = 4) uniform sampler2D w0;
+layout (binding = 5) uniform sampler2D w1;
+layout (binding = 6) uniform sampler2D w2;
+layout (binding = 7) uniform sampler2D w3;
 
 // Outputs
 layout (location = 0) out vec3 position[];
@@ -67,27 +55,25 @@ vec4 project(vec3 p)
 
 #define leaky_relu(x) max(x, 0.01 * x)
 
-vec3 eval(ivec4 complex, float u, float v)
+vec3 eval(vec2 uv)
 {
 	const uint MSIZE = max(FFIN, 64);
 
 	float A[MSIZE];
-	float B[64];
+	vec4 B[16];
 
-	vec3 v0 = points.data[complex.x];
-	vec3 v1 = points.data[complex.y];
-	vec3 v2 = points.data[complex.z];
-	vec3 v3 = points.data[complex.w];
+	ivec4 complex = texelFetch(ctex, int(payload.pindex), 0);
 
-	vec3 vertex = mix(mix(v0, v1, v), mix(v3, v2, v), u);
+	vec3 v0 = texelFetch(vtex, complex.x, 0).xyz;
+	vec3 v1 = texelFetch(vtex, complex.y, 0).xyz;
+	vec3 v2 = texelFetch(vtex, complex.z, 0).xyz;
+	vec3 v3 = texelFetch(vtex, complex.w, 0).xyz;
 
-	// TODO: align as a vec4
+	vec3 vertex = mix(mix(v0, v1, uv.y), mix(v3, v2, uv.y), uv.x);
+
 	for (uint i = 0; i < FEATURE_SIZE; i++) {
-		float f0 = features.data[complex.x * FEATURE_SIZE + i];
-		float f1 = features.data[complex.y * FEATURE_SIZE + i];
-		float f2 = features.data[complex.z * FEATURE_SIZE + i];
-		float f3 = features.data[complex.w * FEATURE_SIZE + i];
-		A[i] = mix(mix(f0, f1, v), mix(f3, f2, v), u);
+		vec4 fv = texelFetch(ftex, ivec2(i, payload.pindex), 0);
+		A[i] = mix(mix(fv.x, fv.y, uv.y), mix(fv.w, fv.z, uv.y), uv.x);
 	}
 
 	// Positional encoding
@@ -110,26 +96,30 @@ vec3 eval(ivec4 complex, float u, float v)
 
 	// Layer 0
 	for (uint i = 0; i < 16; i++) {
-		uint k = 4 * i;
+		uint k = i << 2;
 
 		vec4 v = texelFetch(biases, int(i), 0);
 		for (uint j = 0; j < FFIN; j++)
 			v += A[j] * texelFetch(w0, ivec2(i, j), 0);
 
-		vec4 lv = leaky_relu(v);
-		B[k + 0] = lv.x;
-		B[k + 1] = lv.y;
-		B[k + 2] = lv.z;
-		B[k + 3] = lv.w;
+		B[i] = leaky_relu(v);
 	}
 
 	// Layer 1
 	for (uint i = 0; i < 16; i++) {
-		uint k = 4 * i;
+		uint k = i << 2;
 
 		vec4 v = texelFetch(biases, int(i) + 16, 0);
-		for (uint j = 0; j < 64; j++)
-			v += B[j] * texelFetch(w1, ivec2(i, j), 0);
+		for (uint j = 0; j < 16; j++) {
+			uint l = j << 2;
+			vec4 v0 = texelFetch(w1, ivec2(i, l + 0), 0);
+			vec4 v1 = texelFetch(w1, ivec2(i, l + 1), 0);
+			vec4 v2 = texelFetch(w1, ivec2(i, l + 2), 0);
+			vec4 v3 = texelFetch(w1, ivec2(i, l + 3), 0);
+			vec4 s = B[j];
+
+			v += s.x * v0 + s.y * v1 + s.z * v2 + s.w * v3;
+		}
 
 		vec4 lv = leaky_relu(v);
 		A[k + 0] = lv.x;
@@ -140,35 +130,25 @@ vec3 eval(ivec4 complex, float u, float v)
 
 	// Layer 2
 	for (uint i = 0; i < 16; i++) {
-		uint k = 4 * i;
+		uint k = i << 2;
 
-		vec4 v = texelFetch(biases, int(i) + 2 * 16, 0);
+		vec4 v = texelFetch(biases, int(i) + 32, 0);
 		for (uint j = 0; j < 64; j++)
 			v += A[j] * texelFetch(w2, ivec2(i, j), 0);
 
 		vec4 lv = leaky_relu(v);
-		B[k + 0] = lv.x;
-		B[k + 1] = lv.y;
-		B[k + 2] = lv.z;
-		B[k + 3] = lv.w;
 
-		// TODO: fuse with the last layer?
+		// Fuse with the last layer
+		vec4 wx = texelFetch(w3, ivec2(i, 0), 0);
+		vec4 wy = texelFetch(w3, ivec2(i, 1), 0);
+		vec4 wz = texelFetch(w3, ivec2(i, 2), 0);
+
+		vertex.x += dot(wx, lv);
+		vertex.y += dot(wy, lv);
+		vertex.z += dot(wz, lv);
 	}
 
-	// Layer 3
-	[[unroll]]
-	for (uint i = 0; i < 3; i++) {
-		float sum = 0.0f;
-		for (uint j = 0; j < 16; j++) {
-			uint k = 4 * j;
-			vec4 w = texelFetch(w3, ivec2(j, i), 0);
-			vec4 v = vec4(B[k], B[k + 1], B[k + 2], B[k + 3]);
-			sum += dot(v, w);
-		}
-		vertex[i] += sum;
-	}
-
-	return vertex + texelFetch(biases, 3 * 64, 0).xyz;
+	return vertex + texelFetch(biases, 3 << 6, 0).xyz;
 }
 
 void main()
@@ -191,13 +171,14 @@ void main()
 	SetMeshOutputsEXT(vwidth * vheight, 2 * qwidth * qheight);
 
 	vec2 uv = offset/float(payload.resolution - 1);
-	vec3 v = eval(patches.data[payload.pindex], uv.x, uv.y);
 
-	gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = project(v);
+	vec3 v = eval(uv);
 
 	// Send position to fragment shader for normal vector calculations
 	position[gl_LocalInvocationIndex] = vec3(model * vec4(v, 1.0f));
 	pindex[gl_LocalInvocationIndex] = payload.pindex;
+
+	gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = project(v);
 
 	uint gli = gl_LocalInvocationIndex;
 	if (gl_LocalInvocationID.x < qwidth && gl_LocalInvocationID.y < qheight) {
