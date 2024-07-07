@@ -47,20 +47,11 @@ const uint ENCODING_LEVELS = 8;
 const uint FFIN            = FEATURE_SIZE + 3 * 2 * ENCODING_LEVELS;
 
 // Neural network weights
-layout (binding = 3) readonly buffer Layers
-{
-	float bias3[3];
-	float weight3[64 * 3];
-
-	float bias2[64];
-	float weight2[64 * 64];
-
-	float bias1[64];
-	float weight1[64 * 64];
-
-	float bias0[64];
-	float weight0[64 * FFIN];
-} layers;
+layout (binding = 4) uniform sampler1D biases;
+layout (binding = 5) uniform sampler2D w0;
+layout (binding = 6) uniform sampler2D w1;
+layout (binding = 7) uniform sampler2D w2;
+layout (binding = 8) uniform sampler2D w3;
 
 // Outputs
 layout (location = 0) out vec3 position[];
@@ -74,126 +65,110 @@ vec4 project(vec3 p)
 	return pp;
 }
 
-float leaky_relu(float x)
-{
-	return max(x, 0.01f * x);
-}
-
-// Eval variables
-float hidden0[64];
-float hidden1[64];
-float hidden2[64];
+#define leaky_relu(x) max(x, 0.01 * x)
 
 vec3 eval(ivec4 complex, float u, float v)
 {
+	const uint MSIZE = max(FFIN, 64);
+
+	float A[MSIZE];
+	float B[64];
+
 	vec3 v0 = points.data[complex.x];
 	vec3 v1 = points.data[complex.y];
 	vec3 v2 = points.data[complex.z];
 	vec3 v3 = points.data[complex.w];
 
-	// TODO: skip this and fma? or lerp/mix
-	v0 = v0 * (1 - u) * (1 - v);
-	v1 = v1 * (1 - u) * v;
-	v2 = v2 * u * v;
-	v3 = v3 * u * (1 - v);
+	vec3 vertex = mix(mix(v0, v1, v), mix(v3, v2, v), u);
 
-	vec3 vertex = v0 + v1 + v2 + v3;
-
-	// TODO: vectorize this calculation by packing (and padding) features into vec4s
-	float feature[FEATURE_SIZE];
+	// TODO: align as a vec4
 	for (uint i = 0; i < FEATURE_SIZE; i++) {
 		float f0 = features.data[complex.x * FEATURE_SIZE + i];
 		float f1 = features.data[complex.y * FEATURE_SIZE + i];
 		float f2 = features.data[complex.z * FEATURE_SIZE + i];
 		float f3 = features.data[complex.w * FEATURE_SIZE + i];
-
-		f0 *= (1 - u) * (1 - v);
-		f1 *= (1 - u) * v;
-		f2 *= u * v;
-		f3 *= u * (1 - v);
-
-		feature[i] = f0 + f1 + f2 + f3;
+		A[i] = mix(mix(f0, f1, v), mix(f3, f2, v), u);
 	}
 
 	// Positional encoding
-	float ffin[FFIN];
-
-	uint k = 0;
-
-	[[unroll]]
-	for (uint i = 0; i < FEATURE_SIZE; i++)
-		ffin[k++] = feature[i];
-
+	uint k = FEATURE_SIZE;
 	for (uint i = 0; i < ENCODING_LEVELS; i++) {
 		float p = pow(2, i);
 		vec3 sin_v = sin(p * vertex);
 		vec3 cos_v = cos(p * vertex);
 
-		ffin[k++] = sin_v.x;
-		ffin[k++] = sin_v.y;
-		ffin[k++] = sin_v.z;
+		A[k++] = sin_v.x;
+		A[k++] = sin_v.y;
+		A[k++] = sin_v.z;
 
-		ffin[k++] = cos_v.x;
-		ffin[k++] = cos_v.y;
-		ffin[k++] = cos_v.z;
+		A[k++] = cos_v.x;
+		A[k++] = cos_v.y;
+		A[k++] = cos_v.z;
 	}
 
 	// Network evaluation
-	uint isize;
-	uint osize;
 
 	// Layer 0
-	isize = FFIN;
-	osize = 64;
+	for (uint i = 0; i < 16; i++) {
+		uint k = 4 * i;
 
-	for (uint i = 0; i < osize; i++) {
-		float sum = 0.0f;
-		for (uint j = 0; j < isize; j++)
-			sum += layers.weight0[i * isize + j] * ffin[j];
-		hidden0[i] = leaky_relu(sum + layers.bias0[i]);
+		vec4 v = texelFetch(biases, int(i), 0);
+		for (uint j = 0; j < FFIN; j++)
+			v += A[j] * texelFetch(w0, ivec2(i, j), 0);
+
+		vec4 lv = leaky_relu(v);
+		B[k + 0] = lv.x;
+		B[k + 1] = lv.y;
+		B[k + 2] = lv.z;
+		B[k + 3] = lv.w;
 	}
 
 	// Layer 1
-	isize = 64;
-	osize = 64;
+	for (uint i = 0; i < 16; i++) {
+		uint k = 4 * i;
 
-	for (uint i = 0; i < osize; i++) {
-		float sum = 0.0f;
-		for (uint j = 0; j < isize; j++)
-			sum += layers.weight1[i * isize + j] * hidden0[j];
-		hidden1[i] = leaky_relu(sum + layers.bias1[i]);
+		vec4 v = texelFetch(biases, int(i) + 16, 0);
+		for (uint j = 0; j < 64; j++)
+			v += B[j] * texelFetch(w1, ivec2(i, j), 0);
+
+		vec4 lv = leaky_relu(v);
+		A[k + 0] = lv.x;
+		A[k + 1] = lv.y;
+		A[k + 2] = lv.z;
+		A[k + 3] = lv.w;
 	}
 
 	// Layer 2
-	isize = 64;
-	osize = 64;
+	for (uint i = 0; i < 16; i++) {
+		uint k = 4 * i;
 
-	for (uint i = 0; i < osize; i++) {
-		float sum = 0.0f;
-		for (uint j = 0; j < isize; j++)
-			sum += layers.weight2[i * isize + j] * hidden1[j];
-		hidden2[i] = leaky_relu(sum + layers.bias2[i]);
+		vec4 v = texelFetch(biases, int(i) + 2 * 16, 0);
+		for (uint j = 0; j < 64; j++)
+			v += A[j] * texelFetch(w2, ivec2(i, j), 0);
+
+		vec4 lv = leaky_relu(v);
+		B[k + 0] = lv.x;
+		B[k + 1] = lv.y;
+		B[k + 2] = lv.z;
+		B[k + 3] = lv.w;
+
+		// TODO: fuse with the last layer?
 	}
 
 	// Layer 3
-	float D[3];
-
-	isize = 64;
-	osize = 3;
-
 	[[unroll]]
 	for (uint i = 0; i < 3; i++) {
 		float sum = 0.0f;
-		for (uint j = 0; j < isize; j++)
-			sum += layers.weight3[i * isize + j] * hidden2[j];
-		D[i] = sum + layers.bias3[i];
+		for (uint j = 0; j < 16; j++) {
+			uint k = 4 * j;
+			vec4 w = texelFetch(w3, ivec2(j, i), 0);
+			vec4 v = vec4(B[k], B[k + 1], B[k + 2], B[k + 3]);
+			sum += dot(v, w);
+		}
+		vertex[i] += sum;
 	}
 
-	vertex.x += D[0];
-	vertex.y += D[1];
-	vertex.z += D[2];
-
-	return vertex;
+	return vertex + texelFetch(biases, 3 * 64, 0).xyz;
 }
 
 void main()

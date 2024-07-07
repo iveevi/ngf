@@ -12,7 +12,6 @@
 #include <backends/imgui_impl_vulkan.h>
 
 #include <implot.h>
-#include <vulkan/vulkan_enums.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb/stb_image_write.h>
@@ -141,7 +140,7 @@ void cursor_callback(GLFWwindow *window, double xpos, double ypos)
 	}
 }
 
-constexpr std::array <vk::DescriptorSetLayoutBinding, 4> meshlet_dslbs {
+constexpr std::array <vk::DescriptorSetLayoutBinding, 9> meshlet_dslbs {
 	vk::DescriptorSetLayoutBinding {
 		0, vk::DescriptorType::eStorageBuffer,
 		1, vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eTaskEXT
@@ -159,6 +158,31 @@ constexpr std::array <vk::DescriptorSetLayoutBinding, 4> meshlet_dslbs {
 
 	vk::DescriptorSetLayoutBinding {
 		3, vk::DescriptorType::eStorageBuffer,
+		1, vk::ShaderStageFlagBits::eMeshEXT
+	},
+
+	vk::DescriptorSetLayoutBinding {
+		4, vk::DescriptorType::eCombinedImageSampler,
+		1, vk::ShaderStageFlagBits::eMeshEXT
+	},
+
+	vk::DescriptorSetLayoutBinding {
+		5, vk::DescriptorType::eCombinedImageSampler,
+		1, vk::ShaderStageFlagBits::eMeshEXT
+	},
+
+	vk::DescriptorSetLayoutBinding {
+		6, vk::DescriptorType::eCombinedImageSampler,
+		1, vk::ShaderStageFlagBits::eMeshEXT
+	},
+
+	vk::DescriptorSetLayoutBinding {
+		7, vk::DescriptorType::eCombinedImageSampler,
+		1, vk::ShaderStageFlagBits::eMeshEXT
+	},
+
+	vk::DescriptorSetLayoutBinding {
+		8, vk::DescriptorType::eCombinedImageSampler,
 		1, vk::ShaderStageFlagBits::eMeshEXT
 	},
 };
@@ -592,7 +616,7 @@ void render_pass_end(const Engine &engine, const vk::CommandBuffer &cmd)
 
 int main(int argc, char *argv[])
 {
-	// TODO: resizing the window
+	littlevk::config().enable_validation_layers = false;
 	littlevk::config().enable_logging = false;
 
 	if (argc < 2) {
@@ -725,6 +749,153 @@ int main(int argc, char *argv[])
 		network.insert(network.begin(), ngf.biases[i].vec.begin(), ngf.biases[i].vec.end());
 	}
 
+	// Concatenate the biases into a single buffer
+	std::vector <float> biases;
+	for (int32_t i = 0; i < LAYERS; i++)
+		biases.insert(biases.end(), ngf.biases[i].vec.begin(), ngf.biases[i].vec.end());
+
+	// Align to vec4 size
+	size_t fixed = (biases.size() + 3)/4;
+	biases.resize(4 * fixed);
+
+	littlevk::Image bias_texture;
+	littlevk::Buffer bias_buffer;
+
+	// Weights (transposed)
+	size_t w0c = ngf.weights[0].height;
+	std::vector <float> W0(64 * w0c);
+	std::vector <float> W1(64 * 64);
+	std::vector <float> W2(64 * 64);
+	std::vector <float> W3 = ngf.weights[3].vec;
+
+	for (int i = 0; i < 64; i++) {
+		for (int j = 0; j < 64; j++) {
+			W1[j * 64 + i] = ngf.weights[1].vec[i * 64 + j];
+			W2[j * 64 + i] = ngf.weights[2].vec[i * 64 + j];
+		}
+
+		for (int j = 0; j < w0c; j++)
+			W0[j * 64 + i] = ngf.weights[0].vec[i * w0c + j];
+	}
+
+	littlevk::Image W0_texture;
+	littlevk::Buffer W0_buffer;
+
+	littlevk::Image W1_texture;
+	littlevk::Buffer W1_buffer;
+
+	littlevk::Image W2_texture;
+	littlevk::Buffer W2_buffer;
+
+	littlevk::Image W3_texture;
+	littlevk::Buffer W3_buffer;
+
+	std::tie(bias_texture, bias_buffer,
+			W0_texture, W0_buffer,
+			W1_texture, W1_buffer,
+			W2_texture, W2_buffer,
+			W3_texture, W3_buffer) = littlevk::linked_device_allocator(engine.device, engine.memory_properties, engine.dal)
+		.image(fixed, 1,
+			vk::Format::eR32G32B32A32Sfloat,
+			vk::ImageUsageFlagBits::eSampled
+				| vk::ImageUsageFlagBits::eTransferDst,
+			vk::ImageAspectFlagBits::eColor,
+			vk::ImageType::e1D,
+			vk::ImageViewType::e1D)
+		.buffer(biases, vk::BufferUsageFlagBits::eTransferSrc)
+		.image(16, w0c,
+			vk::Format::eR32G32B32A32Sfloat,
+			vk::ImageUsageFlagBits::eSampled
+				| vk::ImageUsageFlagBits::eTransferDst,
+			vk::ImageAspectFlagBits::eColor,
+			vk::ImageType::e2D,
+			vk::ImageViewType::e2D)
+		.buffer(W0, vk::BufferUsageFlagBits::eTransferSrc)
+		.image(16, 64,
+			vk::Format::eR32G32B32A32Sfloat,
+			vk::ImageUsageFlagBits::eSampled
+				| vk::ImageUsageFlagBits::eTransferDst,
+			vk::ImageAspectFlagBits::eColor,
+			vk::ImageType::e2D,
+			vk::ImageViewType::e2D)
+		.buffer(W1, vk::BufferUsageFlagBits::eTransferSrc)
+		.image(16, 64,
+			vk::Format::eR32G32B32A32Sfloat,
+			vk::ImageUsageFlagBits::eSampled
+				| vk::ImageUsageFlagBits::eTransferDst,
+			vk::ImageAspectFlagBits::eColor,
+			vk::ImageType::e2D,
+			vk::ImageViewType::e2D)
+		.buffer(W2, vk::BufferUsageFlagBits::eTransferSrc)
+		.image(16, 3,
+			vk::Format::eR32G32B32A32Sfloat,
+			vk::ImageUsageFlagBits::eSampled
+				| vk::ImageUsageFlagBits::eTransferDst,
+			vk::ImageAspectFlagBits::eColor,
+			vk::ImageType::e2D,
+			vk::ImageViewType::e2D)
+		.buffer(W3, vk::BufferUsageFlagBits::eTransferSrc);
+
+	// Peform all the transfers
+	littlevk::submit_now(engine.device, engine.command_pool, engine.graphics_queue,
+		[&](const vk::CommandBuffer &cmd) {
+			littlevk::transition(cmd, bias_texture,
+					vk::ImageLayout::eUndefined,
+					vk::ImageLayout::eTransferDstOptimal);
+
+			littlevk::copy_buffer_to_image(cmd, bias_texture, bias_buffer,
+					vk::ImageLayout::eTransferDstOptimal);
+
+			littlevk::transition(cmd, bias_texture,
+					vk::ImageLayout::eTransferDstOptimal,
+					vk::ImageLayout::eShaderReadOnlyOptimal);
+
+			littlevk::transition(cmd, W0_texture,
+					vk::ImageLayout::eUndefined,
+					vk::ImageLayout::eTransferDstOptimal);
+
+			littlevk::copy_buffer_to_image(cmd, W0_texture, W0_buffer,
+					vk::ImageLayout::eTransferDstOptimal);
+
+			littlevk::transition(cmd, W0_texture,
+					vk::ImageLayout::eTransferDstOptimal,
+					vk::ImageLayout::eShaderReadOnlyOptimal);
+
+			littlevk::transition(cmd, W1_texture,
+					vk::ImageLayout::eUndefined,
+					vk::ImageLayout::eTransferDstOptimal);
+
+			littlevk::copy_buffer_to_image(cmd, W1_texture, W1_buffer,
+					vk::ImageLayout::eTransferDstOptimal);
+
+			littlevk::transition(cmd, W1_texture,
+					vk::ImageLayout::eTransferDstOptimal,
+					vk::ImageLayout::eShaderReadOnlyOptimal);
+
+			littlevk::transition(cmd, W2_texture,
+					vk::ImageLayout::eUndefined,
+					vk::ImageLayout::eTransferDstOptimal);
+
+			littlevk::copy_buffer_to_image(cmd, W2_texture, W2_buffer,
+					vk::ImageLayout::eTransferDstOptimal);
+
+			littlevk::transition(cmd, W2_texture,
+					vk::ImageLayout::eTransferDstOptimal,
+					vk::ImageLayout::eShaderReadOnlyOptimal);
+
+			littlevk::transition(cmd, W3_texture,
+					vk::ImageLayout::eUndefined,
+					vk::ImageLayout::eTransferDstOptimal);
+
+			littlevk::copy_buffer_to_image(cmd, W3_texture, W3_buffer,
+					vk::ImageLayout::eTransferDstOptimal);
+
+			littlevk::transition(cmd, W3_texture,
+					vk::ImageLayout::eTransferDstOptimal,
+					vk::ImageLayout::eShaderReadOnlyOptimal);
+		}
+	);
+
 	std::tie(vk_ngf.vertices, vk_ngf.features, vk_ngf.patches, vk_ngf.network) = littlevk::linked_device_allocator(engine.device, engine.memory_properties, engine.dal)
 		.buffer(ngf.vertices, vk::BufferUsageFlagBits::eStorageBuffer)
 		.buffer(ngf.features, vk::BufferUsageFlagBits::eStorageBuffer)
@@ -734,11 +905,18 @@ int main(int argc, char *argv[])
 	vk_ngf.dset = littlevk::bind(engine.device, engine.descriptor_pool)
 		.allocate_descriptor_sets(*engine.primaries["Shaded"].dsl).front();
 
+	vk::Sampler floating_sampler = littlevk::SamplerAssembler(engine.device, engine.dal);
+
 	littlevk::bind(engine.device, vk_ngf.dset, meshlet_dslbs)
 		.update(0, 0, *vk_ngf.vertices, 0, sizeof(glm::vec4) * ngf.vertices.size())
 		.update(1, 0, *vk_ngf.features, 0, sizeof(float) * ngf.features.size())
 		.update(2, 0, *vk_ngf.patches, 0, sizeof(glm::ivec4) * ngf.patches.size())
 		.update(3, 0, *vk_ngf.network, 0, sizeof(float) * network.size())
+		.update(4, 0, floating_sampler, bias_texture.view, vk::ImageLayout::eShaderReadOnlyOptimal)
+		.update(5, 0, floating_sampler, W0_texture.view, vk::ImageLayout::eShaderReadOnlyOptimal)
+		.update(6, 0, floating_sampler, W1_texture.view, vk::ImageLayout::eShaderReadOnlyOptimal)
+		.update(7, 0, floating_sampler, W2_texture.view, vk::ImageLayout::eShaderReadOnlyOptimal)
+		.update(8, 0, floating_sampler, W3_texture.view, vk::ImageLayout::eShaderReadOnlyOptimal)
 		.finalize();
 
 	// Environment map
@@ -755,7 +933,7 @@ int main(int argc, char *argv[])
 		.finalize();
 
 	// Plotting data
-	std::string key = "Shaded";
+	std::string key = "Normals";
 
 	int resolution = 15;
 
@@ -826,6 +1004,9 @@ int main(int argc, char *argv[])
 
 		// ImGui pass
 		{
+			static std::vector <float> frametimes;
+			static const size_t WINDOW = 60;
+
 			ImGui_ImplVulkan_NewFrame();
 			ImGui_ImplGlfw_NewFrame();
 			ImGui::NewFrame();
@@ -837,7 +1018,16 @@ int main(int argc, char *argv[])
 
 			ImGui::Text("Performance");
 
-			ImGui::Text("%05.2f ms per frame", ft * 1000.0f);
+			frametimes.push_back(ft);
+			if (frametimes.size() > WINDOW)
+				frametimes.erase(frametimes.begin());
+
+			float max = -1e10f;
+			for (float ft : frametimes)
+				max = std::max(max, ft);
+
+			ImGui::Text("%05.2f ms per frame (average)", ft * 1000.0f);
+			ImGui::Text("%05.2f ms per frame (max)", max * 1000.0f);
 			ImGui::Text("%04d frames per second", (int) fr);
 
 			ImGui::Separator();
