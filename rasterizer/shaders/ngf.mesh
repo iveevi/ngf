@@ -55,10 +55,13 @@ vec4 project(vec3 p)
 
 #define leaky_relu(x) max(x, 0.01 * x)
 
+const uint MSIZE = max(FFIN, 64);
+
+// For evaluating the network
+shared vec4 row[MSIZE];
+
 vec3 eval(vec2 uv)
 {
-	const uint MSIZE = max(FFIN, 64);
-
 	float A[MSIZE];
 	vec4 B[16];
 
@@ -77,9 +80,11 @@ vec3 eval(vec2 uv)
 	}
 
 	// Positional encoding
+	const float powers[] = float[](1, 2, 4, 8, 16, 32, 64, 128);
+
 	uint k = FEATURE_SIZE;
 	for (uint i = 0; i < ENCODING_LEVELS; i++) {
-		float p = pow(2, i);
+		float p = powers[i];
 		vec3 sin_v = sin(p * vertex);
 		vec3 cos_v = cos(p * vertex);
 
@@ -93,14 +98,25 @@ vec3 eval(vec2 uv)
 	}
 
 	// Network evaluation
+	uint tid = gl_LocalInvocationID.x + gl_LocalInvocationID.y * gl_WorkGroupSize.x;
+	uint stride = gl_WorkGroupSize.x * gl_WorkGroupSize.y;
 
 	// Layer 0
 	for (uint i = 0; i < 16; i++) {
 		uint k = i << 2;
 
+		// Load matrix row into shared memory
+		if (tid == 0) {
+			for (uint j = 0; j < FFIN; j++)
+				row[j] = texelFetch(w0, ivec2(i, j), 0);
+		}
+
+		barrier();
+
+		// Evaluate
 		vec4 v = texelFetch(biases, int(i), 0);
 		for (uint j = 0; j < FFIN; j++)
-			v += A[j] * texelFetch(w0, ivec2(i, j), 0);
+			v += A[j] * row[j];
 
 		B[i] = leaky_relu(v);
 	}
@@ -109,6 +125,7 @@ vec3 eval(vec2 uv)
 	for (uint i = 0; i < 16; i++) {
 		uint k = i << 2;
 
+		// Evaluate
 		vec4 v = texelFetch(biases, int(i) + 16, 0);
 		for (uint j = 0; j < 16; j++) {
 			uint l = j << 2;
@@ -132,6 +149,7 @@ vec3 eval(vec2 uv)
 	for (uint i = 0; i < 16; i++) {
 		uint k = i << 2;
 
+		// Evaluate
 		vec4 v = texelFetch(biases, int(i) + 32, 0);
 		for (uint j = 0; j < 64; j++)
 			v += A[j] * texelFetch(w2, ivec2(i, j), 0);
@@ -155,9 +173,9 @@ void main()
 {
 	const uint MAX_QSIZE = WORK_GROUP_SIZE - 1;
 
-	// TODO: need dyanmic QSIZE/stride depending on resolution
 	uvec2 offset = gl_LocalInvocationID.xy + (MAX_QSIZE * gl_WorkGroupID.xy);
-	if (offset.x > payload.resolution || offset.y > payload.resolution)
+	if (offset.x > payload.resolution
+			|| offset.y > payload.resolution)
 		return;
 
 	uvec2 offset_triangles = MAX_QSIZE * gl_WorkGroupID.xy;
@@ -181,7 +199,8 @@ void main()
 	gl_MeshVerticesEXT[gl_LocalInvocationIndex].gl_Position = project(v);
 
 	uint gli = gl_LocalInvocationIndex;
-	if (gl_LocalInvocationID.x < qwidth && gl_LocalInvocationID.y < qheight) {
+	if (gl_LocalInvocationID.x < qwidth
+			&& gl_LocalInvocationID.y < qheight) {
 		uint prim = 2 * (gl_LocalInvocationID.x + qwidth * gl_LocalInvocationID.y);
 
 		// Assumes that the subgroup size is 32
