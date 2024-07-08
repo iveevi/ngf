@@ -73,6 +73,15 @@ providing a path to the neural geometry field binary file (e.g. within
 A few binaries have been provided in the `resources/samples` directory to
 explore the rasterizer on pretrained NGFs.
 
+For those curious, here are some performance statistics:
+
+| GPU             | Patch Count | Framerate (Frametime)     |
+| --------------- | ----------- | ------------------------- |
+| RTX 3060 Mobile | 1K          | 200 FPS            (5 ms) |
+| RTX 3060 Mobile | 2.5K        | 80 FPS (12 ms)            |
+| RTX 4090        | 1K          | 1200 FPS (0.8 ms)         |
+| RTX 4090        | 2.5K        | 600 FPS (1.6 ms)          |
+
 # Citation
 
 ```
