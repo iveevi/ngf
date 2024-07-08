@@ -1,7 +1,7 @@
 #version 450
 
 layout (push_constant) uniform ShadingPushConstants {
-	layout(offset = 208)
+	layout(offset = 224)
 	vec3 viewing;
 	vec3 color;
 };
@@ -46,25 +46,23 @@ vec3 aces(vec3 x)
 
 void main()
 {
-	vec3 light_direction = normalize(vec3(1, 1, 1));
+	vec3 light_direction = normalize(vec3(1, -1, -1));
 
 	vec3 dU = dFdx(position);
 	vec3 dV = dFdyFine(position);
 	vec3 N = normalize(cross(dU, dV));
 
-	vec3 diffuse = color * vec3(max(0, dot(N, light_direction)));
-	vec3 ambient = color * 0.1f;
+	vec3 diffuse = 0.1 * color * vec3(max(0, dot(N, light_direction)));
 
 	vec3 H = normalize(-viewing + light_direction);
-	vec3 specular = vec3(pow(max(0, dot(N, H)), 16));
-
-	// fragment = vec4(diffuse + specular + ambient, 1);
+	vec3 specular = 0.4 * vec3(pow(max(0, dot(N, H)), 128));
 
 	vec4 n = vec4(N, 1);
 	float r = dot(n, R * n);
 	float g = dot(n, G * n);
 	float b = dot(n, B * n);
 
-	vec3 c = vec3(r, g, b) * 0.5;
-	fragment = vec4(aces(c), 1);
+	vec3 ambient = 0.3 * color * vec3(r, g, b);
+	vec3 color = diffuse + specular + ambient;
+	fragment = vec4(aces(color), 1);
 }

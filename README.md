@@ -1,14 +1,15 @@
 # Neural Geometry Fields for Meshes
 
-![](resources/teaser.jpg)
+![](resources/nice.jpg)
 
-# Usage
+# Training
 
-Training neural geometry fields requires an NVIDIA GPU with CUDA support. The
-necessary python packages are listed in `requirements.txt` so installing them
-with `pip install -r requirements.txt` is simplest. If there are errors in
+**Requirements:** NVIDIA GPU (with CUDA support), Python, Assimp
+
+The necessary python packages are listed in `requirements.txt` so installing
+them with `pip install -r requirements.txt` is simplest. If there are errors in
 install the library in `extensions` it can likely be resolved by installing
-PyTorch and/or Wheel. Note that Assimp will need to be installed as well.
+PyTorch and/or Wheel beforehand.
 
 Then run `python source/train.py` on any target mesh:
 
@@ -42,20 +43,21 @@ and 10 feature channels), but it can be adjusted with the batch size option.
 
 Some tips to consider if errors appear:
 
-- The STL format for meshes is most reliable; if the program complains from the
+* The STL format for meshes is most reliable; if the program complains from the
   meshio library, try again with a STL rather than an OBJ or etc.
-- PyMeshLab is used for simplification and quadrangulation, but the execution
+* PyMeshLab is used for simplification and quadrangulation, but the execution
   is not always reliable. For this reason we time out the quadrangulation process
   after a minute. If this happens, the target mesh is likely too large.
 
-# Rasterizer
+# Rasterization
 
 ![](resources/rasterizer.png)
 
+**Requirements:** Vulkan, GLFW, CMake, Mesh shaders[^1]
+
 Source code for the real-time rasterizer is provided in the `rasterizer`
-directory. The only dependencies for building the program are GLFW and Vulkan;
-the rest (ImGui and glm) are provided as submodules of this project. We rely on
-CMake to compile the program:
+directory. Make sure that the submodules have also been cloned. We rely on CMake
+to compile the program:
 
 ```
 cmake -B build .
@@ -73,14 +75,16 @@ providing a path to the neural geometry field binary file (e.g. within
 A few binaries have been provided in the `resources/samples` directory to
 explore the rasterizer on pretrained NGFs.
 
-For those curious, here are some performance statistics:
+Here are some performance statistics for the rasterizer:
 
-| GPU             | Patch Count | Framerate (Frametime)     |
-| --------------- | ----------- | ------------------------- |
-| RTX 3060 Mobile | 1K          | 250 FPS  (4 ms)           |
-| RTX 3060 Mobile | 2.5K        | 100 FPS  (10 ms)          |
-| RTX 4090        | 1K          | 1200 FPS (0.8 ms)         |
-| RTX 4090        | 2.5K        | 600 FPS  (1.6 ms)         |
+| GPU             | Patch Count | Framerate (Frametime) |
+| --------------- | ----------- | --------------------- |
+| RTX 3060 Mobile | 1K          | 250 FPS  (4 ms)       |
+| RTX 3060 Mobile | 2.5K        | 100 FPS  (10 ms)      |
+| RTX 4090        | 1K          | 1200 FPS (0.8 ms)     |
+| RTX 4090        | 2.5K        | 600 FPS  (1.6 ms)     |
+
+[^1]: Check `vulkaninfo` from the command-line or [search for your GPU model here.](https://vulkan.gpuinfo.org/listdevicescoverage.php?extension=VK_EXT_mesh_shader&platform=all)
 
 # Citation
 

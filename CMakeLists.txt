@@ -21,10 +21,11 @@ add_library(imgui OBJECT
 	thirdparty/implot/implot.cpp
 	thirdparty/implot/implot_items.cpp)
 
-add_executable(testbed
-	rasterizer/main.cpp
-	rasterizer/projection.cpp
-	$<TARGET_OBJECTS:imgui>)
+file(GLOB SOURCES rasterizer/*.cpp)
+
+add_executable(testbed ${SOURCES} $<TARGET_OBJECTS:imgui>)
+
+target_compile_options(testbed PRIVATE -Wall)
 
 target_link_libraries(testbed
 	assimp
