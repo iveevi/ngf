@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <fstream>
 
@@ -12,6 +13,7 @@
 #include <backends/imgui_impl_vulkan.h>
 
 #include <implot.h>
+#include <vulkan/vulkan_enums.hpp>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb/stb_image_write.h>
@@ -69,8 +71,10 @@ struct alignas(16) TaskData {
 	glm::mat4 view;
 	glm::mat4 proj;
 
-	glm::vec2 extent;
+	// TODO: procedural texture synthesis?
+	int flags;
 	int resolution;
+	alignas(16) glm::vec3 viewing;
 	float time;
 };
 
@@ -140,23 +144,32 @@ void cursor_callback(GLFWwindow *window, double xpos, double ypos)
 	}
 }
 
-constexpr vk::DescriptorSetLayoutBinding texture_at(uint32_t binding)
+constexpr vk::DescriptorSetLayoutBinding texture_at(uint32_t binding, vk::ShaderStageFlagBits extra = vk::ShaderStageFlagBits::eMeshEXT)
 {
 	return vk::DescriptorSetLayoutBinding {
 		binding, vk::DescriptorType::eCombinedImageSampler,
-		1, vk::ShaderStageFlagBits::eMeshEXT
+		1, vk::ShaderStageFlagBits::eMeshEXT | extra
 	};
 }
 
 constexpr std::array <vk::DescriptorSetLayoutBinding, 8> meshlet_dslbs {
-	texture_at(0),	// Complexes
-	texture_at(1),	// Vertices
-	texture_at(2),	// Features
-	texture_at(3),	// Bias vectors
-	texture_at(4),	// Layer weights
-	texture_at(5),	// .
-	texture_at(6),	// .
-	texture_at(7),	// .
+	// Complexes
+	texture_at(0, vk::ShaderStageFlagBits::eTaskEXT),
+
+	// Vertices
+	texture_at(1, vk::ShaderStageFlagBits::eTaskEXT),
+
+	// Features
+	texture_at(2),
+
+	// Bias vectors
+	texture_at(3),
+
+	// Layer weights
+	texture_at(4),
+	texture_at(5),
+	texture_at(6),
+	texture_at(7),
 };
 
 constexpr std::array <vk::DescriptorSetLayoutBinding, 1> environment_dslbs {
@@ -176,6 +189,7 @@ const std::unordered_map <std::string, FragmentShaderInfo> fragment_shaders {
 	{ "Shaded", { SHADERS_DIRECTORY "/shaded.frag" } },
 	{ "Patches", { SHADERS_DIRECTORY "/patches.frag" } },
 	{ "Normals", { SHADERS_DIRECTORY "/normals.frag" } },
+	{ "Depth", { SHADERS_DIRECTORY "/depth.frag" } },
 	{ "Wireframe", {
 		SHADERS_DIRECTORY "/fill.frag",
 		vk::CullModeFlagBits::eNone,
@@ -570,12 +584,12 @@ void present_frame(Engine &engine, const littlevk::SurfaceOperation &op, size_t 
 		engine.resize();
 }
 
-void render_pass_begin(const Engine &engine, const vk::CommandBuffer &cmd, const littlevk::SurfaceOperation &op)
+void render_pass_begin(const Engine &engine, const vk::CommandBuffer &cmd, const littlevk::SurfaceOperation &op, const glm::vec4 &color)
 {
 	const auto &rpbi = littlevk::default_rp_begin_info <2>
 		(engine.render_pass, engine.framebuffers[op.index], engine.window)
 		.clear_value(0, vk::ClearColorValue {
-			std::array <float, 4> { 1.0f, 1.0f, 1.0f, 1.0f }
+			std::array <float, 4> { color.x, color.y, color.z, color.w }
 		});
 
 	return cmd.beginRenderPass(rpbi, vk::SubpassContents::eInline);
@@ -749,6 +763,8 @@ int main(int argc, char *argv[])
 		for (int j = 0; j < w0c; j++)
 			W0[j * 64 + i] = ngf.weights[0].vec[i * w0c + j];
 	}
+
+	std::vector <float> all;
 
 	// Feature vector
 	std::vector <glm::vec4> features(ngf.patch_count * ngf.feature_size);
@@ -927,6 +943,7 @@ int main(int argc, char *argv[])
 	std::string key = "Normals";
 
 	int resolution = 15;
+	bool backface_culling = false;
 
 	size_t frame = 0;
 	while (valid_window(engine)) {
@@ -940,7 +957,11 @@ int main(int argc, char *argv[])
 
 		auto [cmd, op] = *frame_info;
 
-		render_pass_begin(engine, cmd, op);
+		glm::vec4 color(1.0f);
+		if (key == "Depth")
+			color = glm::vec4(0.0f);
+
+		render_pass_begin(engine, cmd, op, color);
 
 		if (key == "Shaded") {
 			cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, engine.environment.handle);
@@ -968,13 +989,16 @@ int main(int argc, char *argv[])
 		float time = glfwGetTime();
 
 		// Task/Mesh shader push constants
+		int flags = 0;
+		flags |= int(backface_culling);
+
 		TaskData ngf_pc {
 			Transform().matrix(),
 			engine.mvp.view,
 			engine.mvp.proj,
-			{ engine.window->extent.width, engine.window->extent.height },
-			resolution,
-			time
+			flags, resolution,
+			glm::vec3(glm::inverse(ngf_pc.view) * glm::vec4(0, 0, 1, 0)),
+			time,
 		};
 
 		cmd.pushConstants <TaskData> (engine.primaries[key].layout,
@@ -1002,43 +1026,41 @@ int main(int argc, char *argv[])
 			ImGui_ImplGlfw_NewFrame();
 			ImGui::NewFrame();
 
-			ImGui::Begin("Info");
+			ImGui::Begin("Panel");
 
 			float fr = ImGui::GetIO().Framerate;
 			float ft = 1.0f/fr;
-
-			ImGui::Text("Performance");
 
 			frametimes.push_back(ft);
 			if (frametimes.size() > WINDOW)
 				frametimes.erase(frametimes.begin());
 
-			float max = -1e10f;
-			for (float ft : frametimes)
-				max = std::max(max, ft);
+			auto tflags = ImGuiTreeNodeFlags_DefaultOpen;
+			if (ImGui::CollapsingHeader("Performance", tflags)) {
+				float max = -1e10f;
+				for (float ft : frametimes)
+					max = std::max(max, ft);
 
-			ImGui::Text("%05.2f ms per frame (average)", ft * 1000.0f);
-			ImGui::Text("%05.2f ms per frame (max)", max * 1000.0f);
-			ImGui::Text("%04d frames per second", (int) fr);
-
-			ImGui::Separator();
-
-			ImGui::Text("Statistics");
-			ImGui::Spacing();
-			ImGui::Text("%d active patches", ngf.patch_count);
-
-			ImGui::Separator();
-
-			ImGui::Text("Render mode");
-			for (const auto &[k, _] : fragment_shaders) {
-				if (ImGui::RadioButton(k.c_str(), key == k))
-					key = k;
+				ImGui::Text("%05.2f ms per frame (average)", ft * 1000.0f);
+				ImGui::Text("%05.2f ms per frame (max)", max * 1000.0f);
+				ImGui::Text("%04d frames per second", (int) fr);
 			}
 
-			ImGui::Separator();
+			if (ImGui::CollapsingHeader("Statistics", tflags)) {
+				ImGui::Text("%d patches", ngf.patch_count);
+			}
 
-			ImGui::Text("Tessellation");
-			ImGui::DragInt("Resolution", (int *) &resolution, 0.05f, 2, 15);
+			if (ImGui::CollapsingHeader("Render mode", tflags)) {
+				for (const auto &[k, _] : fragment_shaders) {
+					if (ImGui::RadioButton(k.c_str(), key == k))
+						key = k;
+				}
+			}
+
+			if (ImGui::CollapsingHeader("Options", tflags)) {
+				ImGui::Checkbox("Backface culling (aprox.)", &backface_culling);
+				ImGui::DragInt("Tessellation", (int *) &resolution, 0.05f, 2, 15);
+			}
 
 			ImGui::End();
 

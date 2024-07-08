@@ -2,19 +2,11 @@
 
 #extension GL_GOOGLE_include_directive: require
 #extension GL_EXT_mesh_shader: require
-#extension GL_EXT_debug_printf : require
 
 #include "payload.h"
 
-layout (binding = 0) readonly buffer Points
-{
-	vec3 data[];
-} points;
-
-layout (binding = 2) readonly buffer Patches
-{
-	ivec4 data[];
-} patches;
+layout (binding = 0) uniform isampler1D ctex;
+layout (binding = 1) uniform sampler1D vtex;
 
 layout (push_constant) uniform NGFPushConstants
 {
@@ -22,8 +14,10 @@ layout (push_constant) uniform NGFPushConstants
 	mat4 view;
 	mat4 proj;
 
-	vec2 extent;
+	// TODO: flags
+	int flags;
 	int resolution;
+	vec3 viewing;
 	float time;
 };
 
@@ -31,39 +25,32 @@ taskPayloadSharedEXT Payload payload;
 
 // TODO: (atomic) counter for number of primitives sent
 
-vec2 project(vec3 p)
-{
-	vec4 pp = proj * view * model * vec4(p, 1.0f);
-	pp.y = -pp.y;
-	pp.z = (pp.z + pp.w) / 2.0;
-	return vec2(pp);
-}
-
-float cross(vec2 a, vec2 b)
-{
-	return abs(a.x * b.y - b.x * a.y);
-}
-
 void main()
 {
-	// TODO: compute distance and set resolution
 	payload.pindex = gl_GlobalInvocationID.x;
 
-	// ivec4 complex = patches.data[payload.pindex];
-	//
-	// vec3 v0 = points.data[complex.x];
-	// vec3 v1 = points.data[complex.y];
-	// vec3 v2 = points.data[complex.z];
-	// vec3 v3 = points.data[complex.w];
-	//
-	// vec2 p0 = project(v0) * extent;
-	// vec2 p1 = project(v1) * extent;
-	// vec2 p2 = project(v2) * extent;
-	// vec2 p3 = project(v3) * extent;
-	//
-	// float a0 = cross(p0 - p1, p0 - p2);
-	// float a1 = cross(p1 - p2, p1 - p3);
-	// float area = sqrt(a0 + a1)/16;
+	// Approximate backface culling
+	if ((flags & 0x1) == 0x1) {
+		ivec4 complex = texelFetch(ctex, int(payload.pindex), 0);
+
+		vec3 v0 = texelFetch(vtex, complex.x, 0).xyz;
+		vec3 v1 = texelFetch(vtex, complex.y, 0).xyz;
+		vec3 v2 = texelFetch(vtex, complex.z, 0).xyz;
+		vec3 v3 = texelFetch(vtex, complex.w, 0).xyz;
+
+		vec3 n1 = normalize(cross(v0 - v1, v0 - v3));
+		vec3 n2 = normalize(cross(v1 - v2, v1 - v0));
+		vec3 n3 = normalize(cross(v2 - v3, v2 - v1));
+		vec3 n4 = normalize(cross(v3 - v0, v3 - v2));
+
+		float tol = 0.25;
+		if (true
+			&& (dot(n1, viewing) < -tol)
+			&& (dot(n2, viewing) < -tol)
+			&& (dot(n3, viewing) < -tol)
+			&& (dot(n4, viewing) < -tol))
+			return;
+	}
 
 	payload.resolution = resolution;
 	uint groups = (payload.resolution - 1 + 6)/7;

@@ -77,10 +77,10 @@ For those curious, here are some performance statistics:
 
 | GPU             | Patch Count | Framerate (Frametime)     |
 | --------------- | ----------- | ------------------------- |
-| RTX 3060 Mobile | 1K          | 200 FPS            (5 ms) |
-| RTX 3060 Mobile | 2.5K        | 80 FPS (12 ms)            |
+| RTX 3060 Mobile | 1K          | 250 FPS  (4 ms)           |
+| RTX 3060 Mobile | 2.5K        | 100 FPS  (10 ms)          |
 | RTX 4090        | 1K          | 1200 FPS (0.8 ms)         |
-| RTX 4090        | 2.5K        | 600 FPS (1.6 ms)          |
+| RTX 4090        | 2.5K        | 600 FPS  (1.6 ms)         |
 
 # Citation
 

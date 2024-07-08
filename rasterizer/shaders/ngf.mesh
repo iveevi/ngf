@@ -2,7 +2,6 @@
 
 #extension GL_GOOGLE_include_directive: require
 #extension GL_EXT_mesh_shader: require
-#extension GL_EXT_debug_printf : require
 #extension GL_EXT_control_flow_attributes : require
 #extension GL_KHR_shader_subgroup_shuffle : require
 
@@ -22,9 +21,6 @@ layout (push_constant) uniform NGFPushConstants {
 	mat4 model;
 	mat4 view;
 	mat4 proj;
-
-	vec2 extent;
-	float time;
 };
 
 // Local execution data
@@ -49,7 +45,6 @@ vec4 project(vec3 p)
 {
 	vec4 pp = proj * view * model * vec4(p, 1.0f);
 	pp.y = -pp.y;
-	pp.z = (pp.z + pp.w) / 2.0;
 	return pp;
 }
 
