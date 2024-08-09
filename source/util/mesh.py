@@ -9,6 +9,7 @@ from typing import Tuple, Callable
 
 from .geometry import compute_vertex_normals, compute_face_normals
 
+
 @dataclass
 class Mesh:
     vertices: torch.Tensor
@@ -27,24 +28,20 @@ def mesh_from(V, F) -> Mesh:
     return Mesh(V, F, Vn, 'raw', optg)
 
 
-# TODO: load triangle mesh
 def load_mesh(path, normalizer=None) -> Tuple[Mesh, Callable[[torch.Tensor], torch.Tensor]]:
     mesh = meshio.read(path)
 
     v = torch.from_numpy(mesh.points[:, :3]).float().cuda()
-
-    f = None
     if 'triangle' in mesh.cells_dict:
         f = torch.from_numpy(mesh.cells_dict['triangle']).int().cuda()
     else:
         f = torch.from_numpy(mesh.cells_dict['quad']).int().cuda()
 
     if normalizer is None:
-        min, max = v.min(), v.max()
         vmin, vmax = v.min(dim=0)[0], v.max(dim=0)[0]
-        scale = (max - min).abs()/2
-        center = (vmin + vmax)/2
-        normalizer = (lambda x: (x - center)/scale)
+        center = (vmin + vmax) / 2
+        extent = (vmax - vmin).max()
+        normalizer = lambda x: (x - center) / (extent / 2)
 
     v = normalizer(v)
     fn = compute_face_normals(v, f)
