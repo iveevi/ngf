@@ -73,7 +73,7 @@ void DeviceRenderContext::resize()
 	depth.clear();
 	for (size_t i = 0; i < swapchain.images.size(); i++) {
 		littlevk::Image depth_buffer = bind(device, memory_properties, dal)
-			.image(window->extent,
+			.image(window.extent,
 				vk::Format::eD32Sfloat,
 				vk::ImageUsageFlagBits::eDepthStencilAttachment,
 				vk::ImageAspectFlagBits::eDepth);
@@ -82,7 +82,7 @@ void DeviceRenderContext::resize()
 	}
 
 	// Create the framebuffers
-	littlevk::FramebufferGenerator generator(device, render_pass, window->extent, dal);
+	littlevk::FramebufferGenerator generator(device, render_pass, window.extent, dal);
 	for (size_t i = 0; i < swapchain.images.size(); i++)
 		generator.add(swapchain.image_views[i], depth[i].view);
 
@@ -90,7 +90,7 @@ void DeviceRenderContext::resize()
 }
 
 // Allocating images
-littlevk::Image DeviceRenderContext::upload_texture(const Texture &tex) const
+littlevk::Image DeviceRenderContext::upload_texture(const Texture &tex)
 {
 	littlevk::Image image;
 	littlevk::Buffer staging;
@@ -146,7 +146,7 @@ void DeviceRenderContext::configure_imgui(DeviceRenderContext &engine)
 	ImGui::CreateContext();
 	ImGui::StyleColorsDark();
 
-	ImGui_ImplGlfw_InitForVulkan(engine.window->handle, true);
+	ImGui_ImplGlfw_InitForVulkan(engine.window.handle, true);
 
 	ImGui_ImplVulkan_InitInfo init_info = {};
 	init_info.Instance = littlevk::detail::get_vulkan_instance();
@@ -178,7 +178,7 @@ DeviceRenderContext DeviceRenderContext::from(const vk::PhysicalDevice &phdev, c
 
 	engine.phdev = phdev;
 	engine.memory_properties = phdev.getMemoryProperties();
-	engine.dal = new littlevk::Deallocator(engine.device);
+	engine.dal = littlevk::Deallocator(engine.device);
 
 	// Analyze the properties
 	vk::PhysicalDeviceMeshShaderPropertiesEXT ms_properties = {};
@@ -186,13 +186,13 @@ DeviceRenderContext DeviceRenderContext::from(const vk::PhysicalDevice &phdev, c
 	properties.pNext = &ms_properties;
 
 	phdev.getProperties2(&properties);
-	ulog_info("testbed", "physical device properties:\n");
-	ulog_info("testbed", "  max (task) payload memory: %d KB\n", ms_properties.maxTaskPayloadSize / 1024);
-	ulog_info("testbed", "  max (task) shared memory: %d KB\n", ms_properties.maxTaskSharedMemorySize / 1024);
-	ulog_info("testbed", "  max (mesh) shared memory: %d KB\n", ms_properties.maxMeshSharedMemorySize / 1024);
-	ulog_info("testbed", "  max output vertices: %d\n", ms_properties.maxMeshOutputVertices);
-	ulog_info("testbed", "  max output primitives: %d\n", ms_properties.maxMeshOutputPrimitives);
-	ulog_info("testbed", "  max work group invocations: %d\n", ms_properties.maxMeshWorkGroupInvocations);
+	ulog_info("vulkan", "physical device properties:\n");
+	ulog_info("vulkan", "  max (task) payload memory: %d KB\n", ms_properties.maxTaskPayloadSize / 1024);
+	ulog_info("vulkan", "  max (task) shared memory: %d KB\n", ms_properties.maxTaskSharedMemorySize / 1024);
+	ulog_info("vulkan", "  max (mesh) shared memory: %d KB\n", ms_properties.maxMeshSharedMemorySize / 1024);
+	ulog_info("vulkan", "  max output vertices: %d\n", ms_properties.maxMeshOutputVertices);
+	ulog_info("vulkan", "  max output primitives: %d\n", ms_properties.maxMeshOutputPrimitives);
+	ulog_info("vulkan", "  max work group invocations: %d\n", ms_properties.maxMeshWorkGroupInvocations);
 
 	// Configure the features
 	vk::PhysicalDeviceMeshShaderFeaturesEXT ms_ft = {};
@@ -213,11 +213,11 @@ DeviceRenderContext DeviceRenderContext::from(const vk::PhysicalDevice &phdev, c
 
 	phdev.getFeatures2(&ft);
 
-	ulog_info("testbed", "features:\n");
-	ulog_info("testbed", "  task shaders: %s\n", ms_ft.taskShader ? "true" : "false");
-	ulog_info("testbed", "  mesh shaders: %s\n", ms_ft.meshShader ? "true" : "false");
-	ulog_info("testbed", "  multiview: %s\n", ms_ft.multiviewMeshShader ? "true" : "false");
-	ulog_info("testbed", "  m4: %s\n", m4_ft.maintenance4 ? "true" : "false");
+	ulog_info("vulkan", "features:\n");
+	ulog_info("vulkan", "  task shaders: %s\n", ms_ft.taskShader ? "true" : "false");
+	ulog_info("vulkan", "  mesh shaders: %s\n", ms_ft.meshShader ? "true" : "false");
+	ulog_info("vulkan", "  multiview: %s\n", ms_ft.multiviewMeshShader ? "true" : "false");
+	ulog_info("vulkan", "  m4: %s\n", m4_ft.maintenance4 ? "true" : "false");
 
 	ms_ft.multiviewMeshShader = vk::False;
 	ms_ft.primitiveFragmentShadingRateMeshShader = vk::False;
@@ -319,7 +319,7 @@ DeviceRenderContext DeviceRenderContext::from(const vk::PhysicalDevice &phdev, c
 	engine.camera.from(engine.aspect_ratio());
 
 	// Configure callbacks
-	GLFWwindow *win = engine.window->handle;
+	GLFWwindow *win = engine.window.handle;
 
 	glfwSetWindowUserPointer(win, &engine.camera_transform);
 	glfwSetMouseButtonCallback(win, button_callback);

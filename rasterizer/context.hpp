@@ -38,7 +38,7 @@ struct DeviceRenderContext : littlevk::Skeleton {
 	vk::PhysicalDevice phdev;
 	vk::PhysicalDeviceMemoryProperties memory_properties;
 
-	littlevk::Deallocator *dal = nullptr;
+	littlevk::Deallocator dal;
 
 	vk::RenderPass render_pass;
 	vk::CommandPool command_pool;
@@ -65,7 +65,7 @@ struct DeviceRenderContext : littlevk::Skeleton {
 
 	// TODO: deallocate
 	void resize();
-	littlevk::Image upload_texture(const Texture &) const;
+	littlevk::Image upload_texture(const Texture &);
 	static void configure_imgui(DeviceRenderContext &);
 	static DeviceRenderContext from(const vk::PhysicalDevice &, const std::vector <const char *> &, size_t);
 };

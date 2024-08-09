@@ -28,7 +28,7 @@ littlevk::Image general_allocator(const vk::Device &device,
 		const vk::PhysicalDeviceMemoryProperties &memory_properties,
 		const vk::CommandPool &command_pool,
 		const vk::Queue &graphics_queue,
-		littlevk::Deallocator *dal,
+		littlevk::Deallocator &dal,
 		const std::vector <T> &buffer, vk::Extent2D extent,
 		const vk::ImageType type = vk::ImageType::e2D,
 		const vk::Format format = vk::Format::eR32G32B32A32Sfloat)
@@ -39,8 +39,7 @@ littlevk::Image general_allocator(const vk::Device &device,
 
 	littlevk::Image texture;
 	littlevk::Buffer staging;
-	std::tie(texture, staging) = littlevk::linked_device_allocator
-		(device, memory_properties, dal)
+	std::tie(texture, staging) = bind(device, memory_properties, dal)
 		.image(extent, format,
 			vk::ImageUsageFlagBits::eSampled
 				| vk::ImageUsageFlagBits::eTransferDst,

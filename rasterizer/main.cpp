@@ -25,7 +25,7 @@ struct MVP {
 
 bool valid_window(const DeviceRenderContext &engine)
 {
-	return glfwWindowShouldClose(engine.window->handle) == 0;
+	return glfwWindowShouldClose(engine.window.handle) == 0;
 }
 
 // Interface rendering
@@ -39,10 +39,13 @@ struct Statistics {
 	size_t patch_count;
 };
 
-void imgui_pass(const vk::CommandBuffer &cmd, Options &options, const Statistics &stats)
+std::string imgui_pass(const vk::CommandBuffer &cmd, Options &options, const Statistics &stats, size_t kbs)
 {
 	static std::vector <float> frametimes;
 	static const size_t WINDOW = 60;
+	static std::string current_path = "";
+
+	std::string path;
 
 	ImGui_ImplVulkan_NewFrame();
 	ImGui_ImplGlfw_NewFrame();
@@ -58,6 +61,13 @@ void imgui_pass(const vk::CommandBuffer &cmd, Options &options, const Statistics
 		frametimes.erase(frametimes.begin());
 
 	auto tflags = ImGuiTreeNodeFlags_DefaultOpen;
+
+	if (ImGui::CollapsingHeader("Info", tflags)) {
+		ImGui::Text("WASD to move horizontally");
+		ImGui::Text("QE to vertically");
+		ImGui::Text("Mouse to change view");
+	}
+
 	if (ImGui::CollapsingHeader("Performance", tflags)) {
 		float max = -1e10f;
 		for (float ft : frametimes)
@@ -69,13 +79,31 @@ void imgui_pass(const vk::CommandBuffer &cmd, Options &options, const Statistics
 	}
 
 	if (ImGui::CollapsingHeader("Statistics", tflags)) {
-		ImGui::Text("%ld patches", stats.patch_count);
+		ImGui::Text("%4ld patches", stats.patch_count);
+		ImGui::Text("%4ld KB", kbs);
 	}
 
 	if (ImGui::CollapsingHeader("Render mode", tflags)) {
 		for (const auto &[k, _] : fragment_shaders) {
 			if (ImGui::RadioButton(k.c_str(), options.key == k))
 				options.key = k;
+		}
+	}
+
+	if (ImGui::CollapsingHeader("Models", tflags)) {
+		static const std::map <std::string, std::filesystem::path> models {
+			{ "armadillo", "resources/models/armadillo.bin" },
+			{ "buddha",    "resources/models/buddha.bin"    },
+			{ "dragon",    "resources/models/dragon.bin"    },
+			{ "ganesha",   "resources/models/ganesha.bin"   },
+			{ "nefertiti", "resources/models/nefertiti.bin" },
+		};
+
+		for (const auto &[k, p] : models) {
+			if (ImGui::RadioButton(k.c_str(), current_path == p)) {
+				ulog_info(__FUNCTION__, "loading %s\n", k.c_str());
+				current_path = path = p;
+			}
 		}
 	}
 
@@ -88,6 +116,8 @@ void imgui_pass(const vk::CommandBuffer &cmd, Options &options, const Statistics
 
 	ImGui::Render();
 	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+
+	return path;
 }
 
 struct HomogenizedNGF {
@@ -121,13 +151,13 @@ HomogenizedNGF HomogenizedNGF::from(const NGF &ngf)
 	std::vector <float> W2(64 * 64);
 	std::vector <float> W3 = ngf.weights[3];
 
-	for (int i = 0; i < 64; i++) {
-		for (int j = 0; j < 64; j++) {
+	for (size_t i = 0; i < 64; i++) {
+		for (size_t j = 0; j < 64; j++) {
 			W1[j * 64 + i] = ngf.weights[1][i * 64 + j];
 			W2[j * 64 + i] = ngf.weights[2][i * 64 + j];
 		}
 
-		for (int j = 0; j < w0c; j++)
+		for (size_t j = 0; j < w0c; j++)
 			W0[j * 64 + i] = ngf.weights[0][i * w0c + j];
 	}
 
@@ -156,7 +186,7 @@ HomogenizedNGF HomogenizedNGF::from(const NGF &ngf)
 }
 
 // Configuring descriptor sets
-vk::DescriptorSet neural_geometry_image(const DeviceRenderContext &engine, const HomogenizedNGF &hngf)
+vk::DescriptorSet neural_geometry_image(DeviceRenderContext &engine, const HomogenizedNGF &hngf)
 {
 	static const auto allocator = [&] <typename T> (const std::vector <T> &buffer, vk::Extent2D extent,
 			vk::ImageType type = vk::ImageType::e2D,
@@ -207,7 +237,7 @@ vk::DescriptorSet neural_geometry_image(const DeviceRenderContext &engine, const
 	return dset;
 }
 
-vk::DescriptorSet environment_map(const DeviceRenderContext &engine, const std::filesystem::path &path)
+vk::DescriptorSet environment_map(DeviceRenderContext &engine, const std::filesystem::path &path)
 {
 	vk::Sampler sampler = littlevk::SamplerAssembler(engine.device, engine.dal);
 
@@ -222,6 +252,12 @@ vk::DescriptorSet environment_map(const DeviceRenderContext &engine, const std::
 		.finalize();
 
 	return dset;
+}
+
+std::ifstream::pos_type filesize(const std::string &filename)
+{
+	std::ifstream in(filename, std::ifstream::ate | std::ifstream::binary);
+	return in.tellg();
 }
 
 int main(int argc, char *argv[])
@@ -269,16 +305,16 @@ int main(int argc, char *argv[])
 	Options options;
 	Statistics stats;
 
-	// TODO: measure real gpu time
 	stats.patch_count = ngf.patch_count;
 
 	size_t frame = 0;
+	size_t kbs = filesize(path)/1024;
 	while (valid_window(engine)) {
 		// Get events
 		glfwPollEvents();
 
 		// Handle input
-		handle_key_input(engine.window->handle, engine.camera_transform);
+		handle_key_input(engine.window.handle, engine.camera_transform);
 
 		// Update camera state before passing to render hooks
 		engine.camera.aspect = engine.aspect_ratio();
@@ -353,7 +389,13 @@ int main(int argc, char *argv[])
 		cmd.drawMeshTasksEXT(ngf.patch_count, 1, 1);
 
 		// Interface
-		imgui_pass(cmd, options, stats);
+		auto path = imgui_pass(cmd, options, stats, kbs);
+		if (path.size()) {
+			auto ngf = NGF::load(path);
+			auto hngf = HomogenizedNGF::from(ngf);
+			meshlet_dset = neural_geometry_image(engine, hngf);
+			kbs = filesize(path)/1024;
+		}
 
 		// End of render pass
 		render_pass_end(engine, cmd);
@@ -367,4 +409,8 @@ int main(int argc, char *argv[])
 		// Post frame
 		frame = 1 - frame;
 	}
+
+	// Free the resources
+	engine.window.drop();
+	engine.dal.drop();
 }
